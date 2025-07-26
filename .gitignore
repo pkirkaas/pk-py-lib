@@ -1,0 +1,33 @@
+
+
+# Defaults - swap, logs, tmp, cache
+*.swp
+*.swo
+*.bak
+.env
+logs/
+log/
+*.log
+tmp/
+*.tmp
+cache/
+
+
+
+# Python/PDM artifact files
+.pdm.toml
+__pypackages__/
+__pycache__/
+.cache/
+.pdm-python
+
+
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+
