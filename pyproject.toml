@@ -1,0 +1,19 @@
+[project]
+name = "pk-py-lib"
+version = "0.1.0"
+description = "Library of exportable Python utilities and GUI components"
+authors = [
+    {name = "Paul Kirkaas", email = "pkirkaas@gmail.com"},
+]
+dependencies = []
+requires-python = ">=3.13"
+readme = "README.md"
+license = {text = "MIT"}
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+
+[tool.pdm]
+distribution = true
