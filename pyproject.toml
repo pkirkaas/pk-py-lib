@@ -5,7 +5,13 @@ description = "Library of exportable Python utilities and GUI components"
 authors = [
     {name = "Paul Kirkaas", email = "pkirkaas@gmail.com"},
 ]
-dependencies = []
+dependencies = [
+    "pillow>=10.0.0",           # Image loading/saving
+    "numpy>=1.24.0",            # Array operations
+    "watchdog>=3.0.0",          # Cross-platform file monitoring
+    "rich>=13.0.0",             # Rich terminal output and formatting
+    "structlog>=23.0.0",        # Structured logging
+]
 requires-python = ">=3.13"
 readme = "README.md"
 license = {text = "MIT"}
@@ -15,5 +21,63 @@ requires = ["pdm-backend"]
 build-backend = "pdm.backend"
 
 
+[project.optional-dependencies]
+gui = [
+    "PySide6>=6.6.0",           # Qt bindings for GUI
+    "pyqtgraph>=0.13.0",        # Fast image display and plotting
+]
+
+cli = [
+    "click>=8.1.0",             # CLI framework
+    "tqdm>=4.66.0",             # Progress bars
+]
+
+image_processing = [
+    "opencv-python>=4.8.0",     # Advanced image processing
+    "scikit-image>=0.22.0",     # Image algorithms
+    "imagehash>=4.3.0",         # Perceptual hashing
+]
+
+dev = [
+    "pytest>=7.4.0",            # Testing framework
+    "pytest-qt>=4.2.0",         # Qt testing
+    "pytest-cov>=4.1.0",        # Coverage testing
+    "black>=23.0.0",            # Code formatting
+    "mypy>=1.5.0",              # Type checking
+    "ruff>=0.1.0",              # Fast linting
+]
+
+optional = [
+    "send2trash>=1.8.0",        # Safe file deletion to trash
+    "exifread>=3.0.0",          # EXIF data reading
+    "pillow-heif>=0.13.0",      # HEIF image support
+]
+
+[project.scripts]
+pk-showcase = "showcase.app:run_showcase"
+
 [tool.pdm]
 distribution = true
+
+[tool.black]
+line-length = 100
+target-version = ['py313']
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+select = ["E", "F", "W", "I", "N", "UP", "S", "B", "A", "C4", "T20"]
+ignore = ["E203", "E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=src/pk_py_lib --cov-report=html --cov-report=term-missing"
