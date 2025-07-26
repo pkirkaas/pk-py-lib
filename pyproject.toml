@@ -11,8 +11,18 @@ dependencies = [
     "watchdog>=3.0.0",          # Cross-platform file monitoring
     "rich>=13.0.0",             # Rich terminal output and formatting
     "structlog>=23.0.0",        # Structured logging
+    "PySide6>=6.6.0",           # Qt bindings for GUI
+    "pyqtgraph>=0.13.0",        # Fast image display and plotting
+    "click>=8.1.0",             # CLI framework
+    "tqdm>=4.66.0",             # Progress bars
+    "opencv-python>=4.8.0",     # Advanced image processing
+    "scikit-image>=0.22.0",     # Image algorithms
+    "imagehash>=4.3.0",         # Perceptual hashing
+    "send2trash>=1.8.0",        # Safe file deletion to trash
+    "exifread>=3.0.0",          # EXIF data reading
+    "pillow-heif>=0.13.0",      # HEIF image support
 ]
-requires-python = ">=3.13"
+requires-python = "<3.14,>=3.13"
 readme = "README.md"
 license = {text = "MIT"}
 
@@ -22,21 +32,6 @@ build-backend = "pdm.backend"
 
 
 [project.optional-dependencies]
-gui = [
-    "PySide6>=6.6.0",           # Qt bindings for GUI
-    "pyqtgraph>=0.13.0",        # Fast image display and plotting
-]
-
-cli = [
-    "click>=8.1.0",             # CLI framework
-    "tqdm>=4.66.0",             # Progress bars
-]
-
-image_processing = [
-    "opencv-python>=4.8.0",     # Advanced image processing
-    "scikit-image>=0.22.0",     # Image algorithms
-    "imagehash>=4.3.0",         # Perceptual hashing
-]
 
 dev = [
     "pytest>=7.4.0",            # Testing framework
@@ -45,12 +40,6 @@ dev = [
     "black>=23.0.0",            # Code formatting
     "mypy>=1.5.0",              # Type checking
     "ruff>=0.1.0",              # Fast linting
-]
-
-optional = [
-    "send2trash>=1.8.0",        # Safe file deletion to trash
-    "exifread>=3.0.0",          # EXIF data reading
-    "pillow-heif>=0.13.0",      # HEIF image support
 ]
 
 [project.scripts]
