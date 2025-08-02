@@ -8,6 +8,7 @@ Supports variable watching, performance tracking, and rich formatting.
 from .logger import PKLogger, LogLevel, LogEntry, get_logger, configure_logging
 from .decorators import log_calls, log_performance, watch_variables
 from .context import LogTimer, LogContext
+from .panel import LogPanel
 
 # Import output handlers
 from . import outputs
@@ -15,15 +16,16 @@ from . import formatters
 
 __all__ = [
     "PKLogger",
-    "LogLevel", 
+    "LogLevel",
     "LogEntry",
     "get_logger",
     "configure_logging",
     "log_calls",
-    "log_performance", 
+    "log_performance",
     "watch_variables",
     "LogTimer",
     "LogContext",
+    "LogPanel",
     "outputs",
     "formatters"
 ]

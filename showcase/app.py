@@ -442,53 +442,6 @@ widget.show()
         """Show component documentation."""
         self.logger.info("Opening component documentation")
 
-
-class LogPanel(QWidget):
-    """
-    Embeddable log display panel for GUI applications.
-    
-    Features:
-    - Real-time log updates
-    - Filtering by level/tag/source
-    - Search functionality
-    - Export capabilities
-    """
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setup_ui()
-        
-    def setup_ui(self):
-        """Setup the log panel UI."""
-        layout = QVBoxLayout(self)
-        
-        # Log display
-        self.log_display = QTextEdit()
-        self.log_display.setReadOnly(True)
-        self.log_display.setFont(QFont("Consolas", 9))
-        layout.addWidget(self.log_display)
-        
-        # Controls
-        controls_layout = QHBoxLayout()
-        
-        clear_btn = QPushButton("Clear")
-        clear_btn.clicked.connect(self.clear_logs)
-        controls_layout.addWidget(clear_btn)
-        
-        controls_layout.addStretch()
-        layout.addLayout(controls_layout)
-    
-    def clear_logs(self):
-        """Clear the log display."""
-        self.log_display.clear()
-    
-    def add_log_entry(self, entry):
-        """Add a log entry to the display."""
-        # Format and add log entry
-        formatted = f"[{entry.timestamp}] {entry.level.name}: {entry.message}"
-        self.log_display.append(formatted)
-
-
 def run_showcase():
     """
     Run the component showcase application.
