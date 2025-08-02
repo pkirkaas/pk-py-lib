@@ -44,6 +44,14 @@ dev = [
 
 [project.scripts]
 pk-showcase = "showcase.app:run_showcase"
+#pdtst = 
+
+[tool.pdm.scripts]
+hi = "echo hello"
+show =  {call = "showcase.app:run_showcase"}
+
+
+
 
 [tool.pdm]
 distribution = true

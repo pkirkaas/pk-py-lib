@@ -296,8 +296,8 @@ class FileOperations:
     @staticmethod
     def batch_organize(
         files: List[Path],
-        organize_by: str = "date",  # "date", "type", "size", "custom"
         destination: Path,
+        organize_by: str = "date",  # "date", "type", "size", "custom"
         custom_organizer: Optional[Callable[[Path], Path]] = None,
         dry_run: bool = False
     ) -> Dict[Path, Path]:
