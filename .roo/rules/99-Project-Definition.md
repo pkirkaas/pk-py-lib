@@ -2,6 +2,10 @@
 
 @/architecture-plan.md
 
+@/pyproject.toml
+
+
+
 ## Objective
 - This is a library of re-usable, exportable Python GUI Components, Classes, Functions, etc, that will be imported by other Python projects.
 

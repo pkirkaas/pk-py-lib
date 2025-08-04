@@ -60,13 +60,14 @@ class ComponentRegistry:
             tags=tags or []
         )
         
-        # Store in registry
+        # Store/overwrite in registry
         self._components[name] = entry
         
-        # Add to category
+        # Add to category without duplicating names
         if category not in self._categories:
             self._categories[category] = []
-        self._categories[category].append(name)
+        if name not in self._categories[category]:
+            self._categories[category].append(name)
     
     def get_component(self, name: str) -> Optional[ComponentEntry]:
         """
@@ -127,6 +128,10 @@ class ComponentRegistry:
 
 # Global component registry instance
 _component_registry = ComponentRegistry()
+# Guard to ensure built-in demos are registered only once
+_registered_builtin_demos = False
+# Guard to ensure built-in demos are registered only once
+_registered_builtin_demos = False
 
 
 def showcase_component(name: str, category: str, description: str, 
@@ -172,10 +177,48 @@ viewer.show()
     return decorator
 
 
+# Helper to bulk-register demo widgets without circular imports
+def register_builtin_demos() -> None:
+    """
+    Register built-in showcase demos residing in showcase.gallery.* modules.
+    
+    This indirection avoids circular import issues by importing demos only when called.
+    Safe to call multiple times; duplicate names will be avoided.
+    """
+    global _registered_builtin_demos
+    if _registered_builtin_demos:
+        return
+    try:
+        from .file_selectors_demo import PathSelectorDemo, MultiPathSelectorDemo
+    except Exception:
+        # If PySide6 is unavailable or import fails, silently skip demo registration.
+        return
+    _component_registry.register(
+        name="PathSelectorDialog Demo",
+        category="Dialogs",
+        description="Modal path picker with filters (files/dirs, whitelist/blacklist/categories).",
+        component_class=PathSelectorDemo,
+        example_code="""from src.pk_py_lib.gui.file_selector.widgets import PathSelectorDialog, PathFilterSpec
+dlg = PathSelectorDialog(filter_spec=PathFilterSpec(include_categories={"images"}))
+if dlg.exec() == dlg.Accepted:
+   print(dlg.selected_path())"""
+    )
+    _component_registry.register(
+        name="MultiPathSelector Demo",
+        category="File Management",
+        description="Manage a minimal set of unique filesystem paths with validation.",
+        component_class=MultiPathSelectorDemo,
+        example_code="""from src.pk_py_lib.gui.file_selector.widgets import MultiPathSelectorWidget, PathFilterSpec
+widget = MultiPathSelectorWidget(filter_spec=PathFilterSpec(include_categories={"images","video"}))"""
+    )
+    _registered_builtin_demos = True
+
+
 # Export public API
 __all__ = [
     "ComponentRegistry",
     "ComponentEntry",
     "showcase_component",
-    "_component_registry"
+    "_component_registry",
+    "register_builtin_demos",
 ]

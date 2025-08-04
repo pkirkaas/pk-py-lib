@@ -304,32 +304,42 @@ from src.pk_py_lib.gui.widgets import *
     
     def load_components(self):
         """Load and display available components."""
-        # For now, create some example entries
-        # In real implementation, this would auto-discover components
+        # Attempt to populate from the showcase registry
+        try:
+            from showcase.gallery.registry import register_builtin_demos, _component_registry
+            # Register built-in/demo components once
+            register_builtin_demos()
+            # Clear tree
+            self.component_tree.clear()
+            # Populate categories and entries
+            for category in _component_registry.get_all_categories():
+                category_item = QTreeWidgetItem([category])
+                category_item.setFont(0, QFont("Arial", 10, QFont.Bold))
+                self.component_tree.addTopLevelItem(category_item)
+                for entry in _component_registry.get_components_by_category(category):
+                    component_item = QTreeWidgetItem([entry.name])
+                    component_item.setData(0, Qt.UserRole, {
+                        'name': entry.name,
+                        'category': category,
+                        'description': entry.description
+                    })
+                    category_item.addChild(component_item)
+            # Expand all
+            self.component_tree.expandAll()
+            return
+        except Exception as e:
+            self.logger.error(f"Failed to load components from registry: {e}")
         
+        # Fallback to static examples if registry load failed
         categories = {
-            "Image Display": [
-                ("ImageViewer", "Basic image viewing widget"),
-                ("ThumbnailGrid", "Grid of image thumbnails"),
-                ("ImageCarousel", "Carousel-style image browser")
-            ],
-            "File Management": [
-                ("FileExplorer", "File system browser"),
-                ("DuplicateFinder", "Duplicate file detection UI"),
-                ("BatchProcessor", "Batch file operation interface")
-            ],
             "Dialogs": [
-                ("ProgressDialog", "Progress indication dialog"),
-                ("SettingsDialog", "Application settings interface"),
                 ("AboutDialog", "About application dialog")
             ]
         }
-        
         for category, components in categories.items():
             category_item = QTreeWidgetItem([category])
             category_item.setFont(0, QFont("Arial", 10, QFont.Bold))
             self.component_tree.addTopLevelItem(category_item)
-            
             for name, description in components:
                 component_item = QTreeWidgetItem([name])
                 component_item.setData(0, Qt.UserRole, {
@@ -338,8 +348,6 @@ from src.pk_py_lib.gui.widgets import *
                     'description': description
                 })
                 category_item.addChild(component_item)
-        
-        # Expand all categories
         self.component_tree.expandAll()
     
     def on_component_selected(self, item: QTreeWidgetItem):
@@ -347,9 +355,9 @@ from src.pk_py_lib.gui.widgets import *
         data = item.data(0, Qt.UserRole)
         if not data:
             return
-        
+
         self.current_component = data
-        
+
         # Update info display
         info_text = f"""
         <h3>{data['name']}</h3>
@@ -357,29 +365,45 @@ from src.pk_py_lib.gui.widgets import *
         <p><b>Description:</b> {data['description']}</p>
         """
         self.component_info_label.setText(info_text)
-        
-        # Update code display
-        example_code = f"""# Example usage of {data['name']}
-from src.pk_py_lib.gui.widgets import {data['name']}
 
-# Create instance
-widget = {data['name']}()
+        # Attempt to instantiate the component from registry for live preview
+        try:
+            from showcase.gallery.registry import _component_registry
+            entry = _component_registry.get_component(data['name'])
+        except Exception as e:
+            entry = None
+            self.logger.error(f"Registry lookup failed for {data['name']}: {e}")
 
-# Configure properties
-# widget.set_property("value", "example")
+        # Update code display with example_code if available
+        if entry and entry.example_code:
+            self.code_display.setText(entry.example_code)
+        else:
+            self.code_display.setText(f"# No example code available for {data['name']}")
 
-# Show widget
-widget.show()
-"""
-        self.code_display.setText(example_code)
-        
-        # Load preview (placeholder for now)
-        preview_label = QLabel(f"Preview of {data['name']} component")
-        preview_label.setAlignment(Qt.AlignCenter)
-        preview_label.setStyleSheet("background: white; border: 2px dashed #ccc; padding: 50px; margin: 20px;")
-        preview_label.setMinimumSize(400, 300)
-        self.preview_scroll.setWidget(preview_label)
-        
+        # Build live preview
+        try:
+            if entry:
+                # Instantiate the QWidget-based demo class
+                demo_widget_cls = entry.component_class
+                demo_widget = demo_widget_cls()  # type: ignore[call-arg]
+                self.preview_scroll.setWidget(demo_widget)
+                self.preview_widget = demo_widget
+            else:
+                # Fallback placeholder
+                preview_label = QLabel(f"Preview of {data['name']} component")
+                preview_label.setAlignment(Qt.AlignCenter)
+                preview_label.setStyleSheet("background: white; border: 2px dashed #ccc; padding: 50px; margin: 20px;")
+                preview_label.setMinimumSize(400, 300)
+                self.preview_scroll.setWidget(preview_label)
+                self.preview_widget = preview_label
+        except Exception as e:
+            # Show error in preview area
+            error_label = QLabel(f"Failed to instantiate component:\n{e}")
+            error_label.setAlignment(Qt.AlignCenter)
+            error_label.setStyleSheet("color: #a00; background: #fee; border: 1px solid #f88; padding: 10px;")
+            self.preview_scroll.setWidget(error_label)
+            self.preview_widget = error_label
+
         self.status_bar.showMessage(f"Selected: {data['name']}")
         self.logger.info(f"Selected component: {data['name']}")
     
@@ -421,7 +445,29 @@ widget.show()
     def refresh_components(self):
         """Refresh the component list."""
         self.logger.info("Refreshing component list")
-        self.load_components()
+        # Clear existing items
+        self.component_tree.clear()
+        # Reload from registry without re-registering to avoid duplicates
+        try:
+            from showcase.gallery.registry import _component_registry
+            # Populate categories from the registry dynamically
+            for category in _component_registry.get_all_categories():
+                category_item = QTreeWidgetItem([category])
+                category_item.setFont(0, QFont("Arial", 10, QFont.Bold))
+                self.component_tree.addTopLevelItem(category_item)
+                for entry in _component_registry.get_components_by_category(category):
+                    component_item = QTreeWidgetItem([entry.name])
+                    component_item.setData(0, Qt.UserRole, {
+                        'name': entry.name,
+                        'category': category,
+                        'description': entry.description
+                    })
+                    category_item.addChild(component_item)
+            self.component_tree.expandAll()
+        except Exception as e:
+            self.logger.error(f"Failed to refresh components from registry: {e}")
+            # Fallback to static load
+            self.load_components()
     
     def show_log_panel(self):
         """Show/hide the log panel."""
