@@ -99,7 +99,8 @@ showcase/                  # Component showcase application
 - `core/image/transforms.py`: Image transformations
 - `core/io/formats.py`: Format handling
 
-### 2.3 Create First GUI Widget
+### 2.3 Create First GUI Widgets
+
 - `gui/widgets/image_viewer.py`: Basic image viewer widget
 - Include zoom, pan, basic info display
 

@@ -6,7 +6,7 @@ When generating Python code, you MUST follow this validation workflow:
    - Fix the errors automatically
    - Explain what was wrong and how it was fixed
    - Present only the corrected version
-4. **Verification**: Confirm the final code is syntactically valid
+4. **Verification**: Confirm BOTH that the final code is syntactically valid, AND correctly implements the functionality specified
 5. **Documentation**: Include a brief comment indicating syntax validation was performed
 
-Never present Python code that hasn't been syntax-validated.
+Never present Python code that hasn't been syntax-validated and reviewed for functional correctness.
