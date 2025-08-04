@@ -250,9 +250,13 @@ class BranchIndicatorDelegate(QStyledItemDelegate):
         return pm
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
-        # First, let the default delegate paint the item
-        super().paint(painter, option, index)
-
+        """
+        Draw explicit +/- indicator to the LEFT of the default icon/text so it doesn't overlap.
+        Strategy:
+          1) Compute a small indicator rect at the far left within the item's rect (respecting indentation).
+          2) Paint +/- there if the item can expand.
+          3) Shift the painter for the default content to the right so icon/text don't overlap our indicator.
+        """
         model = index.model()
         # Map to source to query QFileSystemModel for isDir when using proxy
         src_index = index
@@ -268,31 +272,33 @@ class BranchIndicatorDelegate(QStyledItemDelegate):
         try:
             if isinstance(model, QFileSystemModel):
                 is_dir = model.isDir(src_index)
-                # QFileSystemModel may not have populated children yet; we assume directories can expand
-                has_children = is_dir
+                # Assume directories/drives can expand
+                has_children = is_dir or True if model.fileInfo(src_index).isDir() else False
         except Exception:
             pass
 
-        if not has_children:
-            return
-
-        # Determine expanded state
-        expanded = self.tree.isExpanded(index)
-
-        # Compute branch rect inside the item rect (left side within indent region)
+        # Compute geometry
         rect: QRect = option.rect
-        indent = self.tree.indentation()
-        # Place indicator within the left indentation area
         indicator_x = rect.x() + self.margin
         indicator_y = rect.y() + (rect.height() - self.box_size) // 2
         indicator_rect = QRect(indicator_x, indicator_y, self.box_size, self.box_size)
 
-        # Draw the indicator
-        painter.save()
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        pm = self.pm_minus if expanded else self.pm_plus
-        painter.drawPixmap(indicator_rect, pm)
-        painter.restore()
+        # Determine if expanded
+        expanded = self.tree.isExpanded(index)
+
+        # If it has children (folder/drive), paint +/-; otherwise, leave space empty but still shift default content
+        if has_children:
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            pm = self.pm_minus if expanded else self.pm_plus
+            painter.drawPixmap(indicator_rect, pm)
+            painter.restore()
+
+        # Shift default painting to the right by indicator width + margin so icons don't overlap +/- glyph
+        shifted = QStyleOptionViewItem(option)
+        shift_px = self.box_size + self.margin + 2
+        shifted.rect = QRect(option.rect.x() + shift_px, option.rect.y(), option.rect.width() - shift_px, option.rect.height())
+        super().paint(painter, shifted, index)
 
     def editorEvent(self, event, model, option, index):
         """
@@ -314,17 +320,16 @@ class BranchIndicatorDelegate(QStyledItemDelegate):
             indicator_y = rect.y() + (rect.height() - self.box_size) // 2
             indicator_rect = QRect(indicator_x, indicator_y, self.box_size, self.box_size)
             # PySide6 may expose pos via .position() (Qt6) or .pos() (Qt5 style); support both
-            pos: QPoint
             try:
                 pos = event.position().toPoint()  # type: ignore[attr-defined]
             except Exception:
                 pos = event.pos()  # type: ignore[attr-defined]
             if indicator_rect.contains(pos):
                 if etype == QEvent.MouseButtonRelease:
-                    # Toggle expansion state on release inside indicator
+                    # Toggle expansion; consume event
                     self.tree.setExpanded(view_index, not self.tree.isExpanded(view_index))
                     return True
-                # Consume press/dblclick inside indicator to avoid default selection toggles
+                # Consume press/dblclick inside indicator
                 return True
 
         # Defer to default behavior

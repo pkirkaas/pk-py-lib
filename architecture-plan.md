@@ -214,9 +214,89 @@ dev = [
 ]
 ```
 
+## Application: img_app (KDC Image Organizer)
+
+The repository will host a development-only, extractable desktop GUI application named img_app that consumes pk-py-lib components. This colocated app accelerates prototyping and validation of reusable library features while maintaining clean boundaries to enable future extraction to a separate repository with minimal changes.
+
+### Purpose
+
+- Provide a thin, user-facing PySide6 application shell to exercise and validate pk-py-lib GUI widgets, file system utilities, and future processing APIs
+- Establish patterns for integrating library components into full desktop applications
+- Serve as a live testbed alongside the showcase for more realistic end-to-end workflows
+
+### Directory Structure
+
+Top-level sibling of src and showcase:
+
+```
+img_app/
+  img_app/                  # Python package (extractable as-is)
+    __init__.py
+    app.py                  # QApplication bootstrap, main()
+    main_window.py          # QMainWindow subclass (KDC Image Organizer)
+    widgets/
+      __init__.py
+      central_placeholder.py  # Centered label placeholder content
+  assets/
+    icons/
+  docs/
+    README.md
+  tests/
+    __init__.py
+    test_smoke.py
+  py.typed
+  __main__.py               # Optional entry: python -m img_app
+```
+
+Rationale:
+- Aligns with best practices for app packaging and future extraction
+- Keeps UI code confined to the app package, reusing pk-py-lib for shared functionality
+- Adds tests/docs/assets co-located for isolated maintenance and portability
+
+### Integration Points with pk-py-lib
+
+- GUI foundations: reuse pk-py-lib GUI widgets and future base frames where appropriate
+- File system utilities: traversal, operations, and monitoring from core/filesystem
+- Logging: route app logs through pk-py-lib logging facilities for consistency
+- Processing: later steps will incorporate pk-py-lib processing APIs (e.g., duplicate detection)
+
+### Invocation
+
+Add a PDM runnable script:
+
+```
+[tool.pdm.scripts]
+imgapp = {call = "img_app.img_app.app:main"}
+```
+
+This allows launching the app with:
+
+```
+pdm run imgapp
+```
+
+An alternative module entry is available via __main__.py to support:
+
+```
+python -m img_app
+```
+
+### First Implementation Step (Milestone M0)
+
+- Implement QMainWindow titled "KDC Image Organizer"
+- Provide standard menus: File, View, Help (initially no-op actions)
+- Central widget displays a centered text: "The KDC Image Organizer will go here"
+
+### Development Approach
+
+- Incremental vertical slices, keeping img_app thin and delegating functionality to pk-py-lib
+- Maintain clear module boundaries and avoid cross-imports from img_app into pk-py-lib
+- Ensure all new reusable logic lands in pk-py-lib and is consumed by img_app
+
 ## Next Steps
 
 1. Review and adjust this plan based on your priorities
 2. Set up the basic structure
 3. Implement the first vertical slice
 4. Iterate based on what you learn
+5. Add img_app plan and scaffolding per sections above

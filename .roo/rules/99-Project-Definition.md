@@ -4,6 +4,10 @@
 
 @/pyproject.toml
 
+## Standard Libraries/Packages
+- If the requested functionality/instruction is best supported by installing an open source 3rd party library/package available from standard Python/Pip package providers, feel free to add them & update the `pyproject.toml` file.
+
+- However, the criteria for added packages are they should be current, maintained, and widely used. If in doubt, ask. 
 
 
 ## Objective

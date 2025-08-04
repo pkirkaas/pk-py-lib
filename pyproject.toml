@@ -49,6 +49,7 @@ pk-showcase = "showcase.app:run_showcase"
 [tool.pdm.scripts]
 hi = "echo hello"
 show =  {call = "showcase.app:run_showcase"}
+imgapp = {call = "img_app.img_app.app:main"}
 
 
 
