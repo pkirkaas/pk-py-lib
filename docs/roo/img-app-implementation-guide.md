@@ -736,7 +736,7 @@ class ConfigurationManager:
         "ui_scale": 1.0,
         "performance.max_threads": 4,
         "performance.max_memory_mb": 2048,
-        "cache.max_size_gb": 20.0,
+        "cache.max_size_gb": 5.0,
         "algorithms.default": ["phash"],
         "algorithms.threshold": 0.85
     }
@@ -830,10 +830,10 @@ from datetime import datetime, timedelta
 class CacheManager:
     """Manages application caching."""
     
-    def __init__(self, cache_dir: Path, max_size_gb: float = 20.0):
+    def __init__(self, cache_dir: Path, max_size_gb: float = 5.0):
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(exist_ok=True)
-        self.max_size_bytes = max_size_gb * 1024 * 1024 * 1024
+        self.max_size_bytes = int(max_size_gb * 1024 * 1024 * 1024)
         
     def get_thumbnail(self, image_path: Path, size: int) -> Optional[bytes]:
         """Retrieve cached thumbnail."""
@@ -843,6 +843,11 @@ class CacheManager:
         if cache_file.exists():
             # Check if still valid
             if self._is_cache_valid(cache_file, image_path):
+                # Update last-access metadata
+                try:
+                    cache_file.utime(None)
+                except Exception:
+                    pass
                 return cache_file.read_bytes()
                 
         return None
@@ -854,7 +859,7 @@ class CacheManager:
         
         cache_file.write_bytes(data)
         
-        # Check cache size
+        # Check cache size and cleanup if needed
         self._cleanup_if_needed()
 ```
 

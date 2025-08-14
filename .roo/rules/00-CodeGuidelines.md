@@ -71,3 +71,6 @@ The development environment is a Windows 11 Pro machine, but the shells used are
 - The user (me) will provide coding/architectural instructions/specifications
 - Before implementation, you should review the proposed design/approach carefully, and provide feedback/suggestions/improvements of the user's suggested implementation.
 - Ensure the development plan is complete, comprehensive, and robust before implementation, through interactive dialog if necessary for clarification. 
+
+## Documentation and Project Specification
+- 

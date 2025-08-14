@@ -273,7 +273,7 @@ class CacheManager:
     - Cache warming strategies
     """
     
-    def __init__(self, cache_dir: Path, max_size_gb: float = 20.0):
+    def __init__(self, cache_dir: Path, max_size_gb: float = 5.0):
         self.cache_dir = cache_dir
         self.max_size_bytes = max_size_gb * 1024 * 1024 * 1024
         self.db_path = cache_dir / "cache.db"

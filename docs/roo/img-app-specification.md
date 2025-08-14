@@ -17,6 +17,11 @@ The KDC Image Organizer (img-app) is a cross-platform desktop GUI application de
 - Digital archivists organizing historical image collections
 - Anyone managing 10,000+ digital images requiring organization
 
+## Canonical Conventions
+
+- Internal representation: similarity thresholds and scores are stored as floating-point values in the range 0.0 — 1.0 (inclusive). All persistent storage (databases, caches) record similarity values using this canonical range.
+- User interface representation: thresholds and similarity scores are presented to users as percentages (0 — 100%). UI components convert between the internal 0.0—1.0 representation and the user-facing 0—100% representation transparently.
+- Documentation convention: where a feature or UI element is described, percentages (0—100%) are used for readability. Where storage, APIs, or database schemas are described, the canonical 0.0—1.0 representation is used.
 ## 2. Functional Requirements
 
 ### 2.1 Core Features
@@ -312,7 +317,7 @@ img_app/
 
 #### 5.2.1 Thumbnail Cache
 - Location: User app data folder
-- Default size: 20GB (configurable)
+- Default size: 5GB (configurable)
 - Thumbnail sizes: 256x256, 512x512, 1024x1024
 - LRU eviction policy
 - Automatic cleanup options

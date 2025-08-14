@@ -53,7 +53,7 @@
 
 ### Caching Strategy
 - Image thumbnails cached in app data folder
-- Maximum cache size user configurable, initial/default size 20GB
+- Maximum cache size user configurable, initial/default size 5GB
 - Cache invalidation by file size/modification date
 - Thumbnails on demand
 - Provide user options to clear cache & clean/verify/validate cache
