@@ -4,7 +4,7 @@ This patch applies the approved canonical changes to the specification and examp
 
 Summary of changes:
 - Canonical internal similarity threshold: 0.0–1.0 (UI displays 0–100%)
-- Update default thumbnail/cache size from 20GB -> 5GB
+- Update default thumbnail/cache size from 5GB -> 5GB
 - Add DB meta/schema_version table and initial entry
 - Annotate image metadata model with inode/device for rename detection
 - Standardize ApiResponse to include machine-readable code field
@@ -111,7 +111,7 @@ file_device: Optional[int]       # Device identifier for the filesystem (where a
 6) [`docs/roo/img-app-technical-architecture.md:263`](docs/roo/img-app-technical-architecture.md:263)
 ---- before ----
 ```python
-def __init__(self, cache_dir: Path, max_size_gb: float = 20.0):
+def __init__(self, cache_dir: Path, max_size_gb: float = 5.0):
 ```
 ---- after ----
 ```python
@@ -124,7 +124,7 @@ Notes & rationale:
 
 Next steps (recommended):
 1. Create a git branch `docs/canonical-edits` and commit the modified files.
-2. Run a repo-wide search for remaining references to '20GB' and '20.0' in code examples and docs; update as needed.
+2. Run a repo-wide search for remaining references to '5GB' and '20.0' in code examples and docs; update as needed.
 3. Add a tiny integration test to verify DB migration/meta table creation.
 4. Optionally, update the `img_app` example code under `img_app/` to use the new `ImageData` fields when populating the cache.
 
