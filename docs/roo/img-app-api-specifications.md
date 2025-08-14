@@ -17,11 +17,21 @@ This document defines the API interfaces between the img-app application and the
 ```python
 # Standard response pattern
 @dataclass
-class ApiResponse[T]:
-    """Standard API response wrapper."""
+class ApiResponse(Generic[T]):
+    """
+    Standard API response wrapper.
+
+    Fields:
+        success: Indicates operation success (True/False).
+        data: Optional payload of type T when success is True.
+        error: Human-readable error message when success is False.
+        code: Machine-readable error code (see ErrorCodes enum).
+        metadata: Optional dictionary with extra contextual data.
+    """
     success: bool
     data: Optional[T]
     error: Optional[str]
+    code: Optional[str]
     metadata: Dict[str, Any]
 
 # Standard error pattern
@@ -710,6 +720,24 @@ class Events:
     # UI events
     VIEW_CHANGED = "ui.view_changed"
     THEME_CHANGED = "ui.theme_changed"
+### 10.0 Error Codes
+
+```python
+from enum import Enum
+
+class ErrorCodes(Enum):
+    """Canonical machine-readable error codes for API responses."""
+
+    LOCKED_DB = "LOCKED_DB"               # Database locked / concurrent access
+    FILE_MISSING = "FILE_MISSING"         # File not found on disk
+    OUT_OF_MEMORY = "OUT_OF_MEMORY"       # Memory allocation failure
+    PERMISSION_DENIED = "PERMISSION_DENIED"  # Read/write permission denied
+    CORRUPTED_IMAGE = "CORRUPTED_IMAGE"   # Image file corrupted or unreadable
+    INVALID_CONFIG = "INVALID_CONFIG"     # Configuration validation failed
+    NETWORK_ERROR = "NETWORK_ERROR"       # Network or mount error for remote paths
+    TIMEOUT = "TIMEOUT"                   # Operation timed out
+    UNKNOWN_ERROR = "UNKNOWN_ERROR"       # Fallback/unspecified error
+```
     PANEL_TOGGLED = "ui.panel_toggled"
     
     # Data events

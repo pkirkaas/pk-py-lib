@@ -71,3 +71,9 @@ The development environment is a Windows 11 Pro machine, but the shells used are
 - The user (me) will provide coding/architectural instructions/specifications
 - Before implementation, you should review the proposed design/approach carefully, and provide feedback/suggestions/improvements of the user's suggested implementation.
 - Ensure the development plan is complete, comprehensive, and robust before implementation, through interactive dialog if necessary for clarification. 
+
+## Documentation and Project Specification
+- All features, specifications, functions, behavior & design of the project should be recorded/FULLY DOCUMENTED by design documents in the project `/docs` folder, which you must keep up to date
+- You must create the appropriate documents if they don't exist
+- You must update ALL functional and design specification documentation EVERY TIME you make changes to the implementation.
+- You must ensure the design/specification documentation is always up to date and reflects the decisions/actions of every relevant chat interaction.

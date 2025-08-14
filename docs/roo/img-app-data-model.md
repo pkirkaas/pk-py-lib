@@ -37,7 +37,9 @@ class ImageData:
     file_size: int                   # Size in bytes
     file_modified: datetime          # Last modification time
     file_created: datetime           # Creation time
-    file_hash: str                   # SHA-256 hash of file
+    file_hash: str                   # SHA-256 hash of file (hex)
+    file_inode: Optional[int]        # OS inode (where available) to help detect renames/moves
+    file_device: Optional[int]       # Device identifier for the filesystem (where available)
     
     # Image Properties
     width: int                       # Image width in pixels
@@ -279,6 +281,16 @@ CREATE TABLE recent_items (
     CHECK (item_type IN ('file', 'folder', 'session', 'export'))
 );
 
+-- Meta table for schema versioning and global metadata
+CREATE TABLE meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    notes TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Example initial schema version entry
+INSERT OR REPLACE INTO meta (key, value, notes) VALUES ('schema_version', '1.0.0', 'Initial schema');
 -- Create indexes
 CREATE INDEX idx_settings_profile ON settings(profile_id);
 CREATE INDEX idx_settings_lookup ON settings(profile_id, category, key);
@@ -541,7 +553,7 @@ class CachePolicy:
     """Cache management policies."""
     
     # Size limits
-    MAX_CACHE_SIZE_GB = 20.0
+    MAX_CACHE_SIZE_GB = 5.0
     MAX_THUMBNAIL_AGE_DAYS = 90
     MAX_RESULT_AGE_DAYS = 30
     
