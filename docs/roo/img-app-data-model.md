@@ -281,7 +281,7 @@ CREATE TABLE recent_items (
     CHECK (item_type IN ('file', 'folder', 'session', 'export'))
 );
 
--- Meta table for schema versioning and global metadata
+-- Meta table for schema versioning and global metadata [ID: DB-001]
 CREATE TABLE meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,

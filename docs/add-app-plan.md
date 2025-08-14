@@ -64,7 +64,7 @@ Entry point contract for img_app.img_app.app:main:
 - Creates a single QApplication if not present.
 - Instantiates and shows main window; executes event loop.
 
-## Initial Main Window Specification (Milestone M0)
+## Initial Main Window Specification (Milestone M0) [ID: APP-001]
 
 - Framework: PySide6 (Qt 6)
 - Window: QMainWindow subclass

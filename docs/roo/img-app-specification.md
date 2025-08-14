@@ -1,5 +1,8 @@
 # KDC Image Organizer - Application Specification
 
+<!-- Canonical decisions reference -->
+Note: Canonical implementation decisions (thresholds, cache defaults, file identity strategy, API shapes, DB schema versioning, telemetry policy) are consolidated in [`docs/roo/canonical-decisions.md`](docs/roo/canonical-decisions.md:1). Implementations MUST follow that document.
+
 ## 1. Executive Summary
 
 ### 1.1 Project Overview
@@ -17,7 +20,7 @@ The KDC Image Organizer (img-app) is a cross-platform desktop GUI application de
 - Digital archivists organizing historical image collections
 - Anyone managing 10,000+ digital images requiring organization
 
-## Canonical Conventions
+## Canonical Conventions [ID: PROC-001]
 
 - Internal representation: similarity thresholds and scores are stored as floating-point values in the range 0.0 — 1.0 (inclusive). All persistent storage (databases, caches) record similarity values using this canonical range.
 - User interface representation: thresholds and similarity scores are presented to users as percentages (0 — 100%). UI components convert between the internal 0.0—1.0 representation and the user-facing 0—100% representation transparently.

@@ -13,7 +13,7 @@ This document defines the API interfaces between the img-app application and the
 - **Async Support**: Async variants for I/O operations
 - **Extensibility**: Plugin-friendly interfaces
 
-### 2.2 Common Patterns
+### 2.2 Common Patterns [ID: API-001]
 ```python
 # Standard response pattern
 @dataclass

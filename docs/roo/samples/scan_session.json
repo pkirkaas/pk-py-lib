@@ -1,0 +1,25 @@
+{
+  "id": 1,
+  "profile_id": 1,
+  "name": "Example Scan - Family Photos",
+  "scan_type": "single_set",
+  "source_paths": [
+    "/home/user/Pictures/2023",
+    "/media/drive/Photos"
+  ],
+  "reference_paths": null,
+  "algorithms": ["phash"],
+  "threshold": 0.85,
+  "algorithm_params": {
+    "phash": {"hash_size": 8}
+  },
+  "total_images": 1240,
+  "processed_images": 0,
+  "groups_found": 0,
+  "status": "pending",
+  "started_at": null,
+  "completed_at": null,
+  "duration": null,
+  "results": [],
+  "error_message": null
+}
