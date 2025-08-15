@@ -107,8 +107,42 @@ class MainWindow(QMainWindow):
         status.showMessage("Ready")
 
     def _setup_central_widget(self) -> None:
-        """Place the initial central placeholder widget."""
-        self.setCentralWidget(CentralPlaceholder(self))
+        """
+        Place the initial central widget.
+
+        Try to use the library MultiPathSelectorWidget from src.pk_py_lib.gui.file_selector.widgets
+        as the application's initial central widget. If the library or widget cannot be loaded
+        (missing dependency, import error, or runtime issue), fall back to a simple
+        CentralPlaceholder so the app remains functional.
+        """
+        try:
+            # Import locally to avoid top-level dependency on pk-py-lib during module import
+            from src.pk_py_lib.gui.file_selector.widgets import (
+                MultiPathSelectorWidget,
+                PathFilterSpec,
+            )
+
+            # Construct a sensible default filter spec (images & video)
+            filter_spec = PathFilterSpec(include_categories={"images", "video"})
+            selector = MultiPathSelectorWidget(
+                parent=self,
+                title="Paths",
+                start_dir=None,
+                filter_spec=filter_spec,
+            )
+            self.setCentralWidget(selector)
+            # Update status with success (best-effort)
+            try:
+                self.statusBar().showMessage("MultiPathSelector loaded")
+            except Exception:
+                pass
+        except Exception as exc:
+            # Fallback to placeholder and inform the status bar
+            self.setCentralWidget(CentralPlaceholder(self))
+            try:
+                self.statusBar().showMessage(f"Using placeholder (MultiPathSelector unavailable): {exc}")
+            except Exception:
+                pass
 
     def _make_noop_action(self, text: str) -> QAction:
         """

@@ -2,22 +2,23 @@
   {
     "id": "APP-001",
     "title": "M0 app shell",
-    "status": "partial",
-    "next_step": "Wire pdm run imgapp to app entry and run smoke test",
+    "status": "in_progress",
+    "next_step": "Start img_app with MultiPathSelector as central widget and run smoke test",
     "spec_refs": ["docs/add-app-plan.md"],
     "code_refs": [
       "img_app/img_app/app.py",
-      "img_app/img_app/main_window.py"
+      "img_app/img_app/main_window.py",
+      "src/pk_py_lib/gui/file_selector/widgets.py"
     ],
     "test_refs": ["img_app/tests/test_smoke.py"],
     "acceptance": [
       "Window titled KDC Image Organizer shows",
       "Menus File, View, Help exist",
-      "Placeholder label visible"
+      "MultiPathSelector visible as central widget"
     ],
     "risk": "low",
-    "last_updated": "2025-08-14",
-    "notes": "Scaffold exists under img_app/; smoke test pending"
+    "last_updated": "2025-08-15",
+    "notes": "Main window now attempts to load MultiPathSelector; smoke test pending"
   },
   {
     "id": "PROC-001",

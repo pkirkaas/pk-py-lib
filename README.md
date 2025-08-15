@@ -25,6 +25,15 @@ This launches an interactive GUI where you can:
 - Interactive code playground
 - Integrated logging panel
 
+## Launch the img_app development application
+
+To run the development application (img_app) which exercises components from this repository, use the PDM script defined in [`pyproject.toml`](pyproject.toml:49):
+
+```bash
+pdm run imgapp
+```
+
+This launches the KDC Image Organizer window. As of 2025-08-15 the app attempts to open with the MultiPathSelector widget as the central view (implemented in [`src/pk_py_lib/gui/file_selector/widgets.py`](src/pk_py_lib/gui/file_selector/widgets.py:693)). If the library widget is unavailable, the app will fall back to a minimal placeholder.
 ### Core Functionality Examples
 
 ```python

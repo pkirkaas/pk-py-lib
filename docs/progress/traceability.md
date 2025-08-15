@@ -13,7 +13,7 @@ RTM Table
 
 | Requirement ID | Requirement summary | Spec refs | Code refs | Test refs | Status | Notes |
 |---|---|---|---|---|---|---|
-| `APP-001` | M0 app shell — basic app window, menus, placeholder | [`docs/add-app-plan.md`](docs/add-app-plan.md:67) | `img_app/img_app/app.py`, `img_app/img_app/main_window.py` | `img_app/tests/test_smoke.py` | partial | Scaffold exists; smoke test pending |
+| `APP-001` | M0 app shell — basic app window, menus, placeholder | [`docs/add-app-plan.md`](docs/add-app-plan.md:67) | `img_app/img_app/app.py`, `img_app/img_app/main_window.py`, `src/pk_py_lib/gui/file_selector/widgets.py` | `img_app/tests/test_smoke.py` | in_progress | Main window now attempts to load MultiPathSelector; smoke test pending |
 | `PROC-001` | Canonical threshold normalization — internal 0.0–1.0, UI 0–100% | [`docs/roo/img-app-specification.md`](docs/roo/img-app-specification.md:20), [`docs/roo/pr-unified-diff.md`](docs/roo/pr-unified-diff.md:29) | `src/pk_py_lib/core/utils` |  | planned | Conversion helper needed |
 | `PROC-002` | pHash algorithm implementation | [`docs/roo/img-app-specification.md`](docs/roo/img-app-specification.md:56) | `src/pk_py_lib/core/image` | `tests/test_phash.py` | planned | Use imagehash or OpenCV |
 | `DB-001` | Meta/schema_version table | [`docs/roo/img-app-data-model.md`](docs/roo/img-app-data-model.md:284) | `src/pk_py_lib/core/database` |  | planned | Add creation in DatabaseManager |

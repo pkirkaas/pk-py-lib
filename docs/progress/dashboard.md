@@ -14,7 +14,7 @@ Generated: 2025-08-14T17:43:52.453350Z
 
 | ID | Title | Status | Next step | Last updated | Specs | Code |
 |---|---|---|---|---|---|---|
-| `APP-001` | M0 app shell | partial | Wire pdm run imgapp to app entry and run smoke test | 2025-08-14 | [`add-app-plan.md`](docs/add-app-plan.md) | [`app.py`](img_app/img_app/app.py), [`main_window.py`](img_app/img_app/main_window.py) |
+| `APP-001` | M0 app shell | in_progress | Start img_app with MultiPathSelector as central widget and run smoke test | 2025-08-15 | [`add-app-plan.md`](docs/add-app-plan.md) | [`app.py`](img_app/img_app/app.py), [`main_window.py`](img_app/img_app/main_window.py), [`widgets.py`](src/pk_py_lib/gui/file_selector/widgets.py) |
 | `PROC-001` | Canonical threshold normalization | planned | Add conversion helper in pk_py_lib and document UI conversion | 2025-08-14 | [`img-app-specification.md`](docs/roo/img-app-specification.md), [`pr-unified-diff.md`](docs/roo/pr-unified-diff.md) |  |
 | `PROC-002` | Perceptual hash (pHash) algorithm implementation | planned | Implement pHash wrapper and add unit tests in src/pk_py_lib/core/image | 2025-08-14 | [`img-app-specification.md`](docs/roo/img-app-specification.md) | [`image`](src/pk_py_lib/core/image) |
 | `DB-001` | Meta/schema_version table | planned | Implement meta table creation in DatabaseManager | 2025-08-14 | [`img-app-data-model.md`](docs/roo/img-app-data-model.md) |  |
