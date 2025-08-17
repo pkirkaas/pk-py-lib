@@ -77,3 +77,5 @@ The development environment is a Windows 11 Pro machine, but the shells used are
 - You must create the appropriate documents if they don't exist
 - You must update ALL functional and design specification documentation EVERY TIME you make changes to the implementation.
 - You must ensure the design/specification documentation is always up to date and reflects the decisions/actions of every relevant chat interaction.
+- Record all decisions taken/changes made to `docs/roo/canonical-decisions.md`
+- 

@@ -375,6 +375,358 @@ def handle_memory_fragmentation(self):
 
 ## 4. Database Errors
 
+### 4.0 Database Startup Validation
+
+#### 4.0.1 Database Integrity Check on Startup
+```python
+class DatabaseStartupValidator:
+    """Handle database validation and recovery on application startup."""
+    
+    def validate_databases_on_startup(self):
+        """
+        Scenario: Application startup database validation
+        
+        Validation Sequence:
+        1. Check existence of all required databases
+        2. Run PRAGMA quick_check on each database
+        3. If quick_check fails, run PRAGMA integrity_check
+        4. Handle corruption based on database type
+        
+        Databases:
+        - settings.db (user_data_dir)
+        - sessions.db (user_data_dir)
+        - cache.db (user_cache_dir)
+        """
+        
+        databases = [
+            ('settings.db', self.data_dir, 'critical'),
+            ('sessions.db', self.data_dir, 'important'),
+            ('cache.db', self.cache_dir, 'recoverable')
+        ]
+        
+        for db_name, location, importance in databases:
+            db_path = location / db_name
+            
+            # Check existence
+            if not db_path.exists():
+                self.create_database_with_schema(db_path, db_name)
+                continue
+                
+            # Validate integrity
+            if not self.validate_database_integrity(db_path):
+                self.handle_corrupt_database(db_path, importance)
+    
+    def validate_database_integrity(self, db_path: Path) -> bool:
+        """
+        Run PRAGMA checks on database.
+        
+        Returns True if healthy, False if corrupt.
+        """
+        conn = sqlite3.connect(db_path)
+        try:
+            # Quick check first (faster)
+            cursor = conn.execute("PRAGMA quick_check")
+            result = cursor.fetchone()
+            
+            if result[0] != "ok":
+                # Full integrity check if quick check fails
+                cursor = conn.execute("PRAGMA integrity_check")
+                result = cursor.fetchone()
+                return result[0] == "ok"
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Database validation failed: {e}")
+            return False
+        finally:
+            conn.close()
+    
+    def handle_corrupt_database(self, db_path: Path, importance: str):
+        """
+        Handle corrupt database based on importance level.
+        
+        Recovery strategies:
+        - critical (settings.db): Try to export/preserve settings
+        - important (sessions.db): Offer to rebuild
+        - recoverable (cache.db): Auto-rebuild
+        """
+        
+        if importance == 'critical':
+            # settings.db - try to preserve data
+            self.handle_corrupt_settings_db(db_path)
+        elif importance == 'important':
+            # sessions.db - prompt user
+            self.handle_corrupt_sessions_db(db_path)
+        else:
+            # cache.db - safe to rebuild
+            self.rebuild_cache_database(db_path)
+    
+    def handle_corrupt_settings_db(self, db_path: Path):
+        """
+        Handle corrupted settings database.
+        
+        Recovery:
+        1. Attempt to export readable settings
+        2. Create backup of corrupt database
+        3. Rebuild with preserved settings if possible
+        4. Use defaults if export fails
+        """
+        
+        backup_path = db_path.with_suffix('.corrupt.backup')
+        
+        try:
+            # Try to export settings
+            exported_settings = self.export_readable_settings(db_path)
+            
+            # Backup corrupt database
+            shutil.copy2(db_path, backup_path)
+            
+            # Rebuild database
+            self.create_database_with_schema(db_path, 'settings.db')
+            
+            # Restore exported settings
+            if exported_settings:
+                self.import_settings(db_path, exported_settings)
+                self.notify_user(
+                    "Settings Database Recovered",
+                    "Your settings have been preserved and restored.",
+                    level="info"
+                )
+            else:
+                self.notify_user(
+                    "Settings Database Rebuilt",
+                    "Settings could not be recovered. Using defaults.",
+                    level="warning"
+                )
+                
+        except Exception as e:
+            self.logger.error(f"Failed to recover settings.db: {e}")
+            self.prompt_critical_error(
+                "Settings database is corrupt and cannot be recovered.",
+                options=["Use defaults", "Exit application"]
+            )
+    
+    def handle_corrupt_sessions_db(self, db_path: Path):
+        """
+        Handle corrupted sessions database.
+        
+        Recovery:
+        1. Inform user about session loss
+        2. Offer to rebuild from scratch
+        3. Create backup of corrupt database
+        """
+        
+        response = self.prompt_user(
+            title="Sessions Database Corrupted",
+            message="Your scan sessions history is corrupted. Rebuild?",
+            options=["Rebuild (lose history)", "Try repair", "Exit"]
+        )
+        
+        if response == "Rebuild (lose history)":
+            backup_path = db_path.with_suffix('.corrupt.backup')
+            shutil.copy2(db_path, backup_path)
+            self.create_database_with_schema(db_path, 'sessions.db')
+            
+        elif response == "Try repair":
+            self.attempt_database_repair(db_path)
+        else:
+            sys.exit(1)
+    
+    def rebuild_cache_database(self, db_path: Path):
+        """
+        Rebuild cache database (safe to lose).
+        
+        Cache will be regenerated as needed during operation.
+        """
+        
+        self.logger.info("Rebuilding cache database")
+        
+        # Remove corrupt database
+        if db_path.exists():
+            db_path.unlink()
+        
+        # Create fresh database
+        self.create_database_with_schema(db_path, 'cache.db')
+        
+        self.notify_user(
+            "Cache Rebuilt",
+            "Image cache has been cleared and will rebuild automatically.",
+            level="info"
+        )
+```
+
+#### 4.0.2 Schema Migration Error Handling
+```python
+class SchemaMigrationHandler:
+    """Handle database schema migration errors."""
+    
+    def handle_migration_with_safety(self, db_path: Path, target_version: str):
+        """
+        Scenario: Database needs schema migration
+        
+        Safety measures:
+        1. Create timestamped backup before migration
+        2. Run Alembic migrations
+        3. Rollback on failure
+        4. Maintain backup retention policy
+        """
+        
+        # Create backup before migration
+        backup_path = self.create_migration_backup(db_path)
+        
+        try:
+            # Run Alembic migration
+            self.run_alembic_migration(db_path, target_version)
+            
+            # Verify migration success
+            if self.verify_migration(db_path, target_version):
+                # Clean up old backups per retention policy
+                self.cleanup_old_backups(db_path)
+                return True
+            else:
+                raise Exception("Migration verification failed")
+                
+        except Exception as e:
+            self.logger.error(f"Migration failed: {e}")
+            
+            # Rollback from backup
+            self.restore_from_backup(backup_path, db_path)
+            
+            # Notify user
+            self.notify_user(
+                "Database Migration Failed",
+                f"Could not update database to version {target_version}. "
+                "The database has been restored to its previous state.",
+                level="error"
+            )
+            
+            return False
+    
+    def create_migration_backup(self, db_path: Path) -> Path:
+        """
+        Create timestamped backup before migration.
+        
+        Format: {db_name}.{ISO_timestamp}.v{schema_version}
+        """
+        from datetime import datetime
+        
+        # Get current schema version
+        version = self.get_schema_version(db_path)
+        
+        # Create backup filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_name = f"{db_path.stem}.{timestamp}.v{version}"
+        backup_path = self.backups_dir / backup_name
+        
+        # Copy database
+        shutil.copy2(db_path, backup_path)
+        
+        self.logger.info(f"Created migration backup: {backup_path}")
+        return backup_path
+    
+    def cleanup_old_backups(self, db_path: Path):
+        """
+        Apply backup retention policy.
+        
+        Policy:
+        - Keep 10 most recent backups per database
+        - Purge backups older than 30 days
+        """
+        from datetime import datetime, timedelta
+        
+        db_name = db_path.stem
+        cutoff_date = datetime.now() - timedelta(days=30)
+        
+        # Find all backups for this database
+        backups = list(self.backups_dir.glob(f"{db_name}.*"))
+        
+        # Sort by modification time (newest first)
+        backups.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        
+        # Keep 10 most recent
+        for backup in backups[10:]:
+            backup.unlink()
+            self.logger.info(f"Removed old backup: {backup}")
+        
+        # Remove backups older than 30 days
+        for backup in backups[:10]:
+            if datetime.fromtimestamp(backup.stat().st_mtime) < cutoff_date:
+                backup.unlink()
+                self.logger.info(f"Removed expired backup: {backup}")
+    
+    def restore_from_backup(self, backup_path: Path, db_path: Path):
+        """
+        Restore database from backup after failed migration.
+        """
+        
+        self.logger.info(f"Restoring database from {backup_path}")
+        
+        # Remove failed migration database
+        if db_path.exists():
+            db_path.unlink()
+        
+        # Restore from backup
+        shutil.copy2(backup_path, db_path)
+        
+        self.logger.info("Database restored successfully")
+```
+
+#### 4.0.3 Meta Table Management
+```python
+class MetaTableHandler:
+    """Handle meta table creation and management."""
+    
+    def ensure_meta_table(self, db_path: Path):
+        """
+        Ensure meta table exists with schema version.
+        
+        Required for all databases to track schema version.
+        """
+        
+        conn = sqlite3.connect(db_path)
+        try:
+            # Create meta table if not exists
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    notes TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Insert schema version if not present
+            conn.execute("""
+                INSERT OR IGNORE INTO meta (key, value, notes)
+                VALUES ('schema_version', '1.0.0', 'Initial schema version')
+            """)
+            
+            conn.commit()
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create meta table: {e}")
+            raise
+        finally:
+            conn.close()
+    
+    def get_schema_version(self, db_path: Path) -> str:
+        """Get current schema version from meta table."""
+        
+        conn = sqlite3.connect(db_path)
+        try:
+            cursor = conn.execute(
+                "SELECT value FROM meta WHERE key = 'schema_version'"
+            )
+            result = cursor.fetchone()
+            return result[0] if result else '0.0.0'
+            
+        except:
+            return '0.0.0'
+        finally:
+            conn.close()
+```
+
 ### 4.1 Database Lock Issues
 
 #### 4.1.1 Database Locked
@@ -885,3 +1237,108 @@ class ErrorMetrics:
 ```
 
 This comprehensive error handling ensures robust operation even under adverse conditions, maintaining data integrity and providing clear user feedback throughout.
+## 13. Settings/Profile Manager Errors and Edge Cases
+
+Status: Planned
+
+Scope
+- Enumerates profile-management specific errors, validation failures, database/persistence issues, and user-visible messages.
+- Applies to first-launch/startup modal, ongoing settings management, and import/export of profiles.
+
+13.1 Validation and Naming Errors
+- Duplicate profile name
+  - Detection: create/update/copy attempts where proposed name matches existing (case-insensitive).
+  - User message: "A profile with that name already exists. Choose a different name."
+  - Recovery: keep focus in Name; highlight field; disable Continue/Apply; suggest available variant (e.g., "<name> (copy)").
+  - Error code: INVALID_CONFIG
+- Invalid characters or length
+  - Rules: required; 1–64 chars; allowed [A–Z a–z 0–9 space _ -].
+  - User message: "Name must be 1–64 characters using letters, numbers, spaces, _ or -."
+  - Recovery: inline tooltip; prevent save.
+  - Error code: INVALID_CONFIG
+- Invalid thresholds or fields
+  - Threshold out of range (UI 0–100)
+  - User message: "Threshold must be between 0 and 100."
+  - Error code: INVALID_CONFIG
+  - Reference: [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1)
+
+13.2 Active/Default Invariants
+- Delete Active profile
+  - Rule: disallowed.
+  - User message: "Cannot delete the active profile. Please switch to another profile first."
+  - Recovery: keep Delete disabled; offer Switch Active action.
+- Delete last remaining profile
+  - Rule: disallowed.
+  - User message: "At least one profile is required. Create a new profile before deleting this one."
+  - Recovery: disable Delete until another profile exists.
+- Multiple Defaults
+  - Rule: not allowed; enforce exclusivity.
+  - Behavior: when setting one as Default, clear is_default on all others.
+  - Logging: INFO with affected profile ids.
+
+13.3 Startup Modal Outcomes
+- Cancel with no Active profile
+  - Behavior: exit application immediately.
+  - User message (toast/log only, not modal): "Startup canceled without selecting a profile. Exiting."
+  - Rationale: canonical policy to enforce explicit Active selection on launch.
+- Cancel with existing Active profile
+  - Policy: exit to enforce confirmation each run (canonical); see decisions.
+  - Alternative policy (future): allow continue with last Active; currently not adopted.
+
+13.4 Persistence and Database Errors
+- Database locked (concurrent access)
+  - Symptom: sqlite3.OperationalError: database is locked
+  - User message: "Settings database is currently in use. Please close other instances and try again."
+  - Recovery: retry with backoff; offer Retry/Exit; suggest closing other instances.
+  - Error code: LOCKED_DB
+- Integrity/migration failure during startup
+  - Symptom: PRAGMA checks fail or migration fails
+  - User message: 
+    - settings.db: "Settings database appears corrupted. We can try to preserve readable settings and rebuild."
+    - Offer: "Rebuild" or "Exit" (see general DB section 4.0).
+  - Error code: INVALID_CONFIG or UNKNOWN_ERROR
+- Write failure (disk full, permissions)
+  - User message: "Could not save profile changes. Check disk space and permissions."
+  - Recovery: do not lose edits; keep dialog open; allow Save As (export).
+  - Error code: PERMISSION_DENIED or UNKNOWN_ERROR
+- Fallback persistence (rare)
+  - Trigger: unrecoverable SQLite initialization failures.
+  - Behavior: write minimal JSON fallback (profiles.json) under data_dir; warn user and proceed.
+  - User message: "Using temporary settings storage due to a database issue. Your changes will be migrated when the database becomes available."
+  - Logging: WARNING; attempt auto-import on next successful DB init.
+
+13.5 Import/Export Errors
+- Import invalid JSON or incompatible schema
+  - User message: "The selected file is not a valid profile export."
+  - Recovery: show details; do not modify existing profiles.
+  - Error code: INVALID_CONFIG
+- Import name collision
+  - User message: "A profile named '<name>' already exists." Offer to rename.
+  - Recovery: pre-fill with "<name> (imported)".
+- Export write failure
+  - User message: "Could not export profile. Check path permissions."
+  - Error code: PERMISSION_DENIED
+
+13.6 Path Validation and Long-Running Checks
+- Missing/inaccessible paths
+  - User message: inline warnings per path; allow save with warnings (non-strict mode).
+  - Recovery: "Fix Issues" dialog; list inaccessible paths; allow Ignore Warnings.
+- Slow or huge path previews
+  - Behavior: limit preview to 100 items; show progress; allow cancel.
+
+13.7 Non-Destructive Behavior Summary
+- All modifications are transactional; failed operations leave prior state intact.
+- Deletions require confirmation and are blocked by invariants (Active/last profile).
+- Copy never overwrites an existing profile.
+- Cancel from modal never writes changes.
+
+13.8 Logging and Telemetry (local only)
+- Logger: "pk_py_lib.settings_profiles"
+- INFO: create/update/delete/copy/set-active/set-default
+- WARNING: validation failures, fallback storage usage
+- ERROR: DB errors, persistence failures, migration failures
+
+13.9 Next Steps
+- Map errors to ApiResponse with ErrorCodes; see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:164).
+- Add pytest-qt tests covering dialog error flows (duplicate name, delete active, cancel on startup).
+- Implement fallback JSON writer/reader hooks in [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1) guarded by explicit error cases.

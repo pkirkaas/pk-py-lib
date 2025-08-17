@@ -159,9 +159,214 @@
 └─────────────────────────────────────────┘
 ```
 
-## 3. User Workflows
+## 3. Settings Management UI
 
-### 3.1 Basic Duplicate Scan Workflow
+### 3.1 Settings Dialog Structure
+```
+┌─────────────────────────────────────────────────────┐
+│                Settings                             │
+├───────────┬─────────────────────────────────────────┤
+│           │                                         │
+│ General   │  Profile: [Default Profile ▼] [➕][📋][🗑]│
+│ Profiles  │                                         │
+│ Pools     │  Profile Name: [___________________]    │
+│ Detection │  Description:  [___________________]    │
+│ Advanced  │                                         │
+│           │  ☑ Set as default profile              │
+│           │                                         │
+│           │  [Validate Paths] [Test Settings]       │
+│           │                                         │
+│           │      [Cancel]  [Apply]  [OK]           │
+└───────────┴─────────────────────────────────────────┘
+```
+
+### 3.2 Profile Management Section
+**CRUD Operations:**
+- **Create Profile** [➕]: Opens new profile dialog with name validation
+- **Clone Profile** [📋]: Copies current profile to new name
+- **Delete Profile** [🗑]: Shows confirmation dialog
+- **Select Profile**: Dropdown with all available profiles
+- **Set Default**: Checkbox to auto-load on startup
+
+**Profile Fields:**
+```
+┌─────────────────────────────────────────────────────┐
+│ Profile Configuration                               │
+├─────────────────────────────────────────────────────┤
+│ Name: [My Workflow_______________] *Required        │
+│ Description: [Optional description text_______]     │
+│                                                     │
+│ Algorithm Defaults:                                 │
+│ ☑ Perceptual Hash (pHash)                          │
+│ ☑ Histogram Comparison                              │
+│ ☐ SHA-256 Identical File Detection                 │
+│                                                     │
+│ Default Threshold: [════════|══] 85%               │
+│                                                     │
+│ [Import Profile...] [Export Profile...]            │
+└─────────────────────────────────────────────────────┘
+```
+
+### 3.3 Pool Configuration Section
+```
+┌─────────────────────────────────────────────────────┐
+│ Pool Configuration                                  │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│ Pool Mode:                                         │
+│ ● Single Pool (find duplicates within)             │
+│ ○ Dual Pool (compare between pools)                │
+│                                                     │
+│ ┌─── Pool 1 (Primary) ─────────────────────────┐  │
+│ │ Include Directories:                         │  │
+│ │ [C:\Photos\2024________________] [Browse...] │  │
+│ │ [D:\Backup\Images_____________] [Browse...] │  │
+│ │ [________________________] [Add] [Remove]    │  │
+│ │                                               │  │
+│ │ Exclude Directories:                         │  │
+│ │ [C:\Photos\2024\temp__________] [Browse...] │  │
+│ │                                               │  │
+│ │ Include Patterns: *.jpg;*.png;*.heic         │  │
+│ │ Exclude Patterns: *_thumb.*;.*.              │  │
+│ └───────────────────────────────────────────────┘  │
+│                                                     │
+│ ┌─── Pool 2 (Target) ──────────────────────────┐  │
+│ │ ⚠️ Only available in Dual Pool mode           │  │
+│ └───────────────────────────────────────────────┘  │
+│                                                     │
+│ ☐ Inverse Mode (show Pool 1 files with no match)  │
+│                                                     │
+│ [Preview Effective Paths...]                       │
+└─────────────────────────────────────────────────────┘
+```
+
+### 3.4 File Identity Detection Section
+```
+┌─────────────────────────────────────────────────────┐
+│ File Identity Detection                            │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│ Hash Algorithm: [SHA-256 (Recommended) ▼]          │
+│                                                     │
+│ ☑ Enable Staged Hashing (Recommended)              │
+│   │                                                 │
+│   ├─ Pre-filter by file size                      │
+│   ├─ Partial hash size: [256] KB per end          │
+│   └─ Full hash only for candidates                │
+│                                                     │
+│ Cache Invalidation Triggers:                       │
+│ ☑ File path changed                                │
+│ ☑ File size changed                                │
+│ ☑ Modification time changed                        │
+│ ☑ Inode changed (where available)                  │
+│                                                     │
+│ [Test Hash Settings...]                            │
+└─────────────────────────────────────────────────────┘
+```
+
+### 3.5 Settings Validation Features
+
+#### 3.5.1 Path Validation Dialog
+```
+┌─────────────────────────────────────────────────────┐
+│         Path Validation Results                    │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│ ✅ C:\Photos\2024 (5,234 files)                    │
+│ ✅ D:\Backup\Images (2,156 files)                  │
+│ ⚠️ E:\OldPhotos (not accessible)                   │
+│ ❌ F:\Missing (path does not exist)                │
+│                                                     │
+│ Total accessible files: 7,390                      │
+│ Total size: 45.6 GB                               │
+│                                                     │
+│ [Fix Issues] [Ignore Warnings] [OK]               │
+└─────────────────────────────────────────────────────┘
+```
+
+#### 3.5.2 Hash Settings Test Dialog
+```
+┌─────────────────────────────────────────────────────┐
+│        Test Hash Settings                          │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│ Testing on 10 sample files...                      │
+│                                                     │
+│ ████████████████████████ 100%                      │
+│                                                     │
+│ Results:                                           │
+│ ├─ Average hash time: 0.23s per file              │
+│ ├─ Partial hash saved: 78% of time                │
+│ ├─ Memory usage: 12 MB peak                       │
+│ └─ No hash collisions detected                    │
+│                                                     │
+│ Recommendation: Current settings are optimal ✅     │
+│                                                     │
+│ [View Details] [Run Again] [Close]                │
+└─────────────────────────────────────────────────────┘
+```
+
+#### 3.5.3 Preview Effective Paths Dialog
+```
+┌─────────────────────────────────────────────────────┐
+│      Preview Effective File List                   │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│ After applying includes/excludes:                  │
+│                                                     │
+│ Pool 1: 5,234 files                               │
+│ ├─ C:\Photos\2024\IMG_001.jpg                     │
+│ ├─ C:\Photos\2024\IMG_002.jpg                     │
+│ ├─ C:\Photos\2024\vacation\DSC_001.jpg            │
+│ └─ ... (showing first 100)                        │
+│                                                     │
+│ Pool 2: 2,156 files                               │
+│ ├─ D:\Backup\Images\2023\photo1.jpg               │
+│ └─ ... (showing first 100)                        │
+│                                                     │
+│ Excluded: 423 files                               │
+│                                                     │
+│ [Export List...] [Refresh] [Close]                │
+└─────────────────────────────────────────────────────┘
+```
+
+### 3.6 Settings GUI Behaviors
+
+#### Profile Management Behaviors:
+1. **Create New Profile**:
+   - Validate name is unique
+   - Cannot use reserved characters
+   - Optionally clone from existing profile
+
+2. **Delete Profile**:
+   - Show confirmation dialog
+   - Cannot delete default profile while it's active
+   - Warn if profile has recent scan sessions
+
+3. **Set as Default**:
+   - Only one profile can be default
+   - Default profile loads on application startup
+   - Visual indicator (star icon) for default profile
+
+#### Validation Behaviors:
+1. **On Save**:
+   - Validate all paths exist
+   - Warn about inaccessible paths
+   - Check disk space for cache requirements
+
+2. **Real-time Feedback**:
+   - Red border for invalid fields
+   - Tooltips with validation errors
+   - Enable/disable Save based on validity
+
+3. **Test Functions**:
+   - Non-blocking test operations
+   - Show progress during tests
+   - Provide actionable recommendations
+
+## 4. User Workflows
+
+### 4.1 Basic Duplicate Scan Workflow
 1. **Launch**: User opens application
 2. **Select**: Drag folder to file panel or click "Add Folder"
 3. **Configure**: Click "New Scan" (uses default settings in basic mode)
@@ -484,3 +689,201 @@ After scanning:
 2. Are screen readers supported?
 3. Is contrast sufficient?
 4. Are targets large enough?
+## 13. Settings/Profile Manager
+
+Status: Planned
+
+Purpose
+- Provide a first-launch and every-launch modal manager to create, copy, edit, delete, search, and select an active settings profile before proceeding to the main application UI.
+- Guarantee that the application runs with a valid, explicitly chosen active profile, reducing ambiguity and preventing misconfigured scans.
+
+Startup Modal Behavior
+- The Settings/Profile Manager is shown as a blocking modal on application startup before creating the main window.
+- The application continues only after a valid active profile is created/selected and saved.
+- If the dialog is canceled while no active profile exists (fresh install, zero profiles), the application exits immediately.
+- If the dialog is canceled but an active profile exists, policy is to still exit to enforce explicit confirmation each run (canonical decision; see [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:1)).
+
+References
+- Application bootstrap: [img_app/img_app/app.py](img_app/img_app/app.py:1)
+- Configuration manager: [src/pk_py_lib/core/configuration.py](src/pk_py_lib/core/configuration.py:1)
+- Profile switching: [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399)
+- Proposed profile API: [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
+- Proposed profile core: [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1)
+- Proposed GUI dialog: [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1)
+- App integration widget: [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
+
+13.1 User Flows
+
+A) Zero Profiles (first launch)
+1) Show modal Settings/Profile Manager.
+2) Display empty-state on List pane with CTA Create Profile.
+3) Launch inline create form on Detail pane (name required). Validation: unique, 1–64 chars, allowed: letters, numbers, spaces, hyphen, underscore.
+4) On Save:
+   - Persist profile
+   - Set as Active
+   - Optionally Set as Default
+5) Continue button becomes enabled. User clicks Continue to proceed to main app.
+
+B) Existing Profiles, none Active (meta.active_profile_id missing)
+1) Show modal with profiles listed, none Active indicated.
+2) Require selection or creation; Continue disabled until a valid Active is set.
+3) User can:
+   - Select a profile and press Set Active → Continue enabled
+   - Create new or Copy existing → edit fields → Save → Set Active → Continue
+4) Press Continue to proceed.
+
+C) Existing Active Profile
+1) Show modal with the currently Active profile pre-selected and Continue enabled.
+2) User may:
+   - Press Continue immediately to proceed
+   - Manage profiles: edit, copy, delete (subject to constraints)
+   - Change Active to a different profile, then Continue
+
+D) Edit Profile
+- Edit fields in Detail pane with live validation.
+- Save applies changes; unsaved changes prompt on navigation away or dialog close.
+
+E) Delete Profile
+- Require confirmation.
+- Disallow deleting Active profile; require switching Active first.
+- Disallow deleting the last remaining profile; require creating a replacement first.
+
+F) Copy Profile
+- Copy creates New Profile with fields cloned; prompts for unique name; focuses Detail pane for edits.
+
+13.2 Layout and Interaction
+
+Two-pane list/detail layout with global toolbar:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Settings Profiles                                                     [X]    │
+├───────────────┬──────────────────────────────────────────────────────────────┤
+│ Profiles      │ Details                                                      │
+│ ───────────── │ ──────────────────────────────────────────────────────────── │
+│ [🔎 Search]   │ Profile Info                                                 │
+│ ┌───────────┐ │ Name: [__________________________] *                        │
+│ │★ Default  │ │ Description: [______________________________]               │
+│ │● Active   │ │                                                             │
+│ │  Default  │ │ Options                                                     │
+│ │           │ │ ☐ Set as default    ⦿ Set active                            │
+│ │  Travel   │ │                                                             │
+│ │  Studio   │ │ Algorithm Defaults                                          │
+│ │  Archive  │ │ [ phash ☑ ] [ histogram ☑ ] [ feature ☐ ]                   │
+│ └───────────┘ │ Threshold: [═══════|═══] 85%                                │
+│ [New][Copy]   │                                                             │
+│ [Delete]      │ Paths                                                       │
+│               │ Pool mode: [ Single ▼ ]   ☐ Inverse (dual only)             │
+│               │ Pool 1 include dirs: [ .. ] [+] [−]                         │
+│               │ Excludes: [ .. ]                                            │
+│               │                                                             │
+│               │ [Validate Paths] [Preview Effective] [Test Hash Settings]    │
+│               │                                                             │
+│               │ [Cancel] [Apply] [Continue ▶]                                │
+├───────────────┴──────────────────────────────────────────────────────────────┤
+│ Status: Ready                                                                │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+Left List Pane
+- Search/filter updates list dynamically (case-insensitive substring on name and description).
+- Badges:
+  - ★ indicates Default profile (is_default=1)
+  - ● indicates Active profile (matches meta.active_profile_id)
+- Actions:
+  - New: opens a blank Detail form (or template chooser if extended later)
+  - Copy: clones selected into Detail form with editable name
+  - Delete: deletes selected profile (confirmation), disabled for Active or only remaining profile
+
+Right Detail Pane
+- Editable fields with live validation and inline errors.
+- Options:
+  - Set active: marks this as the Active profile (writes meta.active_profile_id and [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399))
+  - Set as default: toggles profiles.is_default (exclusive)
+- Validation utilities:
+  - Validate Paths: checks existence/access and counts files (non-blocking UX with progress)
+  - Preview Effective: shows effective include/exclude results with a cap (100 items)
+  - Test Hash Settings: runs quick test against sample files
+- Buttons:
+  - Cancel: aborts and exits app (startup policy)
+  - Apply: saves changes but stays in dialog
+  - Continue: enabled only when there is a valid Active profile
+
+13.3 UI States and Rules
+
+Button/Control States
+- Continue enabled when: Active profile exists and all required fields in the currently edited profile (if it is Active) are valid.
+- Delete disabled when:
+  - The selected profile is Active; or
+  - Only one profile exists.
+- Set active disabled when current edits are invalid; enabled once validation passes.
+- Set as default toggles exclusivity; changes are persisted on Apply/Continue.
+- Apply disabled if no changes; enabled when dirty.
+
+Validation Rules
+- Name: required; unique (case-insensitive); 1–64 chars; allowed [A–Z a–z 0–9 _ - and space].
+- Threshold: 0–100 UI percent maps to 0.0–1.0 internal (see [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:148) and [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1)).
+- Paths: warn if missing/inaccessible; do not block saving unless strict mode is enabled.
+- Default/Active:
+  - Exactly one Default profile can exist (is_default=1).
+  - Exactly one Active profile at a time, stored under meta.active_profile_id (see decisions).
+  - Converting Default does not implicitly change Active; user must explicitly Set active.
+
+Non-destructive Behaviors
+- Edits are local until Apply/Continue.
+- Delete uses confirmation; cannot delete Active nor last profile.
+- Copy produces a distinct profile; original unmodified.
+
+13.4 Event and State Flows
+
+Startup flow (modal first)
+```mermaid
+flowchart TD
+  A[App launch] --> B[Initialize DatabaseManager]
+  B --> C[Initialize ConfigurationManager]
+  C --> D[Show Settings/Profile Manager modal]
+  D --> E{User action}
+  E -->|Create profile| F[Persist profile; set Active]
+  E -->|Select profile| G[Set Active]
+  E -->|Edit profile| H[Validate then Apply]
+  E -->|Cancel| X[Exit application]
+  F --> I[Continue enabled]
+  G --> I
+  H --> D
+  I --> J[Close modal]
+  J --> K[Create MainWindow and proceed]
+```
+
+Top-level interactions
+```mermaid
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Editing : Select or New or Copy
+  Editing --> Validating : Apply or Continue
+  Validating --> Idle : Success
+  Validating --> Editing : Errors shown
+  Idle --> Exiting : Cancel
+```
+
+13.5 Rationale
+
+- Enforcing an explicit Active profile reduces configuration drift and enables deterministic processing.
+- Separation of Default vs Active:
+  - Default is a preference for future runs.
+  - Active is the current session’s explicitly chosen profile.
+- Modal-first design ensures dependent subsystems (cache size, hashing policy, UI defaults) can be initialized according to the chosen profile before the main window initializes. See bootstrap notes in [img_app/img_app/app.py](img_app/img_app/app.py:60) and DB init via [DatabaseManager.initialize()](src/pk_py_lib/core/database.py:405).
+
+13.6 Accessibility and Keyboarding
+
+- Full keyboard access:
+  - Tab order from List to Detail fields to action buttons.
+  - List selection with Arrow keys; Enter focuses Detail name field.
+  - Shortcuts: Alt+N New, Alt+C Copy, Alt+D Delete, Alt+A Apply, Alt+K Continue, Esc Cancel.
+- Screen reader labels on all form inputs and buttons; meaningful ARIA-like descriptions.
+
+13.7 Next Steps
+- Implement reusable dialog widget [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1) with the two-pane layout and behaviors described.
+- Implement library core [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1) to encapsulate profile CRUD, validation, meta.active_profile_id, and default handling.
+- Implement API adapter [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1) with methods documented in API specs.
+- Integrate dialog at startup in [img_app/img_app/app.py](img_app/img_app/app.py:60) prior to creating the main window.
+- Add tests using pytest-qt for dialog behaviors (zero profiles, active selection, delete constraints).

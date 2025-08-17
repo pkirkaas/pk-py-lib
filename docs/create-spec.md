@@ -25,7 +25,9 @@
 - It will use the latest Python 13+, PySide6, and additional supporting libraries/packages
 - The appearance/layout is a standard GUI application - title bar, menu bar, GUI main window interface
 - The application will be highly configurable/customizable, and provide support for saving multiple configurations/settings/profiles.
-- sqlite is a potential settings/configuration store, but suggest alternative approaches
+- Use SQLite for persistent data across three databases: settings.db, sessions.db, and cache.db; each contains a meta table with schema_version and participates in managed migrations (Alembic) with timestamped backups (retain 10 most recent, purge older than 30 days).
+- Use platformdirs for data locations with Vendor "Pk" and App "Img App"; allow PK_IMG_APP_HOME to override the base directory for both data and cache trees. Place settings.db and sessions.db in user_data_dir, and cache.db plus thumbnails under user_cache_dir.
+- On startup, validate databases with PRAGMA quick_check (then integrity_check on failure); rebuild flows: preserve/export settings where possible for settings.db, prompt rebuild/repair for sessions.db, and auto-rebuild cache.db.
 
 ### Image File Selection
 
@@ -43,7 +45,7 @@
 - The app provides a GUI image file selector that allows the user to select a set of image files/folders to search/compare/group for similar images
 - The app will also offer the option to choose two sets of image files - the first as a reference set, the second the files to search for similar images to those in the first set
 - The app will support/provide multiple image comparison algorithms/methods, such as pHash, dHash, etc. Future methods will include AI LLMs
-- The app will allow the user to specify the degree/threshold of similarity, from 0-100%
+- The app will allow the user to specify the degree/threshold of similarity, shown in the UI as 0-100% (internally stored as 0.0-1.0 per canonical convention)
 - When the image sets are selected, the user will initiate the similarity search
 - The result of the similarity search will present groups of similar images within the threshold.
 - The left side of the results pane will contain the groups. Each group will have a group header, & list all files within the group, with full path, file size, resolution, modification date, & similarity score.
@@ -52,18 +54,25 @@
 - The results pane will provide a "Delete Now" button to delete the selected files
 
 ### Caching Strategy
-- Image thumbnails cached in app data folder
+- Image thumbnails cached in the application cache folder (platformdirs user_cache_dir or PK_IMG_APP_HOME/cache)
+- Thumbnails stored as files under cache/thumbnails/{size}/; the database stores metadata and relative paths
 - Maximum cache size user configurable, initial/default size 5GB
-- Cache invalidation by file size/modification date
+- Cache invalidation by absolute_path, file_size, mtime_ns (nanoseconds), and inode (where available)
 - Thumbnails on demand
 - Provide user options to clear cache & clean/verify/validate cache
 
 ### Database Schema Approach
-- Use sqlite for persistent data
-- Use different sqlite DBs for caching/image data, and for user settings/configurations
+- Use SQLite for persistent data with three databases: settings.db, sessions.db, cache.db
+- Data locations via platformdirs (Vendor "Pk", App "Img App"); support PK_IMG_APP_HOME override
+- Each database contains a meta table with schema_version
+- On startup run PRAGMA quick_check; if it fails run PRAGMA integrity_check; if corrupt:
+  - settings.db: attempt to export/preserve settings then rebuild
+  - sessions.db: prompt to rebuild or attempt repair
+  - cache.db: safe to auto-rebuild
+- Implement Alembic migrations on schema_version mismatch; create timestamped backup before migrating
+- Backup retention: keep 10 most recent per database; purge backups older than 30 days
+- File identity strategy: robust move/rename detection using SHA-256 content hash and, where available, (device, inode); do not treat moved/renamed files as new when content hash matches
 - Image file paths are absolute, not relative
-- For simplicity, Moved/renamed files are considered new - create new cache data
-- Implement version migration strategy for schema updates
 
 ### Memory Management
 - Use lazy loading for large result sets

@@ -6,7 +6,7 @@ File-backed CacheManager for thumbnails and small cached artifacts.
 Design decisions (canonical):
 - Default cache dir: caller-provided. Canonical per-OS defaults are documented in
   `docs/roo/canonical-decisions.md`.
-- Default max size: 5.0 GB (configurable).
+- Default max size: 5120 MB (configurable).
 - Thumbnails stored as files:
     cache_dir/
       thumbnails/
@@ -46,7 +46,7 @@ class CacheManager:
 
     Usage example
     -------------
-    >>> cm = CacheManager(Path.home() / ".kdc_cache", max_size_gb=5.0)
+    >>> cm = CacheManager(Path.home() / ".kdc_cache", max_size_mb=5120)
     >>> data = cm.get_thumbnail(Path("/photos/img.jpg"), 256)
     >>> if data is None:
     ...     thumb_bytes = generate_thumbnail_bytes(...)  # external
@@ -54,11 +54,11 @@ class CacheManager:
     """
 
     # Default policy constants
-    DEFAULT_MAX_SIZE_GB = 5.0
+    DEFAULT_MAX_SIZE_MB = 5120  # 5 GB = 5120 MB
     CLEANUP_ON_SIZE_PERCENT = 0.90  # start cleanup when 90% full
     EVICTION_BATCH_SIZE = 50  # delete up to this many files per cleanup pass
 
-    def __init__(self, cache_dir: Path, max_size_gb: float = DEFAULT_MAX_SIZE_GB, jpeg_quality: int = 85):
+    def __init__(self, cache_dir: Path, max_size_mb: int = DEFAULT_MAX_SIZE_MB, jpeg_quality: int = 85):
         """
         Initialize CacheManager.
 
@@ -66,14 +66,14 @@ class CacheManager:
         ----------
         cache_dir : Path
             Base directory where cache data will be stored.
-        max_size_gb : float
-            Maximum cache size in gigabytes.
+        max_size_mb : int
+            Maximum cache size in megabytes (default: 5120 MB = 5 GB).
         jpeg_quality : int
             Default JPEG quality used when generating thumbnails (informational).
         """
         self.cache_dir = Path(cache_dir).expanduser().resolve()
         self.thumb_base = self.cache_dir / "thumbnails"
-        self.max_size_bytes = int(max_size_gb * 1024 * 1024 * 1024)
+        self.max_size_bytes = int(max_size_mb * 1024 * 1024)
         self.jpeg_quality = int(jpeg_quality)
 
         # Ensure directories exist
@@ -170,14 +170,16 @@ class CacheManager:
         Returns
         -------
         Dict[str, Any]
-            Dictionary containing total_size_bytes, thumbnail_count, max_size_bytes.
+            Dictionary containing total_size_bytes, total_size_mb, thumbnail_count, max_size_bytes, max_size_mb.
         """
         total_size = self._get_total_cache_size()
         thumb_count = sum(1 for _ in self.thumb_base.rglob("*") if _.is_file())
         return {
             "total_size_bytes": total_size,
+            "total_size_mb": total_size / (1024 * 1024),
             "thumbnail_count": thumb_count,
             "max_size_bytes": self.max_size_bytes,
+            "max_size_mb": self.max_size_bytes / (1024 * 1024),
             "used_percent": (total_size / self.max_size_bytes) * 100.0 if self.max_size_bytes > 0 else 0.0,
         }
 

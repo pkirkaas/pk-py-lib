@@ -54,6 +54,7 @@ class ApplicationManager:
     
     Responsibilities:
     - Application initialization and shutdown
+    - Database validation and migration
     - Component registration and dependency injection
     - Global event bus management
     - Cross-component communication
@@ -66,12 +67,85 @@ class ApplicationManager:
         self.processing_engine: ProcessingEngine
         self.profile_manager: ProfileManager
         self.event_bus: EventBus
+        self.data_locations: DataLocations
         
     def initialize(self) -> None:
-        """Initialize all application components in correct order."""
+        """Initialize all application components in correct order.
+        
+        Startup sequence:
+        1. Initialize data locations (platformdirs or PK_IMG_APP_HOME)
+        2. Check/create required databases
+        3. Validate database integrity (PRAGMA checks)
+        4. Run schema migrations if needed
+        5. Load application settings
+        6. Initialize cache manager
+        7. Load default profile
+        8. Initialize processing engine
+        """
+        # Setup data locations
+        self.data_locations = DataLocations()
+        
+        # Database initialization and validation
+        self.database_manager = DatabaseManager(self.data_locations)
+        self.database_manager.initialize_databases()
+        
+        # Load configuration
+        self.config_manager = ConfigurationManager(self.database_manager)
+        app_settings = self.config_manager.get_app_settings()
+        
+        # Initialize cache with configured size
+        self.cache_manager = CacheManager(
+            self.data_locations.cache_dir,
+            max_size_mb=app_settings.cache_size_mb
+        )
+        
+    def startup_validation(self) -> ValidationResult:
+        """Perform comprehensive startup validation.
+        
+        Checks:
+        - Database existence and integrity
+        - Schema version compatibility
+        - Required directories writable
+        - Sufficient disk space for cache
+        """
         
     def shutdown(self) -> None:
         """Graceful shutdown with resource cleanup."""
+
+class DataLocations:
+    """Manages application data directory locations.
+    
+    Uses platformdirs for cross-platform paths, with PK_IMG_APP_HOME override.
+    
+    Vendor: "Pk"
+    Application: "Img App"
+    """
+    
+    def __init__(self):
+        import os
+        from platformdirs import user_data_dir, user_cache_dir
+        
+        # Check for environment override
+        base_dir = os.environ.get('PK_IMG_APP_HOME')
+        
+        if base_dir:
+            self.data_dir = Path(base_dir) / "data"
+            self.cache_dir = Path(base_dir) / "cache"
+        else:
+            self.data_dir = Path(user_data_dir("Img App", "Pk"))
+            self.cache_dir = Path(user_cache_dir("Img App", "Pk"))
+            
+        self.settings_db = self.data_dir / "settings.db"
+        self.sessions_db = self.data_dir / "sessions.db"
+        self.cache_db = self.cache_dir / "cache.db"
+        self.backups_dir = self.data_dir / "backups"
+        self.thumbnails_dir = self.cache_dir / "thumbnails"
+        
+        # Ensure directories exist
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.backups_dir.mkdir(exist_ok=True)
+        self.thumbnails_dir.mkdir(exist_ok=True)
 ```
 
 #### 2.1.2 Configuration Manager
@@ -79,29 +153,79 @@ class ApplicationManager:
 class ConfigurationManager:
     """
     Manages all application configuration and settings.
-    
-    Storage: SQLite database (settings.db)
-    
-    Configuration Categories:
-    - Application settings (window state, theme, language)
-    - Algorithm configurations (thresholds, parameters)
-    - Performance settings (thread count, memory limits)
-    - User preferences (shortcuts, defaults)
-    """
-    
-    def get_setting(self, key: str, default: Any = None) -> Any:
-        """Retrieve configuration value with fallback."""
-        
-    def set_setting(self, key: str, value: Any) -> None:
-        """Update configuration value with validation."""
-        
-    def load_profile(self, profile_name: str) -> None:
-        """Load complete configuration profile."""
-        
-    def export_profile(self, path: Path) -> None:
-        """Export current configuration to file."""
-```
 
+    Storage: SQLite database (settings.db)
+
+    Configuration Categories:
+    - Application settings (app_settings: window state, theme, language, performance)
+    - Profile-scoped settings (named Profile entries: algorithm defaults, file-handling, history)
+    - Algorithm configurations (presets, thresholds, parameters)
+    - Runtime/transient overrides (in-memory session values)
+    """
+
+    def get_setting(
+        self,
+        key: str,
+        default: Any = None,
+        scope: Optional[str] = "profile",
+        profile: Optional[str] = None
+    ) -> Any:
+        """
+        Retrieve configuration value with fallback.
+
+        Args:
+            key: Dot-separated setting key (e.g., "performance.max_threads")
+            default: Fallback value if not found
+            scope: "app" to read from the application-scoped AppSettings,
+                   "profile" to read a profile-scoped setting (default)
+            profile: When scope='profile', the profile name (defaults to current profile)
+
+        Returns:
+            The setting value or default if not found.
+        """
+
+    def set_setting(
+        self,
+        key: str,
+        value: Any,
+        scope: Optional[str] = "profile",
+        profile: Optional[str] = None,
+        persist: bool = True
+    ) -> None:
+        """
+        Update configuration value with validation.
+
+        Args:
+            key: Setting key
+            value: New value to set
+            scope: "app" or "profile"
+            profile: Profile name when scope='profile'
+            persist: If True, persist change to disk/storage; otherwise keep in-memory
+        """
+
+    def get_app_settings(self) -> "AppSettings":
+        """
+        Return the application-scoped AppSettings object.
+
+        The AppSettings object contains strongly-typed global fields such as
+        theme, language, ui_scale, max_threads, max_memory_mb and cache_size_mb.
+        """
+
+    def update_app_settings(self, updates: Dict[str, Any]) -> "AppSettings":
+        """
+        Apply a partial update to AppSettings, validate, persist, and return the
+        updated AppSettings instance.
+
+        Args:
+            updates: Mapping of AppSettings field names to new values.
+        """
+
+    def load_profile(self, profile_name: str) -> "Profile":
+        """Load complete profile configuration into memory and apply as active."""
+
+    def export_profile(self, path: Path) -> None:
+        """Export the currently active profile to a file (JSON)."""
+```
 ### 2.2 Processing Engine (`img_app/processing/`)
 
 #### 2.2.1 Similarity Detection Engine
@@ -176,16 +300,210 @@ class HistogramAlgorithm(BaseAlgorithm):
 
 ### 2.3 Data Management (`img_app/data/`)
 
-#### 2.3.1 Database Schema
+#### 2.3.1 Database Manager
+```python
+class DatabaseManager:
+    """Manages all database operations and lifecycle.
+    
+    Responsibilities:
+    - Database creation and initialization
+    - Integrity checking (PRAGMA quick_check, integrity_check)
+    - Schema migration via Alembic
+    - Backup management
+    - Transaction coordination
+    """
+    
+    def __init__(self, data_locations: DataLocations):
+        self.locations = data_locations
+        self.settings_db: Optional[Connection] = None
+        self.sessions_db: Optional[Connection] = None
+        self.cache_db: Optional[Connection] = None
+        
+    def initialize_databases(self) -> None:
+        """Initialize all databases with validation and migration.
+        
+        For each database:
+        1. Check if exists, create if not
+        2. Run PRAGMA quick_check
+        3. If check fails, run integrity_check
+        4. If corrupt, prompt for rebuild
+        5. Check schema version
+        6. Run migrations if needed
+        """
+        for db_path, db_type in [
+            (self.locations.settings_db, "settings"),
+            (self.locations.sessions_db, "sessions"),
+            (self.locations.cache_db, "cache")
+        ]:
+            self._initialize_database(db_path, db_type)
+            
+    def _initialize_database(self, db_path: Path, db_type: str) -> None:
+        """Initialize a single database."""
+        if not db_path.exists():
+            self._create_database(db_path, db_type)
+        else:
+            # Validate existing database
+            if not self._validate_database(db_path):
+                self._handle_corrupt_database(db_path, db_type)
+            
+            # Check and run migrations
+            if self._needs_migration(db_path):
+                self._migrate_database(db_path)
+                
+    def _validate_database(self, db_path: Path) -> bool:
+        """Run PRAGMA checks on database.
+        
+        Returns True if healthy, False if corrupt.
+        """
+        conn = sqlite3.connect(db_path)
+        try:
+            # Quick check first
+            result = conn.execute("PRAGMA quick_check").fetchone()
+            if result[0] != "ok":
+                # Try full integrity check
+                result = conn.execute("PRAGMA integrity_check").fetchone()
+                return result[0] == "ok"
+            return True
+        finally:
+            conn.close()
+            
+    def _migrate_database(self, db_path: Path) -> None:
+        """Run Alembic migrations with backup."""
+        # Create backup first
+        backup_path = self._backup_database(db_path)
+        
+        try:
+            # Run Alembic migrations
+            from alembic import command
+            from alembic.config import Config
+            
+            alembic_cfg = Config()
+            alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+            command.upgrade(alembic_cfg, "head")
+            
+            # Clean up old backups
+            self._cleanup_old_backups()
+        except Exception as e:
+            # Restore from backup on failure
+            self._restore_backup(backup_path, db_path)
+            raise
+            
+    def _backup_database(self, db_path: Path) -> Path:
+        """Create timestamped backup of database.
+        
+        Format: {db_name}.{ISO_timestamp}.v{schema_version}
+        """
+        from datetime import datetime
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        version = self._get_schema_version(db_path)
+        backup_name = f"{db_path.stem}.{timestamp}.v{version}"
+        backup_path = self.locations.backups_dir / backup_name
+        
+        import shutil
+        shutil.copy2(db_path, backup_path)
+        
+        return backup_path
+        
+    def _cleanup_old_backups(self) -> None:
+        """Remove backups per retention policy.
+        
+        Policy:
+        - Keep 10 most recent backups per database
+        - Purge backups older than 30 days
+        """
+        from datetime import datetime, timedelta
+        
+        cutoff_date = datetime.now() - timedelta(days=30)
+        
+        # Group backups by database
+        backups_by_db = {}
+        for backup in self.locations.backups_dir.glob("*.v*"):
+            db_name = backup.stem.split(".")[0]
+            if db_name not in backups_by_db:
+                backups_by_db[db_name] = []
+            backups_by_db[db_name].append(backup)
+            
+        # Apply retention policy
+        for db_name, backups in backups_by_db.items():
+            # Sort by modification time
+            backups.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            
+            # Keep 10 most recent
+            for backup in backups[10:]:
+                backup.unlink()
+                
+            # Remove old backups
+            for backup in backups:
+                if datetime.fromtimestamp(backup.stat().st_mtime) < cutoff_date:
+                    backup.unlink()
+```
+
+#### 2.3.2 Database Schema
 ```sql
 -- settings.db schema
 
+-- Settings profiles table
 CREATE TABLE profiles (
-    id INTEGER PRIMARY KEY,
+    id TEXT PRIMARY KEY,  -- UUID
     name TEXT UNIQUE NOT NULL,
+    description TEXT,
     is_default BOOLEAN DEFAULT FALSE,
+    profile_version TEXT DEFAULT '1.0.0',
+    
+    -- Pool configuration
+    pool_mode TEXT NOT NULL DEFAULT 'single',
+    inverse_mode BOOLEAN DEFAULT FALSE,
+    
+    -- File identity detection
+    hash_algo TEXT DEFAULT 'sha256',
+    staged_hashing BOOLEAN DEFAULT TRUE,
+    partial_hash_size_kb INTEGER DEFAULT 256,
+    
+    -- Algorithm defaults
+    default_algorithms JSON,
+    default_threshold REAL DEFAULT 0.85,
+    algorithm_presets JSON,
+    
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CHECK (pool_mode IN ('single', 'dual')),
+    CHECK (default_threshold BETWEEN 0.0 AND 1.0)
+);
+
+-- Path configurations for profiles
+CREATE TABLE profile_paths (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id TEXT NOT NULL,
+    pool_number INTEGER NOT NULL,  -- 1 or 2
+    include_dirs JSON,
+    exclude_dirs JSON,
+    include_globs JSON,
+    exclude_globs JSON,
+    follow_symlinks BOOLEAN DEFAULT FALSE,
+    
+    FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+    UNIQUE(profile_id, pool_number),
+    CHECK (pool_number IN (1, 2))
+);
+
+-- App settings (single-row) table: global, typed fields for UI and performance
+CREATE TABLE app_settings (
+    id INTEGER PRIMARY KEY,
+    theme TEXT DEFAULT 'light',
+    language TEXT DEFAULT 'en',
+    ui_scale REAL DEFAULT 1.0,
+    max_threads INTEGER DEFAULT 4,
+    max_memory_mb INTEGER DEFAULT 2048,
+    cache_size_mb INTEGER DEFAULT 5120,
+    window_geometry JSON,
+    panel_layout JSON,
+    shortcuts JSON,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (theme IN ('light', 'dark', 'auto')),
+    CHECK (ui_scale BETWEEN 0.5 AND 3.0)
 );
 
 CREATE TABLE settings (
@@ -206,28 +524,75 @@ CREATE TABLE operation_history (
     is_undone BOOLEAN DEFAULT FALSE
 );
 
+-- Meta table for schema versioning (in all databases)
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    notes TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Initialize schema version (required on database creation)
+INSERT OR IGNORE INTO meta (key, value, notes)
+VALUES ('schema_version', '1.0.0', 'Initial schema version');
+
 -- cache.db schema
 
 CREATE TABLE image_metadata (
     id INTEGER PRIMARY KEY,
     file_path TEXT UNIQUE NOT NULL,
+    file_name TEXT NOT NULL,
     file_size INTEGER NOT NULL,
     file_modified TIMESTAMP NOT NULL,
+    file_created TIMESTAMP,
+    
+    -- File identity and hashing
+    file_hash_sha256 TEXT,          -- Full SHA-256 hash
+    partial_hash_sha256 TEXT,       -- Partial hash for staged comparison
+    file_inode INTEGER,              -- Inode (where available)
+    file_device INTEGER,             -- Device ID (where available)
+    hash_computed_at TIMESTAMP,
+    mtime_ns INTEGER,                -- Modification time in nanoseconds
+    
+    -- Image properties
     width INTEGER,
     height INTEGER,
     format TEXT,
+    color_mode TEXT,
+    bit_depth INTEGER,
+    
+    -- Metadata
     exif_data JSON,
-    file_hash TEXT,
-    last_scanned TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    camera_make TEXT,
+    camera_model TEXT,
+    lens_model TEXT,
+    date_taken TIMESTAMP,
+    gps_latitude REAL,
+    gps_longitude REAL,
+    
+    last_scanned TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    scan_version TEXT,
+    is_valid BOOLEAN DEFAULT TRUE
 );
+
+-- Indexes for file identity lookups
+CREATE INDEX idx_metadata_sha256 ON image_metadata(file_hash_sha256);
+CREATE INDEX idx_metadata_partial ON image_metadata(partial_hash_sha256);
+CREATE INDEX idx_metadata_inode ON image_metadata(file_inode, file_device);
+CREATE INDEX idx_metadata_size ON image_metadata(file_size);
 
 CREATE TABLE thumbnails (
     id INTEGER PRIMARY KEY,
     image_id INTEGER REFERENCES image_metadata(id),
-    size INTEGER NOT NULL,  -- 256, 512, 1024
+    size INTEGER NOT NULL,
     thumbnail_data BLOB NOT NULL,
+    format TEXT DEFAULT 'JPEG',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(image_id, size)
+    last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    access_count INTEGER DEFAULT 0,
+    FOREIGN KEY (image_id) REFERENCES image_metadata(id) ON DELETE CASCADE,
+    UNIQUE(image_id, size),
+    CHECK (size IN (256, 512, 1024))
 );
 
 CREATE TABLE similarity_cache (
@@ -243,52 +608,125 @@ CREATE TABLE similarity_cache (
 CREATE TABLE scan_sessions (
     id INTEGER PRIMARY KEY,
     profile_id INTEGER,
-    scan_type TEXT NOT NULL,  -- 'single_set', 'dual_set'
-    configuration JSON NOT NULL,
+    name TEXT,
+    scan_type TEXT NOT NULL,
+    source_paths JSON NOT NULL,
+    reference_paths JSON,
+    algorithms JSON NOT NULL,
+    threshold REAL NOT NULL,
+    algorithm_params JSON,
+    total_images INTEGER,
+    processed_images INTEGER DEFAULT 0,
+    groups_found INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending',
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     completed_at TIMESTAMP,
-    status TEXT NOT NULL  -- 'running', 'completed', 'cancelled', 'error'
+    duration REAL,
+    error_message TEXT,
+    CHECK (scan_type IN ('single_set', 'dual_set')),
+    CHECK (status IN ('pending', 'running', 'completed', 'cancelled', 'error')),
+    CHECK (threshold BETWEEN 0.0 AND 1.0)
 );
 
 CREATE TABLE scan_results (
-    id INTEGER PRIMARY KEY,
-    session_id INTEGER REFERENCES scan_sessions(id),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
     group_id INTEGER NOT NULL,
-    image_id INTEGER REFERENCES image_metadata(id),
-    similarity_score REAL,
-    is_reference BOOLEAN DEFAULT FALSE
+    image1_id INTEGER NOT NULL,
+    image2_id INTEGER NOT NULL,
+    overall_score REAL NOT NULL,
+    algorithm_scores JSON,
+    is_reference BOOLEAN DEFAULT FALSE,
+    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES scan_sessions(id) ON DELETE CASCADE
 );
 ```
 
-#### 2.3.2 Cache Manager
+#### 2.3.3 Cache Manager
 ```python
 class CacheManager:
     """
     Manages thumbnail and result caching with size limits.
     
     Features:
+    - File-backed thumbnail storage
+    - SHA-256 hash caching (full and partial)
     - LRU eviction policy
     - Configurable size limits
-    - Automatic cleanup
-    - Cache warming strategies
+    - Automatic cleanup at 90% capacity
+    - Cache invalidation on file changes
     """
     
-    def __init__(self, cache_dir: Path, max_size_gb: float = 5.0):
+    def __init__(self, cache_dir: Path, max_size_mb: int = 5120):
         self.cache_dir = cache_dir
-        self.max_size_bytes = max_size_gb * 1024 * 1024 * 1024
+        self.max_size_bytes = int(max_size_mb * 1024 * 1024)
         self.db_path = cache_dir / "cache.db"
+        self.thumbnails_dir = cache_dir / "thumbnails"
+        
+        # Staged hashing configuration
+        self.partial_hash_size = 256 * 1024  # 256KB per end
+        self.min_size_for_partial = 512 * 1024  # 512KB minimum
+        
+    def get_file_hash(self, file_path: Path, staged: bool = True) -> FileHashResult:
+        """Get cached or compute file hash.
+        
+        If staged=True and file >= 512KB:
+        1. Check cache for existing hashes
+        2. If not cached, compute partial hash (first/last 256KB)
+        3. Store partial hash in cache
+        4. Compute full SHA-256 only when needed for comparison
+        """
+        
+    def compute_staged_hash(self, file_path: Path) -> Tuple[str, str]:
+        """Compute staged SHA-256 hashes.
+        
+        Returns: (partial_hash, full_hash)
+        """
+        file_size = file_path.stat().st_size
+        
+        if file_size < self.min_size_for_partial:
+            # Small file: compute full hash directly
+            full_hash = self.compute_full_sha256(file_path)
+            return (None, full_hash)
+        else:
+            # Large file: compute partial first
+            partial_hash = self.compute_partial_sha256(file_path)
+            return (partial_hash, None)
+            
+    def compute_partial_sha256(self, file_path: Path) -> str:
+        """Compute SHA-256 of first and last 256KB."""
+        import hashlib
+        
+        hasher = hashlib.sha256()
+        with open(file_path, 'rb') as f:
+            # Hash first 256KB
+            hasher.update(f.read(self.partial_hash_size))
+            
+            # Hash last 256KB
+            f.seek(-self.partial_hash_size, 2)  # Seek from end
+            hasher.update(f.read(self.partial_hash_size))
+            
+        return hasher.hexdigest()
         
     def get_thumbnail(self, image_path: Path, size: int) -> Optional[QPixmap]:
-        """Retrieve cached thumbnail or None."""
+        """Retrieve cached thumbnail from file storage."""
+        cache_key = self.generate_cache_key(image_path)
+        thumbnail_path = self.thumbnails_dir / f"{size}x{size}" / f"{cache_key}.jpg"
         
-    def cache_thumbnail(self, image_path: Path, size: int, pixmap: QPixmap):
-        """Store thumbnail in cache with LRU management."""
-        
-    def get_similarity(self, path1: Path, path2: Path, algorithm: str) -> Optional[float]:
-        """Retrieve cached similarity score."""
+        if thumbnail_path.exists():
+            # Update access time in database
+            self.update_access_time(image_path, size)
+            return QPixmap(str(thumbnail_path))
+        return None
         
     def invalidate_file(self, image_path: Path):
-        """Invalidate all cache entries for modified file."""
+        """Invalidate cache entries when file signature changes.
+        
+        Invalidation triggers:
+        - File size changed
+        - mtime_ns changed
+        - inode changed (where available)
+        """
 ```
 
 ### 2.4 GUI Components (`img_app/gui/`)
@@ -687,3 +1125,109 @@ class PkPyLibAdapter:
     def adapt_widget(self, widget: QWidget) -> QWidget:
         """Adapt pk-py-lib widget for application."""
         return widget  # Add app-specific styling/behavior
+## 11. Settings Profiles Architecture
+
+Status: Planned
+
+Overview
+- Provide robust, reusable profile management across the library and application:
+  - Core persistence and active-profile semantics
+  - Thin API adapter surface for consumers
+  - Reusable GUI dialog for CRUD+copy+select with validation
+  - App startup modal integration to enforce a valid active profile before main UI creation
+
+Component Boundaries and Responsibilities
+- Library Core: [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1)
+  - Owns profile CRUD, name validation, set-active semantics, and coordination with [ConfigurationManager](src/pk_py_lib/core/configuration.py:1) for per-profile settings.
+  - Reads/writes to settings.db via [DatabaseManager](src/pk_py_lib/core/database.py:1).
+  - Ensures single default profile and maintains active profile in meta.
+- Library API: [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
+  - High-level API surface (list/create/update/delete/copy/set-active/get-active/validate) for app and other consumers.
+  - Returns structured results aligned with canonical API patterns in [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1).
+- Library GUI: [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1)
+  - Reusable modal dialog with a two-pane list/detail manager, validation, and search/filter.
+  - Emits selection/confirmation events; blocks until a valid active profile is confirmed or user cancels.
+- App Integration: [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
+  - Thin app-specific glue to launch the manager at startup and pass control to the main window only after success.
+  - Startup wiring in [img_app/img_app/app.py](img_app/img_app/app.py:60).
+
+Data Schema and Persistence
+- Database: settings.db (SQLite), created and managed by [DatabaseManager.initialize()](src/pk_py_lib/core/database.py:405).
+- Tables used (already present):
+  - profiles(id INTEGER PK, name UNIQUE, is_default BOOL, created_at, modified_at)
+  - settings(profile_id, category, key, value, type ...)
+  - meta(key TEXT PRIMARY KEY, value TEXT, notes, updated_at)
+- Canonical meta keys for profile management:
+  - active_profile_id: INTEGER → references profiles.id; determines the current active profile at startup
+  - last_profile_prompted_at: TEXT (ISO8601) → optional, for analytics/UX refinement (not required for MVP)
+- Default profile:
+  - Exactly one row in profiles with is_default=1 (enforced by core logic; exclusivity handled by core rather than DB constraints).
+- Active profile:
+  - Exactly one active profile at any time; persisted in meta.active_profile_id (INTEGER).
+  - On migration or missing key:
+    - If a default exists: set active_profile_id to default profile id
+    - Else: set to the lexicographically first profile
+    - Else (no profiles): require creation on startup via modal
+
+Validation and Naming
+- Name rules:
+  - Required, 1–64 characters
+  - Allowed: letters, digits, spaces, underscore, hyphen
+  - Uniqueness: case-insensitive unique across profiles
+- Reserved names: none required for MVP; may extend later (documented in decisions)
+- Threshold and other field validations follow canonical rules; e.g. thresholds (0.0–1.0 internal), see [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:148)
+
+CRUD + Copy Semantics
+- Create: validate name; new profile with defaults or cloned values (when base provided)
+- Update: partial field updates; name changes must preserve uniqueness
+- Delete: disallow if profile is Active; disallow deleting the last remaining profile
+- Copy: clone selected profile into a new one with a unique editable name
+- Set Active: update meta.active_profile_id; ensure ConfigurationManager aligns (e.g., [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399))
+- Set Default: toggle profiles.is_default with exclusivity
+
+Startup Integration Contract
+- The application must enforce a valid active profile before creating the main window.
+- Modal workflow:
+  1) Initialize DB and configuration
+  2) Launch profile manager modal [ProfileManagerDialog](src/pk_py_lib/gui/settings/profile_manager.py:1)
+  3) On success with a valid Active → proceed to create [MainWindow](img_app/img_app/main_window.py:1)
+  4) On cancel without any Active profile → exit
+- Rationale: downstream components (cache limits, hashing policies, UI defaults) may depend on active profile.
+
+Fallback Persistence Strategy
+- Primary: SQLite via [DatabaseManager](src/pk_py_lib/core/database.py:1).
+- Fallback: JSON file under data_dir (e.g., profiles.json) used only when SQLite init fails catastrophically (rare).
+  - On fallback write: persist minimal fields (id, name, is_default, and a subset of settings) to allow the app to continue.
+  - On next successful DB init: import the JSON payload into DB and remove the fallback file.
+  - All fallback usage should be logged as warnings.
+
+Migration Considerations
+- Ensure meta.active_profile_id exists:
+  - If missing, initialize as described in Active profile section.
+- Ensure profiles.name is UNIQUE (already in schema).
+- No schema changes required for MVP; document future evolution under schema versioning in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:39)
+
+Logging and Observability
+- Use logger "pk_py_lib.settings_profiles" across core and API layers
+- Log at INFO: create/update/delete/copy/set-active/set-default operations (profile id, name)
+- Log at WARNING: validation failures, fallback persistence
+- Log at ERROR: database errors, transaction rollback events
+
+Separation of Concerns
+- Core performs validation, persistence, and invariants (single default, cannot delete active, etc.)
+- API exposes a minimal, stable surface for consumers and adapts exceptions to structured errors per canonical API patterns
+- GUI is a thin façade over the API; it never mutates the database directly
+
+Done Criteria (Architecture)
+- A clear meta.active_profile_id contract is documented and implemented
+- A reusable GUI modal exists and can be launched without app coupling
+- All profile operations implement validation and invariants
+- Startup flow blocks until a valid active profile is present
+- Fallback persistence is documented; implementation is optional for MVP but interfaces should not preclude it
+
+Next Steps
+- Implement core manager [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1)
+- Implement API adapter [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
+- Implement GUI modal [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1)
+- Wire startup in [img_app/img_app/app.py](img_app/img_app/app.py:60) via [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
+- Add tests (unit for core/API; pytest-qt for GUI and startup flow)

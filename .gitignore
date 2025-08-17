@@ -19,6 +19,7 @@ cache/
 __pypackages__/
 __pycache__/
 .cache/
+.venv/
 .pdm-python
 
 

@@ -3,6 +3,142 @@
 ## 1. Overview
 
 This guide provides step-by-step instructions for implementing the KDC Image Organizer application using the specifications defined in the accompanying documents. The implementation leverages the pk-py-lib component library and follows a phased development approach.
+### 1.1 Canonical integration updates
+
+This guide is aligned with the canonical decisions. Implementation must follow these cross‑cutting policies:
+
+- Data locations
+  - Use platformdirs with Vendor Pk and App Img App
+  - Environment override PK_IMG_APP_HOME to relocate base of data and cache trees
+  - Databases
+    - settings.db and sessions.db in user_data_dir
+    - cache.db in user_cache_dir
+  - Directory structure
+    - data back up folder at data/backups
+    - cache thumbnails at cache/thumbnails
+
+- Startup database validation and migration
+  - For each of settings.db, sessions.db, cache.db
+    - If missing, create with initial schema and meta schema_version
+    - Run PRAGMA quick_check
+    - If quick_check fails, run PRAGMA integrity_check
+    - If integrity_check fails
+      - settings.db prompt to preserve settings if exportable then rebuild
+      - sessions.db offer rebuild or attempt repair
+      - cache.db safe to rebuild automatically
+    - If schema version mismatch
+      - Make timestamped backup in backups
+      - Run Alembic migrations
+      - Update meta schema_version
+  - Backup retention policy
+    - Keep 10 most recent backups per database
+    - Purge backups older than 30 days
+
+- Identical file hashing strategy
+  - Algorithm sha256
+  - Staged prefilters for performance
+    - Stage size filter group by exact file size
+    - Stage partial hash for files at least 512 KiB
+      - Hash first 256 KiB and last 256 KiB
+    - Stage full hash
+      - Compute full sha256 only for candidates with matching partial signature
+  - Cache strategy
+    - Store both partial and full hashes in cache.db
+    - Invalidate when signature changes absolute_path file_size mtime_ns or inode where available
+
+- Results semantics
+  - Single pool
+    - Group duplicate sets within the pool
+    - UI shows cluster header and all member files
+  - Dual pools default
+    - Pool 1 reference
+    - Results show only pool 2 files that match pool 1
+  - Dual pools inverse
+    - Show only pool 1 files that have zero matches in pool 2
+
+- Settings profiles model
+  - id name description created_at updated_at profile_version
+  - pool_mode single or dual
+  - inverse_mode applies only to dual
+  - Per pool paths include_dirs exclude_dirs include_globs exclude_globs
+  - Hash options hash_algo sha256 staged_hashing true partial_hash_size_kb 256
+  - Cache invalidation keys absolute_path file_size mtime_ns inode
+
+- Settings GUI behaviors
+  - CRUD create select edit delete copy clone
+  - Set as default
+  - Validate paths on save
+  - Preview effective include exclude
+  - Test hash settings on a small sample
+
+References
+- Canonical decisions see [canonical-decisions.md](docs/roo/canonical-decisions.md)
+- Specification see [img-app-specification.md](docs/roo/img-app-specification.md)
+- Data model see [img-app-data-model.md](docs/roo/img-app-data-model.md)
+- Technical architecture see [img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
+
+### 1.2 Key workflow diagrams
+
+#### 1.2.1 Startup validation and migration
+
+```mermaid
+flowchart TD
+  A[App start] --> B[Resolve data dirs via platformdirs or env]
+  B --> C[Ensure databases exist]
+  C --> D[Run PRAGMA quick_check]
+  D -->|ok| G[Load app settings]
+  D -->|fail| E[Run PRAGMA integrity_check]
+  E -->|ok| G
+  E -->|fail| F[Mark database corrupt and prompt rebuild]
+  G --> H[Read meta schema_version]
+  H -->|mismatch| I[Backup then run Alembic migrations]
+  H -->|match| J[Continue startup]
+  I --> K[Update schema_version and apply retention 10 and 30 days]
+  F --> L[settings preserve if exportable else rebuild]
+  F --> M[sessions offer rebuild or repair]
+  F --> N[cache auto rebuild]
+```
+
+Legend
+- Retention 10 and 30 days means keep 10 most recent backups and purge older than 30 days
+
+#### 1.2.2 Staged hashing pipeline for identical files
+
+```mermaid
+flowchart LR
+  S[Select file] --> Z[Check signature path size mtime_ns inode]
+  Z -->|unchanged and cached| R[Use cached partial and full]
+  Z -->|new or changed| A[Group by exact size]
+  A --> B[Partial sha256 first and last 256 KiB if size at least 512 KiB]
+  B --> C[Compare partial signatures]
+  C -->|match| D[Compute full sha256]
+  C -->|no match| E[Skip full hash]
+  D --> F[Store partial and full in cache]
+```
+
+#### 1.2.3 Results semantics by mode
+
+```mermaid
+flowchart TD
+  M[Mode selection] --> S[Single pool]
+  M --> D[Dual pools]
+  M --> I[Dual inverse]
+  S --> SG[Group duplicates within pool]
+  SG --> SU[Show cluster header and members]
+  D --> DR[Pool 1 reference]
+  DR --> DS[Find matches in pool 2]
+  DS --> DU[Results list only pool 2 files]
+  I --> IR[Pool 1 reference]
+  IR --> IN[Find zero matches in pool 2]
+  IN --> IU[Results list only pool 1 files]
+```
+
+Implementation checklist alignment
+- Ensure DataLocations uses platformdirs with vendor Pk and app Img App and supports PK_IMG_APP_HOME
+- Ensure DatabaseManager performs quick_check integrity_check and meta schema_version checks then runs Alembic with pre migration backup and retention
+- Ensure CacheManager provides staged sha256 hashing with partial first and last 256 KiB and invalidation on path size mtime_ns inode
+- Ensure Results panel follows single dual and inverse display rules
+- Ensure Settings GUI provides full profile CRUD defaults path validation preview and test hashing
 
 ## 2. Development Environment Setup
 
@@ -394,8 +530,9 @@ class SimilarityEngine:
         
         # Initialize thread pool
         max_threads = self.app_manager.config_manager.get_setting(
-            "performance.max_threads", 
-            default=4
+            "app_settings.max_threads",
+            default=4,
+            scope="app"
         )
         self.thread_pool = ThreadPoolExecutor(max_workers=max_threads)
         
@@ -734,9 +871,9 @@ class ConfigurationManager:
         "theme": "light",
         "language": "en",
         "ui_scale": 1.0,
-        "performance.max_threads": 4,
-        "performance.max_memory_mb": 2048,
-        "cache.max_size_gb": 5.0,
+        "app_settings.max_threads": 4,
+        "app_settings.max_memory_mb": 2048,
+        "app_settings.cache_size_mb": 5120,
         "algorithms.default": ["phash"],
         "algorithms.threshold": 0.85
     }
@@ -830,10 +967,10 @@ from datetime import datetime, timedelta
 class CacheManager:
     """Manages application caching."""
     
-    def __init__(self, cache_dir: Path, max_size_gb: float = 5.0):
+    def __init__(self, cache_dir: Path, max_size_mb: int = 5120):
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(exist_ok=True)
-        self.max_size_bytes = int(max_size_gb * 1024 * 1024 * 1024)
+        self.max_size_bytes = int(max_size_mb * 1024 * 1024)
         
     def get_thumbnail(self, image_path: Path, size: int) -> Optional[bytes]:
         """Retrieve cached thumbnail."""
@@ -1068,3 +1205,116 @@ After completing the basic implementation:
    - Complete documentation
    - Create user manual
    - Set up CI/CD pipeline
+## 14. Integrating the Settings Manager at Startup
+
+Status: Planned
+
+Purpose
+- Enforce that the application runs with a valid, explicitly selected Active settings profile before the main window is created.
+- Provide a modal Settings/Profile Manager at startup to handle first-run (zero profiles), selection, CRUD+copy, validation, and Set Active/Default operations.
+
+Scope and References
+- App bootstrap: [img_app/img_app/app.py](img_app/img_app/app.py:60)
+- Main window: [img_app/img_app/main_window.py](img_app/img_app/main_window.py:1)
+- Library configuration and DB: [src/pk_py_lib/core/configuration.py](src/pk_py_lib/core/configuration.py:1), [src/pk_py_lib/core/database.py](src/pk_py_lib/core/database.py:1)
+- Proposed APIs:
+  - Library core profiles manager: [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1)
+  - Library API adapter: [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
+  - Reusable GUI dialog: [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1)
+  - App integration helper: [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
+
+14.1 Startup Gate: High-Level Sequence
+
+- Initialize DatabaseManager and ConfigurationManager
+- Launch Settings/Profile Manager modal
+- Require a valid Active profile before continuing
+- If canceled with no Active profile, exit application
+
+```mermaid
+flowchart TD
+  A[App start] --> B[Init DatabaseManager]
+  B --> C[Init ConfigurationManager]
+  C --> D[Open Settings/Profile Manager modal]
+  D --> E{Valid Active profile set}
+  E -->|Yes| F[Close modal]
+  E -->|No (Cancel)| X[Exit app]
+  F --> G[Create MainWindow]
+  G --> H[Show main UI]
+```
+
+14.2 Integration Steps (no code)
+
+1) Initialize core components
+- Create and initialize [DatabaseManager.initialize()](src/pk_py_lib/core/database.py:405) to ensure settings.db exists with canonical schema and meta table.
+- Construct [ConfigurationManager](src/pk_py_lib/core/configuration.py:126) with the database manager instance.
+
+2) Display the startup modal
+- Invoke the reusable dialog from [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1) as a blocking modal.
+- The dialog is responsible for:
+  - Listing profiles and showing an empty-state for zero profiles
+  - Creating/copying/editing/deleting profiles with validation
+  - Setting Active (updates meta.active_profile_id) and optionally Default (profiles.is_default)
+  - Enforcing invariants: cannot delete Active or last remaining profile
+
+3) Active profile contract
+- The modal must ensure that, when it closes with acceptance, there is a valid Active profile:
+  - meta.active_profile_id points to an existing profiles.id
+  - [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399) aligns the in-process active profile
+- If canceled without any Active profile defined, terminate the application early per policy.
+
+4) Proceed to main window creation
+- After acceptance, read app-scoped settings (e.g., cache size) and other dependent configuration as needed, then instantiate [MainWindow](img_app/img_app/main_window.py:49).
+- Attach managers (database, configuration, cache) to the window instance as currently done in [img_app/img_app/app.py](img_app/img_app/app.py:106).
+
+14.3 App-Side Helper (recommended organization)
+
+- Add a small integration helper in [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1) to:
+  - Accept DB/Config instances
+  - Launch the modal dialog
+  - Return a boolean indicating whether to continue (Active profile present) or exit
+- Keep application bootstrap (main) thin and declarative.
+
+14.4 Dependencies and Notes
+
+- GUI framework: PySide6 (already in project)
+- Database: SQLite via [DatabaseManager](src/pk_py_lib/core/database.py:1)
+- Active vs Default semantics:
+  - Active: controls current session; stored in meta.active_profile_id
+  - Default: preferred for future sessions; only one profile has is_default=1
+- Fallback strategy (rare):
+  - If SQLite initialization fails catastrophically, core may choose to write a minimal JSON fallback (profiles.json) and proceed with warnings; see architecture notes in [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1)
+
+14.5 Validation, Errors, and UX
+
+- Validation:
+  - Name: required; 1–64; [A–Z a–z 0–9 space _ -]; unique (case-insensitive)
+  - Thresholds: UI percent 0–100 maps to internal 0.0–1.0 (see thresholds helpers)
+- Errors and edge cases:
+  - Duplicate name, delete Active, delete last profile
+  - Database locked, write failures, import/export errors
+- See detailed catalog in [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md:1)
+
+14.6 Testing Guidance
+
+- Unit tests (core and API):
+  - CRUD invariants: create, unique naming, copy, set default exclusivity, delete constraints
+  - Active profile persistence in meta.active_profile_id and ConfigurationManager alignment
+- GUI tests (pytest-qt):
+  - First-run flow: zero profiles → create → set active → continue
+  - Existing Active: dialog shows; Continue proceeds without edits
+  - Cancel without Active: application exits
+- Integration tests:
+  - Startup gate prevents main window creation without Active
+  - Switching Active affects session configuration retrieval (e.g., hashing policy, cache size if profile-scoped later)
+
+14.7 Rationale
+
+- Modal-first startup ensures deterministic configuration and reduces runtime drift.
+- Clear separation between Default and Active improves UX and aligns with session vs preference semantics.
+- The reusable dialog emphasizes library-first design and reusability across apps.
+
+Next Steps
+- Implement the reusable dialog in [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1) per the UI spec.
+- Implement core profile manager [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1) and API adapter [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1).
+- Add startup-gate helper in [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1) and wire it in [img_app/img_app/app.py](img_app/img_app/app.py:60).
+- Add pytest-qt tests for modal flows and invariants.

@@ -64,21 +64,55 @@ def main() -> int:
     Creates the QApplication (if one does not already exist), initializes and
     shows the main window, and starts the Qt event loop.
 
-    Returns
-    -------
-    int
-        The Qt application exit code, suitable for use as a process return code.
-
-    Usage
-    -----
-    From PDM:
-      pdm run imgapp
-
-    From Python:
-      python -c "from img_app.img_app.app import main; raise SystemExit(main())"
+    This startup sequence also initializes the library DatabaseManager,
+    ConfigurationManager and CacheManager, wiring them into the MainWindow
+    instance for use by UI components. The initialization is defensive: if the
+    pk_py_lib components are unavailable the application will still show the
+    main window (fallback behavior).
     """
     app = _ensure_application()
+
+    # Initialize library components if possible
+    try:
+        # Import library components from the in-repo pk_py_lib package.
+        # The img_app scaffolding uses the development layout where the package
+        # may be importable as `src.pk_py_lib`.
+        from src.pk_py_lib.core.database import DatabaseManager
+        from src.pk_py_lib.core.configuration import ConfigurationManager
+        from src.pk_py_lib.core.cache import CacheManager
+
+        # Initialize database manager (creates DBs and applies migrations)
+        db_mgr = DatabaseManager()
+        db_mgr.initialize()
+
+        # Initialize configuration manager (reads/creates app_settings/profile rows)
+        config_mgr = ConfigurationManager(db_mgr)
+
+        # Initialize cache manager using app_settings.cache_size_mb (MB)
+        cache_dir = db_mgr.data_dir / "cache"
+        try:
+            max_mb = int(config_mgr.get_app_setting("cache_size_mb") or 5120)
+        except Exception:
+            max_mb = 5120
+        cache_mgr = CacheManager(cache_dir, max_size_mb=max_mb)
+    except Exception as exc:
+        # If anything fails, log and continue with UI-only startup
+        import logging
+        logging.getLogger("img_app.app").exception("Failed to initialize core components: %s", exc)
+        db_mgr = None
+        config_mgr = None
+        cache_mgr = None
+
+    # Create main window and attach core components for use by UI
     window = MainWindow()
+    # Attach managers if available (non-invasive integration)
+    if db_mgr is not None:
+        setattr(window, "database_manager", db_mgr)
+    if config_mgr is not None:
+        setattr(window, "configuration_manager", config_mgr)
+    if cache_mgr is not None:
+        setattr(window, "cache_manager", cache_mgr)
+
     window.show()
     return app.exec()
 

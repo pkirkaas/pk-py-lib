@@ -218,6 +218,44 @@ dev = [
 
 The repository will host a development-only, extractable desktop GUI application named img_app that consumes pk-py-lib components. This colocated app accelerates prototyping and validation of reusable library features while maintaining clean boundaries to enable future extraction to a separate repository with minimal changes.
 
+### Data locations and startup validation (canonical)
+
+- Branding vs internal ID
+  - UI brand: KDC Image Organizer
+  - Platform paths: Vendor "Pk", App "Img App" (internal identity for platformdirs)
+  - Environment override: PK_IMG_APP_HOME to relocate both data and cache trees
+  - Canonical reference: [canonical-decisions.md](docs/roo/canonical-decisions.md:14)
+
+- Directory structure and databases
+  - settings.db and sessions.db in user_data_dir
+  - cache.db in user_cache_dir
+  - backups subfolder under data dir for DB snapshots
+  - Thumbnails stored on disk under cache/thumbnails/{size}/; database stores metadata
+  - Canonical reference: [img-app-specification.md](docs/roo/img-app-specification.md:54), [img-app-data-model.md](docs/roo/img-app-data-model.md:287)
+
+- Startup validation and migration
+  - On app start: ensure DBs exist; run PRAGMA quick_check, then integrity_check on failure
+  - If corrupt: settings.db attempts export/preserve, sessions.db prompt to rebuild or repair, cache.db safe to rebuild
+  - Schema versioning via meta.schema_version; run Alembic migrations on mismatch
+  - Pre-migration backup; retention: keep 10 most recent per DB, purge backups older than 30 days
+  - Canonical reference: [canonical-decisions.md](docs/roo/canonical-decisions.md:38)
+
+- Identical-file hashing strategy
+  - Algorithm: SHA-256 (canonical)
+  - Staged prefilters: size grouping → partial SHA-256 (first/last 256 KiB) for files ≥ 512 KiB → full-file SHA-256 for candidates
+  - Cache both partial and full hashes; invalidate on absolute_path, file_size, mtime_ns, inode changes
+  - Canonical reference: [canonical-decisions.md](docs/roo/canonical-decisions.md:93)
+
+- Pools and results semantics
+  - Single pool: cluster duplicates within the pool
+  - Dual pools: show only Pool 2 matches for Pool 1 references
+  - Dual inverse: show only Pool 1 items with zero matches in Pool 2
+  - Canonical reference: [canonical-decisions.md](docs/roo/canonical-decisions.md:111)
+
+Implementation guidance diagrams
+- Startup + migration: see [img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1)
+- Staged hashing: see [img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1)
+- Results semantics: see [img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1)
 ### Purpose
 
 - Provide a thin, user-facing PySide6 application shell to exercise and validate pk-py-lib GUI widgets, file system utilities, and future processing APIs
@@ -300,3 +338,23 @@ python -m img_app
 3. Implement the first vertical slice
 4. Iterate based on what you learn
 5. Add img_app plan and scaffolding per sections above
+## Settings/Profile Manager (References)
+
+Status: Planned
+
+Brief
+- The application must present a startup modal to manage and select a Settings Profile before the main window is created. Active profile semantics and validation rules are canonicalized. This section cross-references the full design and does not duplicate content.
+
+Cross-References
+- UI design and flows: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md:1) (Section "Settings/Profile Manager")
+- Technical architecture: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1) (Section "Settings Profiles Architecture")
+- API contract: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1) (Section "Settings Profiles API")
+- Error handling: [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md:1) (Section "Settings/Profile Manager Errors and Edge Cases")
+- Implementation steps: [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1) (Section "Integrating the Settings Manager at Startup")
+- Canonical decisions: [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:1) (Section "Settings Profiles and Startup Modal")
+
+Next Steps
+- Implement core manager [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1) and API adapter [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
+- Implement reusable GUI dialog [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1)
+- Add app integration helper [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1) and wire in [img_app/img_app/app.py](img_app/img_app/app.py:60)
+- Add tests: core/API unit tests and pytest-qt GUI/startup flows

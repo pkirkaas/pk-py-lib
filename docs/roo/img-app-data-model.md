@@ -165,41 +165,44 @@ class ScanSession:
     error_message: Optional[str]    # Error if failed
 ```
 
-### 2.5 User Profile Model
+### 2.5 Profile Model
 ```python
 @dataclass
-class UserProfile:
-    """User profile configuration."""
+class Profile:
+    """Settings profile configuration.
+
+    Settings profiles represent different scanning workflows and configurations.
+    Each profile contains pool settings, path configurations, and algorithm
+    preferences. UI and performance settings are stored globally in AppSettings.
+    """
     
     # Identification
-    id: int                         # Profile ID
-    name: str                       # Profile name
+    id: UUID                        # Profile ID (UUID primary key)
+    name: str                       # Unique profile name (required)
+    description: Optional[str]      # Profile description
     is_default: bool                # Default profile flag
+    profile_version: str            # Profile format version
     
-    # Preferences
-    theme: str                      # 'light', 'dark', 'auto'
-    language: str                   # Language code
-    ui_scale: float                 # UI scaling factor
+    # Pool Configuration
+    pool_mode: str                  # 'single' or 'dual'
+    inverse_mode: bool              # Only for dual mode: show non-matches
     
-    # Algorithm Defaults
-    default_algorithms: List[str]   # Default algorithm selection
-    default_threshold: float        # Default similarity threshold
-    algorithm_presets: Dict[str, Dict]  # Named algorithm configs
+    # Path Configuration (per pool)
+    pool1_paths: PathConfig         # Primary pool paths
+    pool2_paths: Optional[PathConfig]  # Secondary pool (dual mode only)
     
-    # Performance Settings
-    max_threads: int                # Thread pool size
-    max_memory_mb: int              # Memory limit
-    cache_size_gb: float            # Cache size limit
+    # File Identity Detection
+    hash_algo: str                  # 'sha256' (default)
+    staged_hashing: bool            # Enable staged pre-filtering (default: true)
+    partial_hash_size_kb: int      # Size for partial hash (default: 256)
     
-    # File Handling
-    included_extensions: List[str]  # File extensions to include
-    excluded_patterns: List[str]    # Path patterns to exclude
-    follow_symlinks: bool           # Follow symbolic links
+    # Algorithm Settings
+    default_algorithms: List[str]   # Selected similarity algorithms
+    default_threshold: float        # Similarity threshold (0.0-1.0)
+    algorithm_presets: Dict[str, Dict]  # Algorithm-specific parameters
     
-    # UI Preferences
-    window_geometry: Dict           # Window size/position
-    panel_layout: Dict              # Panel configuration
-    shortcuts: Dict[str, str]       # Custom keyboard shortcuts
+    # Cache Settings
+    cache_invalidation_keys: List[str]  # ['path', 'size', 'mtime_ns', 'inode']
     
     # History
     recent_paths: List[Path]        # Recently used paths
@@ -207,7 +210,76 @@ class UserProfile:
     
     # Timestamps
     created_at: datetime            # Profile creation
-    modified_at: datetime           # Last modification
+    updated_at: datetime            # Last modification
+
+@dataclass
+class PathConfig:
+    """Path configuration for a pool."""
+    include_dirs: List[Path]        # Directories to scan
+    exclude_dirs: List[Path]        # Directories to skip
+    include_globs: List[str]        # File patterns to include (e.g., "*.jpg")
+    exclude_globs: List[str]        # File patterns to exclude
+    follow_symlinks: bool           # Follow symbolic links
+```
+
+### 2.6 App Settings Model
+```python
+@dataclass
+class AppSettings:
+    """Global application settings.
+
+    AppSettings is a single-row, application-scoped model that contains UI
+    preferences, performance tuning and other system-wide configuration.
+    There is only one active AppSettings row per installation (scripts and
+    migration tasks should ensure one row exists; defaults are provided).
+    """
+    
+    # Identification
+    id: int                         # Settings row ID (primary key) — single row expected
+
+    # Preferences
+    theme: str                      # 'light', 'dark', 'auto' (default: 'light')
+    language: str                   # Language code (default: 'en')
+    ui_scale: float                 # UI scaling factor (default: 1.0)
+
+    # Performance Settings
+    max_threads: int                # Thread pool size (default: 4)
+    max_memory_mb: int              # Memory limit in megabytes (default: 2048)
+    cache_size_mb: int              # Cache size limit in megabytes (default: 5120)
+
+    # UI Preferences
+    window_geometry: Dict           # Window size/position (JSON-serializable)
+    panel_layout: Dict              # Panel configuration (JSON-serializable)
+    shortcuts: Dict[str, str]       # Custom keyboard shortcuts
+
+    # Timestamps
+    created_at: datetime            # Row creation timestamp
+    modified_at: datetime          # Last modification timestamp
+```
+
+Migration note:
+- Historically UI preferences and some performance settings were stored per-profile (fields: theme, language, ui_scale, max_threads, max_memory_mb, cache_size_gb). These have been moved to the application-scoped AppSettings model.
+- Suggested migration SQL (one-time): copy values from the default profile into app_settings and convert GB->MB for any legacy cache_size_gb values.
+
+```sql
+-- Example migration: create an app_settings row from the default profile
+INSERT INTO app_settings (
+    theme, language, ui_scale,
+    max_threads, max_memory_mb, cache_size_mb,
+    created_at, modified_at
+)
+SELECT
+    COALESCE(theme, 'light') AS theme,
+    COALESCE(language, 'en') AS language,
+    COALESCE(ui_scale, 1.0) AS ui_scale,
+    COALESCE(max_threads, 4) AS max_threads,
+    COALESCE(max_memory_mb, 2048) AS max_memory_mb,
+    COALESCE(CAST(ROUND(cache_size_gb * 1024) AS INTEGER), 5120) AS cache_size_mb,
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+FROM profiles
+WHERE is_default = TRUE
+LIMIT 1;
 ```
 
 ## 3. Database Schemas
@@ -215,14 +287,73 @@ class UserProfile:
 ### 3.1 Settings Database (settings.db)
 
 ```sql
--- Profiles table
+-- Settings profiles table
 CREATE TABLE profiles (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT PRIMARY KEY,  -- UUID stored as text
     name TEXT UNIQUE NOT NULL,
+    description TEXT,
     is_default BOOLEAN DEFAULT FALSE,
+    profile_version TEXT DEFAULT '1.0.0',
+    
+    -- Pool configuration
+    pool_mode TEXT NOT NULL DEFAULT 'single',
+    inverse_mode BOOLEAN DEFAULT FALSE,
+    
+    -- File identity detection
+    hash_algo TEXT DEFAULT 'sha256',
+    staged_hashing BOOLEAN DEFAULT TRUE,
+    partial_hash_size_kb INTEGER DEFAULT 256,
+    
+    -- Algorithm defaults
+    default_algorithms JSON,
+    default_threshold REAL DEFAULT 0.85,
+    algorithm_presets JSON,
+    
+    -- Cache configuration
+    cache_invalidation_keys JSON DEFAULT '["path", "size", "mtime_ns", "inode"]',
+    
+    -- History
+    recent_paths JSON,
+    recent_sessions JSON,
+    
+    -- Timestamps
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CHECK (pool_mode IN ('single', 'dual')),
+    CHECK (hash_algo IN ('sha256', 'md5', 'blake3')),
+    CHECK (default_threshold BETWEEN 0.0 AND 1.0),
+    CHECK (partial_hash_size_kb > 0)
+);
+
+-- Path configurations for profiles
+CREATE TABLE profile_paths (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id TEXT NOT NULL,
+    pool_number INTEGER NOT NULL,  -- 1 or 2
+    include_dirs JSON,              -- List of directories
+    exclude_dirs JSON,              -- List of exclusions
+    include_globs JSON,             -- Include patterns
+    exclude_globs JSON,             -- Exclude patterns
+    follow_symlinks BOOLEAN DEFAULT FALSE,
+    
+    FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+    UNIQUE(profile_id, pool_number),
+    CHECK (pool_number IN (1, 2))
+);
+
+-- App settings (single-row) table: global, typed fields for UI and performance
+CREATE TABLE app_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     theme TEXT DEFAULT 'light',
     language TEXT DEFAULT 'en',
     ui_scale REAL DEFAULT 1.0,
+    max_threads INTEGER DEFAULT 4,
+    max_memory_mb INTEGER DEFAULT 2048,
+    cache_size_mb INTEGER DEFAULT 5120,
+    window_geometry JSON,
+    panel_layout JSON,
+    shortcuts JSON,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CHECK (theme IN ('light', 'dark', 'auto')),
@@ -281,16 +412,25 @@ CREATE TABLE recent_items (
     CHECK (item_type IN ('file', 'folder', 'session', 'export'))
 );
 
--- Meta table for schema versioning and global metadata [ID: DB-001]
-CREATE TABLE meta (
+-- Meta table for schema versioning and database metadata
+CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     notes TEXT,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Example initial schema version entry
-INSERT OR REPLACE INTO meta (key, value, notes) VALUES ('schema_version', '1.0.0', 'Initial schema');
+-- Initialize schema version (required on database creation)
+INSERT OR IGNORE INTO meta (key, value, notes)
+VALUES ('schema_version', '1.0.0', 'Initial schema version');
+
+-- Database creation timestamp
+INSERT OR IGNORE INTO meta (key, value, notes)
+VALUES ('created_at', CURRENT_TIMESTAMP, 'Database creation time');
+
+-- Application version that created/last updated the database
+INSERT OR IGNORE INTO meta (key, value, notes)
+VALUES ('app_version', '1.0.0', 'Application version');
 -- Create indexes
 CREATE INDEX idx_settings_profile ON settings(profile_id);
 CREATE INDEX idx_settings_lookup ON settings(profile_id, category, key);
@@ -303,7 +443,7 @@ CREATE INDEX idx_recent_type ON recent_items(item_type);
 ### 3.2 Cache Database (cache.db)
 
 ```sql
--- Image metadata cache
+-- Image metadata cache with file identity tracking
 CREATE TABLE image_metadata (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_path TEXT UNIQUE NOT NULL,
@@ -311,12 +451,22 @@ CREATE TABLE image_metadata (
     file_size INTEGER NOT NULL,
     file_modified TIMESTAMP NOT NULL,
     file_created TIMESTAMP,
-    file_hash TEXT,
+    
+    -- File identity and hashing
+    file_hash_sha256 TEXT,          -- Full SHA-256 hash (hex)
+    partial_hash_sha256 TEXT,       -- Partial SHA-256 for staged comparison
+    file_inode INTEGER,              -- Inode number (where available)
+    file_device INTEGER,             -- Device ID (where available)
+    hash_computed_at TIMESTAMP,
+    
+    -- Image properties
     width INTEGER,
     height INTEGER,
     format TEXT,
     color_mode TEXT,
     bit_depth INTEGER,
+    
+    -- Metadata
     exif_data JSON,
     camera_make TEXT,
     camera_model TEXT,
@@ -324,10 +474,25 @@ CREATE TABLE image_metadata (
     date_taken TIMESTAMP,
     gps_latitude REAL,
     gps_longitude REAL,
+    
+    -- Cache management
     last_scanned TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     scan_version TEXT,
-    is_valid BOOLEAN DEFAULT TRUE
+    is_valid BOOLEAN DEFAULT TRUE,
+    mtime_ns INTEGER                -- Modification time in nanoseconds
 );
+
+-- Meta table for cache database
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    notes TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Initialize cache database metadata
+INSERT OR IGNORE INTO meta (key, value, notes)
+VALUES ('schema_version', '1.0.0', 'Initial cache schema');
 
 -- Thumbnail cache
 CREATE TABLE thumbnails (
@@ -412,7 +577,10 @@ CREATE TABLE cache_stats (
 
 -- Create indexes for performance
 CREATE INDEX idx_metadata_path ON image_metadata(file_path);
-CREATE INDEX idx_metadata_hash ON image_metadata(file_hash);
+CREATE INDEX idx_metadata_sha256 ON image_metadata(file_hash_sha256);
+CREATE INDEX idx_metadata_partial ON image_metadata(partial_hash_sha256);
+CREATE INDEX idx_metadata_inode ON image_metadata(file_inode, file_device);
+CREATE INDEX idx_metadata_size ON image_metadata(file_size);
 CREATE INDEX idx_metadata_date ON image_metadata(date_taken);
 CREATE INDEX idx_thumbnails_image ON thumbnails(image_id);
 CREATE INDEX idx_thumbnails_accessed ON thumbnails(last_accessed);
@@ -502,19 +670,36 @@ class SchemaManager:
     
     CURRENT_VERSION = "1.0.0"
     
-    migrations = {
-        "0.9.0": "migration_090_to_100.sql",
-        "1.0.0": "migration_100_to_110.sql",
-    }
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self.backup_dir = db_path.parent / "backups"
+        self.backup_dir.mkdir(exist_ok=True)
     
-    def get_current_version(self, db: Database) -> str:
-        """Get current schema version."""
+    def check_database_integrity(self) -> bool:
+        """Run PRAGMA checks on database.
         
-    def migrate(self, db: Database, target_version: str):
-        """Migrate database to target version."""
+        1. Run PRAGMA quick_check
+        2. If fails, run PRAGMA integrity_check
+        3. Return True if healthy, False if corrupt
+        """
         
-    def backup_before_migration(self, db: Database):
-        """Create backup before migration."""
+    def get_current_version(self) -> str:
+        """Get current schema version from meta table."""
+        
+    def needs_migration(self) -> bool:
+        """Check if database needs migration."""
+        
+    def backup_before_migration(self) -> Path:
+        """Create timestamped backup before migration.
+        
+        Format: {db_name}.{ISO_timestamp}.v{schema_version}
+        """
+        
+    def migrate(self, target_version: str):
+        """Migrate database using Alembic."""
+        
+    def cleanup_old_backups(self):
+        """Remove backups older than retention policy."""
 ```
 
 ### 6.2 Data Import/Export
@@ -552,10 +737,14 @@ class DataImporter:
 class CachePolicy:
     """Cache management policies."""
     
-    # Size limits
-    MAX_CACHE_SIZE_GB = 5.0
+    # Size limits (application-scoped, expressed in megabytes)
+    MAX_CACHE_SIZE_MB = 5120  # default 5120 MB (≈5 GB)
     MAX_THUMBNAIL_AGE_DAYS = 90
     MAX_RESULT_AGE_DAYS = 30
+    
+    # Staged hashing configuration
+    PARTIAL_HASH_SIZE_KB = 256     # Hash first/last 256KB
+    MIN_FILE_SIZE_FOR_PARTIAL = 512 * 1024  # 512KB minimum
     
     # Eviction strategies
     EVICTION_STRATEGY = "LRU"  # LRU, LFU, FIFO
@@ -564,6 +753,10 @@ class CachePolicy:
     # Cleanup triggers
     CLEANUP_ON_SIZE_PERCENT = 90  # Cleanup at 90% full
     CLEANUP_INTERVAL_HOURS = 24
+    
+    # Database backup retention
+    MAX_BACKUP_COUNT = 10          # Keep 10 most recent backups
+    MAX_BACKUP_AGE_DAYS = 30       # Purge backups older than 30 days
 ```
 
 ### 7.2 Cache Operations

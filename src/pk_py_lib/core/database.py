@@ -31,13 +31,27 @@ logger = logging.getLogger("pk_py_lib.core.database")
 SETTINGS_SCHEMA = """
 -- Settings DB schema
 
+-- Profiles table (no UI/performance fields — those live in app_settings)
 CREATE TABLE IF NOT EXISTS profiles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
     is_default BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- App settings (single-row) table: global, typed fields for UI and performance
+CREATE TABLE IF NOT EXISTS app_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     theme TEXT DEFAULT 'light',
     language TEXT DEFAULT 'en',
     ui_scale REAL DEFAULT 1.0,
+    max_threads INTEGER DEFAULT 4,
+    max_memory_mb INTEGER DEFAULT 2048,
+    cache_size_mb INTEGER DEFAULT 5120,
+    window_geometry JSON,
+    panel_layout JSON,
+    shortcuts JSON,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CHECK (theme IN ('light', 'dark', 'auto')),
@@ -90,6 +104,16 @@ CREATE TABLE IF NOT EXISTS recent_items (
     access_count INTEGER DEFAULT 1,
     FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
     CHECK (item_type IN ('file', 'folder', 'session', 'export'))
+);
+
+-- Settings profiles manager table (new)
+CREATE TABLE IF NOT EXISTS settings_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    data TEXT NOT NULL DEFAULT '{}',
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
 -- Meta table for schema versioning and global metadata
@@ -231,9 +255,10 @@ class SchemaManager:
     - CURRENT_VERSION tracks the canonical current schema for new DBs.
     - get_current_version(conn) reads meta.schema_version.
     - set_version(conn, version) writes meta.schema_version.
+    - migrate_to_1_1_0(conn) provides a safe migration path from 1.0.0 -> 1.1.0
     """
 
-    CURRENT_VERSION = "1.0.0"
+    CURRENT_VERSION = "1.1.0"  # Updated for app_settings table addition
 
     def get_current_version(self, conn: sqlite3.Connection) -> Optional[str]:
         """
@@ -253,6 +278,110 @@ class SchemaManager:
             "INSERT OR REPLACE INTO meta (key, value, notes, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
             ("schema_version", version, "Set by SchemaManager"),
         )
+
+    def migrate_to_1_1_0(self, conn: sqlite3.Connection) -> None:
+        """
+        Migrate from 1.0.0 to 1.1.0.
+
+        Steps:
+        1. Ensure app_settings table exists.
+        2. If old 'profiles' table contains UI/perf columns (theme, language, ui_scale, etc),
+           copy values from the default profile (or first profile) into app_settings,
+           converting legacy cache_size_gb -> cache_size_mb where present.
+        3. Recreate 'profiles' table without UI/perf columns and copy existing profile rows.
+        4. Ensure at least one app_settings row exists.
+        5. Update schema_version to 1.1.0.
+        """
+        logger.info("Migrating database from 1.0.0 to 1.1.0")
+
+        # 1) Ensure app_settings table exists (idempotent)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                theme TEXT DEFAULT 'light',
+                language TEXT DEFAULT 'en',
+                ui_scale REAL DEFAULT 1.0,
+                max_threads INTEGER DEFAULT 4,
+                max_memory_mb INTEGER DEFAULT 2048,
+                cache_size_mb INTEGER DEFAULT 5120,
+                window_geometry JSON,
+                panel_layout JSON,
+                shortcuts JSON,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                CHECK (theme IN ('light', 'dark', 'auto')),
+                CHECK (ui_scale BETWEEN 0.5 AND 3.0)
+            );
+        """)
+
+        # 2) Inspect profiles table columns to determine if migration is needed
+        cur = conn.execute("PRAGMA table_info(profiles)")
+        columns = {row[1] for row in cur.fetchall()}
+
+        if "theme" in columns or "cache_size_gb" in columns:
+            logger.info("Detected legacy profile-scoped UI/perf columns; migrating to app_settings")
+
+            # Copy values from the default profile (or first profile) into app_settings.
+            # Convert cache_size_gb -> cache_size_mb (GB * 1024).
+            conn.execute("""
+                INSERT INTO app_settings (
+                    theme, language, ui_scale,
+                    max_threads, max_memory_mb, cache_size_mb,
+                    created_at, modified_at
+                )
+                SELECT
+                    COALESCE(theme, 'light') AS theme,
+                    COALESCE(language, 'en') AS language,
+                    COALESCE(ui_scale, 1.0) AS ui_scale,
+                    COALESCE(max_threads, 4) AS max_threads,
+                    COALESCE(max_memory_mb, 2048) AS max_memory_mb,
+                    COALESCE(CAST(ROUND(cache_size_gb * 1024) AS INTEGER), 5120) AS cache_size_mb,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM profiles
+                WHERE is_default = 1 OR id = (SELECT MIN(id) FROM profiles)
+                LIMIT 1;
+            """)
+
+            # Recreate profiles table without UI/perf columns
+            conn.execute("""
+                CREATE TABLE profiles_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    is_default BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
+            # Copy existing profile rows to the new table (preserve IDs and timestamps)
+            conn.execute("""
+                INSERT INTO profiles_new (id, name, is_default, created_at, modified_at)
+                SELECT id, name, is_default, created_at, modified_at
+                FROM profiles;
+            """)
+
+            # Drop old profiles table and rename the new one
+            conn.execute("DROP TABLE profiles;")
+            conn.execute("ALTER TABLE profiles_new RENAME TO profiles;")
+
+            logger.info("Migration completed: moved UI/performance settings to app_settings")
+        else:
+            # No legacy columns detected; ensure a default app_settings row exists
+            cur = conn.execute("SELECT COUNT(*) FROM app_settings")
+            if cur.fetchone()[0] == 0:
+                logger.info("Creating default app_settings row (no legacy data found)")
+                conn.execute("""
+                    INSERT INTO app_settings (
+                        theme, language, ui_scale,
+                        max_threads, max_memory_mb, cache_size_mb
+                    ) VALUES (
+                        'light', 'en', 1.0,
+                        4, 2048, 5120
+                    );
+                """)
+
+        # 5) Update schema version
+        self.set_version(conn, "1.1.0")
 
 
 class DatabaseManager:
@@ -301,10 +430,35 @@ class DatabaseManager:
                 conn.executescript(
                     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, notes TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
                 )
-            # Set schema version if missing
-            if self.schema.get_current_version(conn) is None:
+            # Check and handle schema versioning/migration
+            current_version = self.schema.get_current_version(conn)
+            
+            if current_version is None:
+                # Fresh install
                 logger.info("Setting initial schema_version=%s in settings.db", self.schema.CURRENT_VERSION)
                 self.schema.set_version(conn, self.schema.CURRENT_VERSION)
+                
+                # Ensure app_settings has at least one row
+                cur = conn.execute("SELECT COUNT(*) FROM app_settings")
+                if cur.fetchone()[0] == 0:
+                    logger.info("Creating default app_settings row")
+                    conn.execute("""
+                        INSERT INTO app_settings (
+                            theme, language, ui_scale,
+                            max_threads, max_memory_mb, cache_size_mb
+                        ) VALUES (
+                            'light', 'en', 1.0,
+                            4, 2048, 5120
+                        )
+                    """)
+            elif current_version == "1.0.0":
+                # Need to migrate from 1.0.0 to 1.1.0
+                self.schema.migrate_to_1_1_0(conn)
+            elif current_version != self.schema.CURRENT_VERSION:
+                logger.warning(
+                    "Unknown schema version %s (expected %s). Database may need manual migration.",
+                    current_version, self.schema.CURRENT_VERSION
+                )
 
         # Initialize cache DB
         with self.get_connection(self.cache_db) as conn:

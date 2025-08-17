@@ -27,6 +27,48 @@ The KDC Image Organizer (img-app) is a cross-platform desktop GUI application de
 - Documentation convention: where a feature or UI element is described, percentages (0—100%) are used for readability. Where storage, APIs, or database schemas are described, the canonical 0.0—1.0 representation is used.
 ## 2. Functional Requirements
 
+### 2.0 Application Startup and Initialization
+
+#### 2.0.1 Database Validation
+**Startup Sequence:**
+1. Check for existence of all required databases:
+   - `settings.db` in user_data_dir
+   - `sessions.db` in user_data_dir
+   - `cache.db` in user_cache_dir
+2. If any database doesn't exist, create it with initial schema
+3. For each existing database:
+   - Run `PRAGMA quick_check`
+   - If quick_check fails, run `PRAGMA integrity_check`
+   - If integrity_check fails, mark as corrupt and prompt user:
+     - For settings.db: Offer to export/preserve settings before rebuild
+     - For cache.db/sessions.db: Safe to rebuild from scratch
+
+**Schema Migration:**
+- Check `meta` table for `schema_version` in each database
+- If version mismatch detected:
+  1. Create timestamped backup in `backups/` subdirectory
+  2. Run Alembic migrations to update schema
+  3. Update schema_version in meta table
+- Backup retention: Keep 10 most recent, purge older than 30 days
+
+#### 2.0.2 Application Data Locations
+**Directory Structure:**
+- Vendor: "Pk"
+- Application: "Img App"
+- Use platformdirs library for cross-platform paths:
+  ```
+  user_data_dir/
+    settings.db      # Application settings and profiles
+    sessions.db      # Scan sessions and results
+    backups/         # Database backups
+  user_cache_dir/
+    cache.db         # Image metadata and hashes
+    thumbnails/      # Thumbnail images
+      256x256/
+      512x512/
+  ```
+- Environment override: `PK_IMG_APP_HOME` can override base directory
+
 ### 2.1 Core Features
 
 #### 2.1.1 Image Format Support
@@ -53,19 +95,57 @@ The KDC Image Organizer (img-app) is a cross-platform desktop GUI application de
 - Visual distinction between reference and target collections
 - Collection management (save, load, modify)
 
-#### 2.1.3 Similarity Detection Engine
+#### 2.1.3 Settings Profiles and Configuration
+
+**Profile System:**
+- Multiple named settings profiles for different workflows
+- Each profile contains:
+  - `id`: UUID primary key
+  - `name`: Unique profile name (required)
+  - `description`: Optional description text
+  - `created_at`, `updated_at`: Timestamps
+  - `profile_version`: Version string for format compatibility
+
+**Pool Configuration:**
+- **Single Pool Mode:**
+  - Compare images within a single set of paths
+  - Find all duplicates/similar images within the pool
+  - Results show grouped duplicate clusters
+  
+- **Dual Pool Mode:**
+  - Pool 1: Reference images (source of truth)
+  - Pool 2: Target images to check against Pool 1
+  - Default: Show Pool 2 files that match Pool 1
+  - Inverse mode: Show Pool 1 files with NO matches in Pool 2
+
+**Path Selection per Pool:**
+- `include_dirs`: List of directories to scan
+- `exclude_dirs`: List of directories to skip
+- `include_globs`: File patterns to include (e.g., "*.jpg")
+- `exclude_globs`: File patterns to exclude
+
+**File Identity Detection:**
+- **Identical File Detection:**
+  - Algorithm: SHA-256 hashing
+  - Staged hashing option (default enabled):
+    - Stage 1: Group by file size
+    - Stage 2: Partial hash (first/last 256KB) for files ≥512KB
+    - Stage 3: Full SHA-256 for candidates
+  - Cache results with invalidation on size/mtime change
+
+#### 2.1.4 Similarity Detection Engine
 
 **Algorithms:**
 ```
 1. Perceptual Hash (pHash)
    - Default algorithm for general similarity
    - Robust to scaling, aspect ratio changes
-   - Similarity range: 0-100%
+   - Similarity range: 0-100% (internal: 0.0-1.0)
 
 2. Difference Hash (dHash)
    - Fast algorithm for quick scanning
    - Good for detecting crops and edits
-   - Similarity range: 0-100%
+   - Similarity range: 0-100% (internal: 0.0-1.0)
 
 3. Histogram Comparison
    - Color distribution analysis
@@ -76,16 +156,21 @@ The KDC Image Organizer (img-app) is a cross-platform desktop GUI application de
    - SIFT/SURF/ORB keypoint detection
    - Robust to rotation and perspective changes
    - Higher computational cost
+
+5. Identical File Detection
+   - SHA-256 hash comparison
+   - 100% exact byte-for-byte matches only
+   - Fastest for finding exact duplicates
 ```
 
 **Configuration:**
 - Algorithm selection (single or multiple)
-- Per-algorithm threshold settings
+- Per-algorithm threshold settings (internal: 0.0-1.0)
 - Preset configurations:
-  - Exact Duplicates (100% match)
-  - Near Duplicates (95-99% match)
-  - Similar Images (85-94% match)
-  - Loosely Related (70-84% match)
+  - Exact Duplicates (100% match / 1.0 internal)
+  - Near Duplicates (95-99% match / 0.95-0.99 internal)
+  - Similar Images (85-94% match / 0.85-0.94 internal)
+  - Loosely Related (70-84% match / 0.70-0.84 internal)
 - Custom threshold definition
 
 **Processing:**
@@ -98,14 +183,38 @@ The KDC Image Organizer (img-app) is a cross-platform desktop GUI application de
 ### 2.2 Results Management
 
 #### 2.2.1 Results Display
+**Results Semantics by Mode:**
+
+**Single Pool Results:**
+- Display duplicate/similar groups (clusters)
+- Each cluster contains all matching images
+- Group header shows:
+  - Number of images in cluster
+  - Similarity score range (0-100% display)
+  - Total size of all files in cluster
+  - Potential space savings (size - smallest)
+- All files in cluster are displayed
+- User can select which files to keep/delete
+
+**Dual Pool Results (Default):**
+- Show only Pool 2 files that match Pool 1 files
+- Group by Pool 1 reference image
+- Each group shows:
+  - Pool 1 reference image (header, not selectable)
+  - All matching Pool 2 files (selectable)
+- Only Pool 2 files appear in action lists
+- Pool 1 files are read-only references
+
+**Dual Pool Results (Inverse Mode):**
+- Show only Pool 1 files with NO matches in Pool 2
+- List shows unique Pool 1 files only
+- No Pool 2 files displayed
+- Useful for finding unique content in reference set
+
 **Group Organization:**
 - Hierarchical group display
-- Group header showing:
-  - Number of images in group
-  - Similarity score range
-  - Total size of duplicates
-  - Potential space savings
 - Expandable/collapsible groups
+- Visual distinction between reference and target files
 
 **Individual Image Information:**
 - Full file path
@@ -305,10 +414,11 @@ img_app/
 
 #### 5.1.1 Database Structure
 **Primary Database (settings.db):**
-- User preferences
-- Application configuration
-- Profile data
+- Application-scoped settings (AppSettings: UI preferences, performance tuning)
+- Profile data (named profiles representing saved workflows and algorithm/file-handling defaults)
+- Profile-scoped key/value settings and presets
 - Operation history
+- Schema metadata and migration history (meta table)
 
 **Cache Database (cache.db):**
 - Image metadata
@@ -320,7 +430,7 @@ img_app/
 
 #### 5.2.1 Thumbnail Cache
 - Location: User app data folder
-- Default size: 5GB (configurable)
+- Default size: 5120 MB (≈5 GB) (configurable via app_settings.cache_size_mb)
 - Thumbnail sizes: 256x256, 512x512, 1024x1024
 - LRU eviction policy
 - Automatic cleanup options
@@ -336,19 +446,29 @@ img_app/
 ### 6.1 Profile System
 
 #### 6.1.1 Profile Features
-- Multiple named profiles
-- Quick profile switching
-- Import/export profiles
-- Profile templates
-- Default profile with reset option
+- Multiple named profiles representing saved workflows
+- Settings profile management:
+  - Create new profile with validation
+  - Select/activate existing profile
+  - Edit profile (name, description, settings)
+  - Delete profile with confirmation
+  - Copy/clone profile to new name
+- Advanced features:
+  - Set as default (auto-load on startup)
+  - Validate paths on save
+  - Preview effective include/exclude
+  - Test hash settings on sample files
+- Import/export profiles as JSON
+- Profile templates for common scenarios
+- Profiles store algorithm defaults, presets, paths, and settings
 
 #### 6.1.2 Settings Categories
-- Algorithm configurations
-- UI preferences
-- Performance tuning
+- Algorithm configurations (profile-scoped)
+- Profile-scoped presets and key/value settings
+- Application-scoped settings (AppSettings): UI preferences, performance tuning, global shortcuts
 - File type associations
-- Keyboard shortcuts
 - Path preferences
+- Operation history
 
 ### 6.2 Persistence
 
