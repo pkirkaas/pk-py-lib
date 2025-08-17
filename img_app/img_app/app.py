@@ -16,11 +16,15 @@ Syntax validation: This file has been reviewed for Python syntax correctness.
 from __future__ import annotations
 
 import sys
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from PySide6.QtWidgets import QApplication
+from src.pk_py_lib.gui.utils.messages import show_selectable_error
 
 from .main_window import MainWindow
+
+from src.pk_py_lib.api.settings_profiles import SettingsProfilesAPI
+from src.pk_py_lib.gui.settings_manager import settings_manager_dialog
 
 
 def _ensure_application(argv: Optional[list[str]] = None) -> QApplication:
@@ -61,51 +65,119 @@ def main() -> int:
     """
     Entry point for launching the KDC Image Organizer application.
 
-    Creates the QApplication (if one does not already exist), initializes and
-    shows the main window, and starts the Qt event loop.
+    Startup sequence (modal Settings Manager enforced):
+    1) Instantiate QApplication.
+    2) Initialize/open database and run migrations via DatabaseManager.
+    3) Create SettingsProfilesAPI and ensure_default_profile() to guarantee an Active profile exists.
+    4) Present the Settings Manager dialog modally (always shown on launch).
+    5) After dismissal (OK or Cancel), fetch the active profile; if missing, ensure a default and re-fetch.
+    6) Create and show MainWindow, passing the active profile.
 
-    This startup sequence also initializes the library DatabaseManager,
-    ConfigurationManager and CacheManager, wiring them into the MainWindow
-    instance for use by UI components. The initialization is defensive: if the
-    pk_py_lib components are unavailable the application will still show the
-    main window (fallback behavior).
+    Returns
+    -------
+    int
+        Qt event loop exit code; non-zero on fatal startup error.
+
+    Notes
+    -----
+    - The dialog is shown before the main window; exec() on the dialog runs a nested event loop.
+    - Robust error handling: any fatal error during DB/API/dialog startup is shown via QMessageBox, and the app exits.
     """
     app = _ensure_application()
 
-    # Initialize library components if possible
+    # Will be attached to the MainWindow if initialized successfully
+    db_mgr = None
+    config_mgr = None
+    cache_mgr = None
+    active_profile: Optional[Dict[str, Any]] = None
+
     try:
-        # Import library components from the in-repo pk_py_lib package.
-        # The img_app scaffolding uses the development layout where the package
-        # may be importable as `src.pk_py_lib`.
+        # Import core managers (development layout import path)
         from src.pk_py_lib.core.database import DatabaseManager
         from src.pk_py_lib.core.configuration import ConfigurationManager
         from src.pk_py_lib.core.cache import CacheManager
 
-        # Initialize database manager (creates DBs and applies migrations)
+        # 2) Initialize/open DBs and run migrations
         db_mgr = DatabaseManager()
         db_mgr.initialize()
 
-        # Initialize configuration manager (reads/creates app_settings/profile rows)
-        config_mgr = ConfigurationManager(db_mgr)
+        # 3) Profiles API bound to this DB; ensure a default/active profile exists
+        api = SettingsProfilesAPI(db_mgr)
+        ensured = api.ensure_default_profile()
+        if not ensured.success:
+            show_selectable_error(
+                None,
+                "Startup Error",
+                f"Failed to ensure default settings profile:\n{ensured.message or 'Unknown error'}",
+            )
+            return 1
 
-        # Initialize cache manager using app_settings.cache_size_mb (MB)
-        cache_dir = db_mgr.data_dir / "cache"
+        # 4) Present Settings Manager dialog (always on launch, modal)
         try:
-            max_mb = int(config_mgr.get_app_setting("cache_size_mb") or 5120)
-        except Exception:
-            max_mb = 5120
-        cache_mgr = CacheManager(cache_dir, max_size_mb=max_mb)
-    except Exception as exc:
-        # If anything fails, log and continue with UI-only startup
-        import logging
-        logging.getLogger("img_app.app").exception("Failed to initialize core components: %s", exc)
-        db_mgr = None
-        config_mgr = None
-        cache_mgr = None
+            settings_manager_dialog(parent=None, modal=True)
+        except Exception as dlg_exc:
+            show_selectable_error(
+                None,
+                "Settings Manager Error",
+                f"Failed to open Settings Manager:\n{dlg_exc}",
+            )
+            return 1
 
-    # Create main window and attach core components for use by UI
-    window = MainWindow()
-    # Attach managers if available (non-invasive integration)
+        # 5) Determine the active profile to use for the session
+        r_active = api.get_active()
+        if not r_active.success:
+            show_selectable_error(
+                None,
+                "Startup Error",
+                f"Failed to read active profile:\n{r_active.message or 'Unknown error'}",
+            )
+            return 1
+        active_profile = r_active.data
+
+        # Defensive repair: ensure a default and re-fetch if somehow missing
+        if active_profile is None:
+            again = api.ensure_default_profile()
+            if not again.success:
+                show_selectable_error(
+                    None,
+                    "Startup Error",
+                    f"No active profile and failed to create default:\n{again.message or 'Unknown error'}",
+                )
+                return 1
+            r_active2 = api.get_active()
+            if not r_active2.success:
+                show_selectable_error(
+                    None,
+                    "Startup Error",
+                    f"Failed to read active profile after ensure:\n{r_active2.message or 'Unknown error'}",
+                )
+                return 1
+            active_profile = r_active2.data
+
+        # Optional managers (best-effort; failures are non-fatal)
+        try:
+            config_mgr = ConfigurationManager(db_mgr)
+            cache_dir = db_mgr.data_dir / "cache"
+            try:
+                max_mb = int(getattr(config_mgr, "get_app_setting", lambda k: 5120)("cache_size_mb") or 5120)
+            except Exception:
+                max_mb = 5120
+            cache_mgr = CacheManager(cache_dir, max_size_mb=max_mb)
+        except Exception as exc:
+            import logging
+            logging.getLogger("img_app.app").exception("Optional manager init failed: %s", exc)
+
+    except Exception as exc:
+        # Any fatal initialization error -> show and exit
+        show_selectable_error(
+            None,
+            "Startup Error",
+            f"Initialization failed:\n{exc}",
+        )
+        return 1
+
+    # 6) Create main window, pass active profile, and attach managers
+    window = MainWindow(active_profile=active_profile)
     if db_mgr is not None:
         setattr(window, "database_manager", db_mgr)
     if config_mgr is not None:

@@ -18,6 +18,7 @@ from __future__ import annotations
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMainWindow, QLabel, QWidget, QVBoxLayout, QMenuBar, QStatusBar
+from typing import Optional, Dict, Any
 
 
 class CentralPlaceholder(QWidget):
@@ -67,8 +68,21 @@ class MainWindow(QMainWindow):
     True
     """
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, active_profile: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Initialize MainWindow.
+
+        Parameters
+        ----------
+        parent : QWidget | None
+            Optional parent widget.
+        active_profile : Optional[Dict[str, Any]]
+            Active settings profile to associate with this window; stored on self.active_profile
+            for future use by UI components. Passing None keeps behavior identical to prior versions.
+        """
         super().__init__(parent)
+        # Store the active profile for future use in widgets/controllers
+        self.active_profile: Optional[Dict[str, Any]] = active_profile
         self._setup_window()
         self._setup_menu_bar()
         self._setup_status_bar()
@@ -104,7 +118,17 @@ class MainWindow(QMainWindow):
         """Attach a simple status bar for future feedback."""
         status = self.statusBar() if self.statusBar() else QStatusBar(self)
         self.setStatusBar(status)
-        status.showMessage("Ready")
+        # Show active profile name if available (informational only)
+        msg = "Ready"
+        try:
+            if getattr(self, "active_profile", None):
+                name = self.active_profile.get("name") or self.active_profile.get("id")
+                if name:
+                    msg = f"Ready — Profile: {name}"
+        except Exception:
+            # Fallback to default message if any unexpected structure
+            pass
+        status.showMessage(msg)
 
     def _setup_central_widget(self) -> None:
         """

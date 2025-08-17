@@ -37,6 +37,7 @@ try:
         QSplitter,
         QLineEdit,
         QListView,
+        QAbstractItemView,
         QLabel,
         QPushButton,
         QDialogButtonBox,
@@ -55,13 +56,14 @@ except Exception:  # pragma: no cover
         def __getattr__(self, name):
             raise RuntimeError("PySide6 is required for SettingsManagerDialog")
 
-    QApplication = QDialog = QWidget = QVBoxLayout = QHBoxLayout = QSplitter = QLineEdit = QListView = QLabel = QPushButton = QDialogButtonBox = QMessageBox = QToolBar = QStyle = QAction = QFormLayout = QGridLayout = QFrame = QSortFilterProxyModel = QModelIndex = QRegularExpression = QKeySequence = Qt = _Missing()  # type: ignore
+    QApplication = QDialog = QWidget = QVBoxLayout = QHBoxLayout = QSplitter = QLineEdit = QListView = QAbstractItemView = QLabel = QPushButton = QDialogButtonBox = QMessageBox = QToolBar = QStyle = QAction = QFormLayout = QGridLayout = QFrame = QSortFilterProxyModel = QModelIndex = QRegularExpression = QKeySequence = Qt = _Missing()  # type: ignore
 
 
 from .models import ProfilesListModel
 from .editor_widget import SettingsProfileEditorWidget
 from .controller import SettingsManagerController
 from ...api import ErrorCodes
+from ..utils.messages import show_selectable_error, show_selectable_info
 
 
 class _NamePromptDialog(QDialog):
@@ -171,7 +173,13 @@ class SettingsManagerDialog(QDialog):
 
         self.list = QListView(self)
         self.list.setModel(self._filter)
-        self.list.setSelectionMode(self.list.SingleSelection)
+        # Robust SingleSelection across bindings (Qt5/Qt6)
+        try:
+            sel_enum = getattr(QAbstractItemView, "SelectionMode", None)
+            single_sel = sel_enum.SingleSelection if sel_enum is not None else QAbstractItemView.SingleSelection
+        except Exception:
+            single_sel = QAbstractItemView.SingleSelection
+        self.list.setSelectionMode(single_sel)
         self.list.setAlternatingRowColors(True)
         self.list.selectionModel().selectionChanged.connect(self._on_list_selection_changed)  # type: ignore[attr-defined]
         left_layout.addWidget(self.list, 1)
@@ -541,12 +549,12 @@ class SettingsManagerDialog(QDialog):
         msg = message or "An unexpected error occurred."
         if code:
             msg += f"\n\nCode: {code}"
-        QMessageBox.critical(self, title, msg)
+        show_selectable_error(self, title, msg)
 
     def _show_empty_state_hint(self) -> None:
         # If there are no profiles, hint user to Create
         if self._profiles_model.rowCount() == 0:
-            QMessageBox.information(self, "No Profiles", "No profiles exist. Click 'Create' to add one.")
+            show_selectable_info(self, "No Profiles", "No profiles exist. Click 'Create' to add one.")
 
     def _prompt_save_discard_cancel(self, question: str) -> str:
         """
