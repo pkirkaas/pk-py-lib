@@ -1,38 +1,36 @@
 """
 src/pk_py_lib/core/settings_profiles.py
 
-Core settings profile management: persistent profiles with Active/Default semantics.
+Settings Profiles core manager (normalized schema, id-centric)
 
-This module provides:
-- SettingsProfile dataclass: a simple in-memory representation
-- SettingsProfilesManager: CRUD, copy, set-active/default, import/export, validation
+This module implements the canonical, normalized Settings Profiles subsystem:
+- Persistence in SQLite through DatabaseManager
+- Normalized tables:
+    settings_profiles(id TEXT UUID PK, name TEXT UNIQUE CI, description TEXT NULL,
+                      is_active INT, created_at TEXT ISO8601Z, updated_at TEXT ISO8601Z)
+    settings_profile_items(id TEXT UUID PK, profile_id TEXT FK, key TEXT,
+                           value TEXT JSON-serialized, created_at TEXT, updated_at TEXT)
+- Meta key: 'pk.settings_profiles' in the meta table with JSON payload:
+    {"schema_version": 1, "active_profile_id": "<uuid or null>", "last_migrated_at": "<ISO8601Z>"}
 
-Persistence model (canonical subset for MVP):
-- Table: settings_profiles(id INTEGER PK AUTOINCREMENT,
-                           name TEXT UNIQUE COLLATE NOCASE,
-                           data TEXT JSON,
-                           is_default INTEGER,
-                           created_at TEXT ISO8601,
-                           updated_at TEXT ISO8601)
-- Active profile id stored in meta table under key 'active_profile_id' (stringified integer)
+Strict invariants:
+- Profile name: case-insensitive unique, non-empty, ^[A-Za-z0-9 _-]{1,64}$
+- Keys within a profile: case-insensitive unique, ^[A-Za-z0-9_.:-]{1,128}$
+- Exactly one active profile at runtime (enforced by writes)
+- All values JSON-serialized canonically (sorted keys, compact separators)
+- Timestamps stored in UTC ISO8601 with Z suffix
 
-Invariants:
-- Name validation: ^[A-Za-z0-9 _-]{1,64}$ (case-insensitive unique)
-- Single default at most (logic-enforced; zero or one)
-- Cannot delete the active profile
-- Cannot delete the last remaining profile
+Transactions and concurrency:
+- All mutating operations use DatabaseManager.get_connection which commits on success and rolls back on error.
+- Foreign keys are enforced (PRAGMA foreign_keys=ON in DatabaseManager).
+- Concurrency errors (DB locked) are surfaced as StorageError; callers may retry.
 
-Transactions:
-- All mutating operations execute inside DatabaseManager.get_connection context,
-  which commits on success and rolls back on exception.
+Errors:
+- ValidationError, AlreadyExistsError, NotFoundError, StorageError, MigrationError, ConcurrencyError
+  (Minimal definitions provided here for reuse by callers; can be lifted to a shared errors module later.)
 
-Logging:
-- Logger name: "pk_py_lib.settings_profiles"
-- INFO for create/update/delete/copy/set-active/set-default
-- WARNING for validation failures
-- ERROR for DB/persistence failures
-
-Note: Syntax validation via ast performed (see project rules).
+Note:
+- This module was syntax-validated using Python's ast module per project rules.
 """
 
 from __future__ import annotations
@@ -41,13 +39,40 @@ import json
 import logging
 import re
 import sqlite3
-from dataclasses import dataclass, field, asdict
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from .database import DatabaseManager
 
 logger = logging.getLogger("pk_py_lib.settings_profiles")
+
+# ---------------------------------------------------------------------------
+# Errors (minimal local definitions; can be refactored into a shared module)
+# ---------------------------------------------------------------------------
+
+class SettingsProfilesError(Exception):
+    """Base class for settings profiles errors."""
+
+class ValidationError(SettingsProfilesError):
+    """Raised when validation rules are violated."""
+
+class AlreadyExistsError(SettingsProfilesError):
+    """Raised on case-insensitive uniqueness conflicts (e.g., name or key)."""
+
+class NotFoundError(SettingsProfilesError):
+    """Raised when a requested profile or item does not exist."""
+
+class StorageError(SettingsProfilesError):
+    """Raised for underlying storage/SQLite failures."""
+
+class MigrationError(SettingsProfilesError):
+    """Raised on migration/meta corruption scenarios."""
+
+class ConcurrencyError(SettingsProfilesError):
+    """Raised on optimistic concurrency or lock conflicts."""
 
 
 # ---------------------------------------------------------------------------
@@ -57,35 +82,38 @@ logger = logging.getLogger("pk_py_lib.settings_profiles")
 @dataclass
 class SettingsProfile:
     """
-    In-memory representation of a settings profile.
+    Strongly-typed in-memory representation of a Settings Profile.
 
-    Parameters
+    Attributes
     ----------
-    id : Optional[int]
-        Database primary key. None for not-yet-persisted instances.
+    id : str
+        UUID string serving as the primary key (text).
     name : str
-        Human-friendly, unique name. Rules: ^[A-Za-z0-9 _-]{1,64}$ (case-insensitive unique).
-    data : Dict[str, Any]
-        Arbitrary JSON-serializable settings payload for the profile (algorithm defaults, paths, etc).
-    is_default : bool
-        Whether this profile is the designated "Default" for future app launches (at most one).
-    created_at : Optional[str]
-        ISO8601 timestamp (UTC, Z-suffixed) when the profile was created.
-    updated_at : Optional[str]
-        ISO8601 timestamp (UTC, Z-suffixed) when the profile was last updated.
+        Human-friendly unique name (case-insensitive unique), regex ^[A-Za-z0-9 _-]{1,64}$.
+    description : Optional[str]
+        Optional longer description.
+    is_active : bool
+        Whether this profile is currently active (mirrors meta for simpler queries).
+    created_at : str
+        Creation timestamp in UTC ISO8601 with 'Z' suffix (e.g., '2025-08-17T00:00:00Z').
+    updated_at : str
+        Update timestamp in UTC ISO8601 with 'Z' suffix.
 
     Examples
     --------
-    >>> p = SettingsProfile(name="My Flow", data={"algorithms": ["phash"]})
-    >>> p.is_default
-    False
+    >>> p = SettingsProfile(id="...", name="Default", description=None, is_active=True,
+    ...                     created_at="2025-08-17T00:00:00Z", updated_at="2025-08-17T00:00:00Z")
+    >>> p.is_active
+    True
     """
-    id: Optional[int] = None
-    name: str = "Default"
-    data: Dict[str, Any] = field(default_factory=dict)
-    is_default: bool = False
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+
+
+    id: str
+    name: str
+    description: Optional[str]
+    is_active: bool
+    created_at: str
+    updated_at: str
 
 
 # ---------------------------------------------------------------------------
@@ -94,627 +122,707 @@ class SettingsProfile:
 
 class SettingsProfilesManager:
     """
-    Manage persistent settings profiles and active/default semantics.
+    Manager for normalized Settings Profiles.
 
-    This manager uses the settings_profiles table for storage and the meta table
-    ('active_profile_id' key) for the current active profile id.
-
-    Integration hooks
-    -----------------
-    - on_active_change: Optional[Callable[[SettingsProfile], None]]
-      Called after a successful set_active_profile(), create_profile(make_active=True),
-      or copy_profile(make_active=True) with the active SettingsProfile instance.
-      The GUI or application may use this to align any in-process state.
+    Responsibilities
+    ----------------
+    - CRUD operations on profiles
+    - Manage active profile semantics and meta 'pk.settings_profiles'
+    - Key/Value get/set/remove for profile items (JSON-serialized)
+    - Import/Export payloads
+    - Validation helpers
 
     Usage
     -----
     >>> db = DatabaseManager()
     >>> db.initialize()
     >>> mgr = SettingsProfilesManager(db)
-    >>> created = mgr.create_profile("Work", {"threshold": 0.9}, make_active=True, make_default=True)
-    >>> active = mgr.get_active_profile()
-    >>> assert active and active.name == "Work"
+    >>> prof = mgr.ensure_default_profile()
+    >>> mgr.set_values(prof.id, {"threshold": 0.9, "algorithms": ["phash", "dhash"]})
+    >>> mgr.get_active_profile().id == prof.id
+    True
     """
 
     NAME_REGEX = re.compile(r"^[A-Za-z0-9 _-]{1,64}$")
+    KEY_REGEX = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
-    def __init__(self, db_manager: DatabaseManager, on_active_change: Optional[Callable[[SettingsProfile], None]] = None):
+    def __init__(self, db_manager: DatabaseManager):
         """
-        Initialize the manager.
+        Initialize manager.
 
         Parameters
         ----------
         db_manager : DatabaseManager
-            Database manager providing connection helpers.
-        on_active_change : Optional[Callable[[SettingsProfile], None]]
-            Callback invoked after active profile changes (optional).
+            Database manager providing connection helpers (settings.db).
         """
         self.db = db_manager
-        self.on_active_change = on_active_change
 
     # -------------------------------
     # Helpers
     # -------------------------------
+
     @staticmethod
     def _now_iso() -> str:
-        """Return current UTC time as ISO8601 string without microseconds, suffixed with 'Z'."""
+        """Current UTC time as ISO8601 without microseconds, suffixed 'Z'."""
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-    @classmethod
-    def validate_name(cls, name: str) -> None:
+    @staticmethod
+    def _jdumps(value: Any) -> str:
         """
-        Validate profile name.
+        Canonical JSON serializer: UTF-8, sorted keys, compact separators.
 
-        Rules:
-        - Required, 1–64 characters
-        - Allowed: letters, digits, space, underscore, hyphen
-        - Case-insensitive uniqueness enforced at persistence time
+        Returns
+        -------
+        str
+            JSON string ready for storage in TEXT columns.
+        """
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def validate_profile_name(cls, name: str) -> None:
+        """
+        Validate profile name against canonical rules.
 
         Raises
         ------
-        ValueError
-            If name violates rules.
+        ValidationError
+            On invalid type or regex/length violations.
         """
         if not isinstance(name, str):
-            raise ValueError("Profile name must be a string")
+            raise ValidationError("Profile name must be a string")
         if not cls.NAME_REGEX.match(name):
-            raise ValueError("Invalid profile name. Allowed: letters, digits, space, _ or -, length 1–64.")
+            raise ValidationError("Invalid profile name: must match ^[A-Za-z0-9 _-]{1,64}$")
 
-    def _exists_name(self, conn: sqlite3.Connection, name: str, exclude_id: Optional[int] = None) -> bool:
-        """Return True if another profile with same name (case-insensitive) exists."""
-        if exclude_id is None:
-            cur = conn.execute("SELECT id FROM settings_profiles WHERE lower(name) = lower(?) LIMIT 1", (name,))
-        else:
-            cur = conn.execute(
-                "SELECT id FROM settings_profiles WHERE lower(name) = lower(?) AND id != ? LIMIT 1",
-                (name, exclude_id),
-            )
-        return cur.fetchone() is not None
+    @classmethod
+    def validate_keys(cls, keys: Iterable[str]) -> None:
+        """
+        Validate a set of keys against canonical rules.
+
+        Raises
+        ------
+        ValidationError
+            On any invalid key (type or regex/length).
+        """
+        for k in keys:
+            if not isinstance(k, str):
+                raise ValidationError("Keys must be strings")
+            if not cls.KEY_REGEX.match(k):
+                raise ValidationError(f"Invalid key '{k}': must match ^[A-Za-z0-9_.:-]{{1,128}}$")
 
     @staticmethod
     def _row_to_profile(row: sqlite3.Row) -> SettingsProfile:
-        """Convert row to SettingsProfile."""
-        data_obj: Dict[str, Any]
-        try:
-            data_obj = json.loads(row["data"]) if row["data"] else {}
-            if not isinstance(data_obj, dict):
-                data_obj = {"_": data_obj}
-        except Exception:
-            data_obj = {}
         return SettingsProfile(
-            id=int(row["id"]),
+            id=str(row["id"]),
             name=str(row["name"]),
-            data=data_obj,
-            is_default=bool(row["is_default"]),
-            created_at=str(row["created_at"]) if row["created_at"] is not None else None,
-            updated_at=str(row["updated_at"]) if row["updated_at"] is not None else None,
+            description=str(row["description"]) if row["description"] is not None else None,
+            is_active=bool(row["is_active"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
         )
 
-    def _load_profile_by_id(self, conn: sqlite3.Connection, profile_id: int) -> Optional[SettingsProfile]:
-        cur = conn.execute("SELECT id, name, data, is_default, created_at, updated_at FROM settings_profiles WHERE id = ?", (profile_id,))
+    @staticmethod
+    def _read_meta(conn: sqlite3.Connection) -> Dict[str, Any]:
+        cur = conn.execute("SELECT value FROM meta WHERE key='pk.settings_profiles'")
         row = cur.fetchone()
-        return self._row_to_profile(row) if row else None
+        if not row:
+            return {}
+        try:
+            data = json.loads(row[0])
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
 
-    def _ensure_active_meta_if_possible(self, conn: sqlite3.Connection) -> Optional[SettingsProfile]:
+    def _write_meta_active(self, conn: sqlite3.Connection, active_profile_id: Optional[str]) -> None:
+        cfg = self._read_meta(conn)
+        cfg["schema_version"] = 1
+        cfg["active_profile_id"] = active_profile_id
+        cfg["last_migrated_at"] = self._now_iso()
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value, notes, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+            ("pk.settings_profiles", self._jdumps(cfg), "Settings profiles manager state"),
+        )
+
+    def _profile_exists_by_name(self, conn: sqlite3.Connection, name: str, exclude_id: Optional[str] = None) -> bool:
+        if exclude_id is None:
+            cur = conn.execute("SELECT id FROM settings_profiles WHERE lower(name) = lower(?) LIMIT 1", (name,))
+        else:
+            cur = conn.execute("SELECT id FROM settings_profiles WHERE lower(name) = lower(?) AND id != ? LIMIT 1", (name, exclude_id))
+        return cur.fetchone() is not None
+
+    def _ensure_single_active_locked(self, conn: sqlite3.Connection) -> Optional[SettingsProfile]:
         """
-        Ensure meta.active_profile_id exists when profiles exist.
+        Ensure exactly one active profile exists.
 
         Behavior:
-        - If key missing:
-          - Use default profile if present
-          - Else use lexicographically-first by name
-          - Persist chosen id into meta
-        - Return the corresponding SettingsProfile, or None if no profiles exist.
-        """
-        cur = conn.execute("SELECT value FROM meta WHERE key='active_profile_id'")
-        row = cur.fetchone()
-        if row and row[0]:
-            try:
-                pid = int(str(row[0]))
-            except Exception:
-                pid = None
-            if pid is not None:
-                prof = self._load_profile_by_id(conn, pid)
-                if prof:
-                    return prof
-            # Fallthrough if dangling/malformed
+        - If zero active rows:
+            * Use one referenced by meta.active_profile_id when valid
+            * Else first-by-name
+        - If multiple active rows: keep first-by-name
+        - Update both table flags and meta
 
-        # Choose default or first
-        cur = conn.execute("SELECT id FROM settings_profiles WHERE is_default = 1 ORDER BY name COLLATE NOCASE LIMIT 1")
-        r = cur.fetchone()
-        if not r:
-            cur = conn.execute("SELECT id FROM settings_profiles ORDER BY name COLLATE NOCASE LIMIT 1")
-            r = cur.fetchone()
-        if not r:
+        Returns
+        -------
+        Optional[SettingsProfile]
+            The resolved active profile, or None if table empty.
+        """
+        cur = conn.execute("SELECT id FROM settings_profiles ORDER BY name COLLATE NOCASE")
+        all_ids = [str(r[0]) for r in cur.fetchall()]
+        if not all_ids:
             return None
 
-        pid = int(r[0])
-        conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value, notes, updated_at) VALUES ('active_profile_id', ?, NULL, CURRENT_TIMESTAMP)",
-            (str(pid),),
-        )
-        return self._load_profile_by_id(conn, pid)
+        cur = conn.execute("SELECT id FROM settings_profiles WHERE is_active = 1 ORDER BY name COLLATE NOCASE")
+        actives = [str(r[0]) for r in cur.fetchall()]
+        chosen: Optional[str]
+        if len(actives) == 1:
+            chosen = actives[0]
+        elif len(actives) == 0:
+            meta = self._read_meta(conn)
+            candidate = meta.get("active_profile_id")
+            chosen = candidate if isinstance(candidate, str) and candidate in all_ids else None
+            if chosen is None:
+                cur = conn.execute("SELECT id FROM settings_profiles ORDER BY name COLLATE NOCASE LIMIT 1")
+                r = cur.fetchone()
+                chosen = str(r[0]) if r else None
+        else:
+            # Multiple actives; reduce to first-by-name
+            cur = conn.execute("SELECT id FROM settings_profiles WHERE is_active = 1 ORDER BY name COLLATE NOCASE LIMIT 1")
+            r = cur.fetchone()
+            chosen = str(r[0]) if r else None
+
+        if chosen:
+            conn.execute("UPDATE settings_profiles SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END", (chosen,))
+            self._write_meta_active(conn, chosen)
+            p = self.get_profile(chosen, _conn=conn)
+            return p
+        return None
 
     # -------------------------------
     # Public API
     # -------------------------------
-    def list_profiles(self) -> List[SettingsProfile]:
+
+    def ensure_default_profile(self) -> SettingsProfile:
         """
-        List all settings profiles sorted by name.
+        Ensure at least one profile exists. If none, create 'Default' and set it active.
 
         Returns
         -------
-        List[SettingsProfile]
-            In-memory dataclass instances.
+        SettingsProfile
+            The ensured (or newly created) active profile.
+        """
+        with self.db.get_connection(self.db.settings_db) as conn:
+            cur = conn.execute("SELECT id FROM settings_profiles LIMIT 1")
+            row = cur.fetchone()
+            if not row:
+                pid = str(uuid.uuid4())
+                ts = self._now_iso()
+                conn.execute(
+                    "INSERT INTO settings_profiles (id, name, description, is_active, created_at, updated_at) VALUES (?, 'Default', NULL, 1, ?, ?)",
+                    (pid, ts, ts),
+                )
+                self._write_meta_active(conn, pid)
+                logger.info("Created default settings profile id=%s", pid)
+            active = self._ensure_single_active_locked(conn)
+            if not active:
+                raise StorageError("Failed to ensure an active default profile")
+            return active
+
+    def list_profiles(self) -> List[SettingsProfile]:
+        """
+        List all profiles ordered by name (case-insensitive).
         """
         with self.db.get_connection(self.db.settings_db) as conn:
             cur = conn.execute(
-                "SELECT id, name, data, is_default, created_at, updated_at FROM settings_profiles ORDER BY name COLLATE NOCASE"
+                "SELECT id, name, description, is_active, created_at, updated_at FROM settings_profiles ORDER BY name COLLATE NOCASE"
             )
             return [self._row_to_profile(r) for r in cur.fetchall()]
 
-    def get_profile(self, profile_id: int) -> Optional[SettingsProfile]:
+    def list_profiles_with_counts(self) -> List[Dict[str, Any]]:
         """
-        Retrieve a profile by id.
+        List all profiles with item_count included for each profile.
+        """
+        with self.db.get_connection(self.db.settings_db) as conn:
+            cur = conn.execute(
+                """
+                SELECT p.id, p.name, p.description, p.is_active, p.created_at, p.updated_at,
+                       COALESCE((SELECT COUNT(*) FROM settings_profile_items spi WHERE spi.profile_id = p.id), 0) AS item_count
+                FROM settings_profiles p
+                ORDER BY p.name COLLATE NOCASE
+                """
+            )
+            items = []
+            for r in cur.fetchall():
+                p = SettingsProfile(
+                    id=str(r["id"]),
+                    name=str(r["name"]),
+                    description=str(r["description"]) if r["description"] is not None else None,
+                    is_active=bool(r["is_active"]),
+                    created_at=str(r["created_at"]),
+                    updated_at=str(r["updated_at"]),
+                )
+                items.append(
+                    {
+                        "id": p.id,
+                        "name": p.name,
+                        "description": p.description,
+                        "is_active": p.is_active,
+                        "created_at": p.created_at,
+                        "updated_at": p.updated_at,
+                        "item_count": int(r["item_count"]),
+                    }
+                )
+            return items
+
+    def get_profile(self, profile_id: str, _conn: Optional[sqlite3.Connection] = None) -> Optional[SettingsProfile]:
+        """
+        Retrieve profile by id.
 
         Parameters
         ----------
-        profile_id : int
-            Primary key id.
+        profile_id : str
+            UUID of the profile.
 
         Returns
         -------
         Optional[SettingsProfile]
-            Profile instance if found; otherwise None.
         """
+        def _get(conn: sqlite3.Connection) -> Optional[SettingsProfile]:
+            cur = conn.execute(
+                "SELECT id, name, description, is_active, created_at, updated_at FROM settings_profiles WHERE id = ?",
+                (profile_id,),
+            )
+            row = cur.fetchone()
+            return self._row_to_profile(row) if row else None
+
+        if _conn is not None:
+            return _get(_conn)
         with self.db.get_connection(self.db.settings_db) as conn:
-            return self._load_profile_by_id(conn, profile_id)
+            return _get(conn)
 
     def get_active_profile(self) -> Optional[SettingsProfile]:
         """
-        Get the active profile.
-
-        Behavior:
-        - Return profile referenced by meta.active_profile_id when valid
-        - If missing/dangling:
-          - Use default if present, else first-by-name when any exist
-          - Persist selection into meta
-        - If no profiles exist, return None
-
-        Returns
-        -------
-        Optional[SettingsProfile]
-            Active profile or None when table empty.
+        Get current active profile, repairing invariants if necessary.
         """
         with self.db.get_connection(self.db.settings_db) as conn:
-            return self._ensure_active_meta_if_possible(conn)
+            # Fast path
+            cur = conn.execute(
+                "SELECT id, name, description, is_active, created_at, updated_at FROM settings_profiles WHERE is_active = 1 ORDER BY name COLLATE NOCASE LIMIT 1"
+            )
+            row = cur.fetchone()
+            if row:
+                return self._row_to_profile(row)
+            # Repair
+            return self._ensure_single_active_locked(conn)
 
-    def create_profile(self, name: str, data: Optional[Dict[str, Any]] = None,
-                       make_active: bool = False, make_default: bool = False) -> SettingsProfile:
+    def set_active_profile(self, profile_id: str) -> SettingsProfile:
+        """
+        Set exactly one active profile.
+
+        Raises
+        ------
+        NotFoundError
+            If the profile does not exist.
+        StorageError
+            On storage errors.
+        """
+        try:
+            with self.db.get_connection(self.db.settings_db) as conn:
+                p = self.get_profile(profile_id, _conn=conn)
+                if not p:
+                    raise NotFoundError(f"Profile id={profile_id} not found")
+                conn.execute("UPDATE settings_profiles SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END", (profile_id,))
+                self._write_meta_active(conn, profile_id)
+                logger.info("Active profile set to id=%s name=%s", p.id, p.name)
+                return self.get_profile(profile_id, _conn=conn) or p
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                raise ConcurrencyError("Database is locked") from e
+            raise StorageError(str(e)) from e
+
+    def create_profile(self, name: str, description: Optional[str] = None, make_active: bool = False) -> SettingsProfile:
         """
         Create a new profile.
 
-        Parameters
-        ----------
-        name : str
-            Profile name (validated; case-insensitive unique).
-        data : Optional[Dict[str, Any]]
-            Arbitrary JSON-serializable payload. Defaults to {}.
-        make_active : bool
-            If True, set the newly created profile as Active.
-        make_default : bool
-            If True, set the newly created profile as Default (clears previous default).
-
-        Returns
-        -------
-        SettingsProfile
-            Newly created profile instance.
+        - Validates name
+        - Enforces case-insensitive uniqueness
+        - If make_active=True, ensures exactly one active (others cleared)
 
         Raises
         ------
-        ValueError
-            If validation fails or name collides (case-insensitive).
+        ValidationError, AlreadyExistsError, StorageError
         """
-        self.validate_name(name)
-        payload = data or {}
-        if not isinstance(payload, dict):
-            raise ValueError("Profile data must be a dictionary")
-
-        created = self._now_iso()
-        with self.db.get_connection(self.db.settings_db) as conn:
-            # Uniqueness
-            if self._exists_name(conn, name):
-                raise ValueError(f"A profile named '{name}' already exists (case-insensitive).")
-
-            # Insert
-            cur = conn.execute(
-                """
-                INSERT INTO settings_profiles (name, data, is_default, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (name, json.dumps(payload, ensure_ascii=False), 1 if make_default else 0, created, created),
-            )
-            new_id = int(cur.lastrowid)
-            logger.info("Created settings profile id=%s name=%s default=%s", new_id, name, bool(make_default))
-
-            # If default requested, clear others
-            if make_default:
-                conn.execute("UPDATE settings_profiles SET is_default = 0 WHERE id != ?", (new_id,))
-                conn.execute("UPDATE settings_profiles SET is_default = 1 WHERE id = ?", (new_id,))
-
-            # Make active if requested
-            new_prof = self._load_profile_by_id(conn, new_id)
-            if make_active and new_prof:
+        self.validate_profile_name(name)
+        try:
+            with self.db.get_connection(self.db.settings_db) as conn:
+                if self._profile_exists_by_name(conn, name):
+                    raise AlreadyExistsError(f"A profile named '{name}' already exists (case-insensitive).")
+                pid = str(uuid.uuid4())
+                ts = self._now_iso()
+                is_active = 1 if make_active else 0
                 conn.execute(
-                    "INSERT OR REPLACE INTO meta (key, value, notes, updated_at) VALUES ('active_profile_id', ?, NULL, CURRENT_TIMESTAMP)",
-                    (str(new_id),),
+                    "INSERT INTO settings_profiles (id, name, description, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (pid, name, description, is_active, ts, ts),
                 )
-                logger.info("Set active_profile_id=%s", new_id)
-                if self.on_active_change:
-                    try:
-                        self.on_active_change(new_prof)
-                    except Exception:
-                        logger.exception("on_active_change callback failed for id=%s name=%s", new_id, name)
+                if make_active:
+                    conn.execute("UPDATE settings_profiles SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END", (pid,))
+                    self._write_meta_active(conn, pid)
+                # If no active row exists, make this one active
+                cur = conn.execute("SELECT COUNT(*) FROM settings_profiles WHERE is_active = 1")
+                if int(cur.fetchone()[0]) == 0:
+                    conn.execute("UPDATE settings_profiles SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END", (pid,))
+                    self._write_meta_active(conn, pid)
+                logger.info("Created profile id=%s name=%s", pid, name)
+                return self.get_profile(pid, _conn=conn) or SettingsProfile(
+                    id=pid, name=name, description=description, is_active=bool(is_active), created_at=ts, updated_at=ts
+                )
+        except sqlite3.IntegrityError as e:
+            raise AlreadyExistsError(f"Profile name '{name}' conflicts") from e
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                raise ConcurrencyError("Database is locked") from e
+            raise StorageError(str(e)) from e
 
-            return new_prof if new_prof else SettingsProfile(id=new_id, name=name, data=payload, is_default=bool(make_default),
-                                                            created_at=created, updated_at=created)
-
-    def update_profile(self, profile_id: int, name: Optional[str] = None, data: Optional[Dict[str, Any]] = None,
-                       make_default: Optional[bool] = None) -> SettingsProfile:
+    def update_profile(self, profile_id: str, name: Optional[str] = None, description: Optional[str] = None) -> SettingsProfile:
         """
-        Update profile's name/data and optionally its default flag.
-
-        Parameters
-        ----------
-        profile_id : int
-            Target profile id.
-        name : Optional[str]
-            New name (validated; must remain unique).
-        data : Optional[Dict[str, Any]]
-            New JSON payload to replace existing (full replacement).
-        make_default : Optional[bool]
-            - True: set as default and clear default on others
-            - False: explicitly unset default on this profile
-            - None: leave default unchanged
-
-        Returns
-        -------
-        SettingsProfile
-            Updated profile.
+        Update profile name and/or description.
 
         Raises
         ------
-        ValueError
-            If profile does not exist, name invalid/collides, or data type invalid.
+        NotFoundError, ValidationError, AlreadyExistsError, StorageError
         """
-        with self.db.get_connection(self.db.settings_db) as conn:
-            current = self._load_profile_by_id(conn, profile_id)
-            if not current:
-                raise ValueError(f"Profile id={profile_id} not found")
-
-            new_name = current.name
-            new_data = current.data
-
-            if name is not None:
-                self.validate_name(name)
-                if self._exists_name(conn, name, exclude_id=profile_id):
-                    raise ValueError(f"A profile named '{name}' already exists (case-insensitive).")
-                new_name = name
-
-            if data is not None:
-                if not isinstance(data, dict):
-                    raise ValueError("Profile data must be a dictionary")
-                new_data = data
-
-            updates: List[str] = []
-            params: List[Any] = []
-            if new_name != current.name:
-                updates.append("name = ?")
-                params.append(new_name)
-            if new_data != current.data:
-                updates.append("data = ?")
-                params.append(json.dumps(new_data, ensure_ascii=False))
-            if make_default is True:
-                # handled after basic update for exclusivity
-                pass
-            elif make_default is False:
-                updates.append("is_default = 0")
-
-            if updates:
+        if name is None and description is None:
+            raise ValidationError("Nothing to update")
+        if name is not None:
+            self.validate_profile_name(name)
+        try:
+            with self.db.get_connection(self.db.settings_db) as conn:
+                current = self.get_profile(profile_id, _conn=conn)
+                if not current:
+                    raise NotFoundError(f"Profile id={profile_id} not found")
+                if name is not None and self._profile_exists_by_name(conn, name, exclude_id=profile_id):
+                    raise AlreadyExistsError(f"A profile named '{name}' already exists (case-insensitive).")
+                updates: List[str] = []
+                params: List[Any] = []
+                if name is not None:
+                    updates.append("name = ?")
+                    params.append(name)
+                if description is not None:
+                    updates.append("description = ?")
+                    params.append(description)
                 updates.append("updated_at = ?")
                 params.append(self._now_iso())
                 params.append(profile_id)
-                conn.execute(f"UPDATE settings_profiles SET {', '.join(updates)} WHERE id = ?", tuple(params))
+                sql = f"UPDATE settings_profiles SET {', '.join(updates)} WHERE id = ?"
+                cur = conn.execute(sql, tuple(params))
+                if cur.rowcount != 1:
+                    raise ConcurrencyError("Profile update affected an unexpected number of rows")
+                logger.info("Updated profile id=%s name->%s", profile_id, name or current.name)
+                return self.get_profile(profile_id, _conn=conn) or current
+        except sqlite3.IntegrityError as e:
+            raise AlreadyExistsError(f"Profile name '{name}' conflicts") from e
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                raise ConcurrencyError("Database is locked") from e
+            raise StorageError(str(e)) from e
 
-            if make_default is True:
-                conn.execute("UPDATE settings_profiles SET is_default = 0 WHERE id != ?", (profile_id,))
-                conn.execute("UPDATE settings_profiles SET is_default = 1 WHERE id = ?", (profile_id,))
-                logger.info("Set default profile id=%s name=%s", profile_id, new_name)
-
-            updated = self._load_profile_by_id(conn, profile_id)
-            assert updated is not None
-            logger.info("Updated settings profile id=%s name=%s", profile_id, updated.name)
-            return updated
-
-    def delete_profile(self, profile_id: int) -> None:
+    def delete_profile(self, profile_id: str) -> None:
         """
-        Delete a profile by id.
-
-        Invariants
-        ----------
-        - Cannot delete the active profile
-        - Cannot delete the last remaining profile
+        Delete a profile. If the deleted profile was active, another is made active,
+        or a default is created to maintain the invariant of exactly one active profile.
 
         Raises
         ------
-        ValueError
-            If invariants would be violated or record does not exist.
+        NotFoundError, StorageError
         """
-        with self.db.get_connection(self.db.settings_db) as conn:
-            # Ensure it exists
-            cur = conn.execute("SELECT id, name, is_default FROM settings_profiles WHERE id = ?", (profile_id,))
-            row = cur.fetchone()
-            if not row:
-                raise ValueError(f"Profile id={profile_id} not found")
+        try:
+            with self.db.get_connection(self.db.settings_db) as conn:
+                current = self.get_profile(profile_id, _conn=conn)
+                if not current:
+                    raise NotFoundError(f"Profile id={profile_id} not found")
+                # Count profiles before delete
+                cur = conn.execute("SELECT COUNT(*) FROM settings_profiles")
+                total = int(cur.fetchone()[0])
+                conn.execute("DELETE FROM settings_profiles WHERE id = ?", (profile_id,))
+                logger.info("Deleted profile id=%s name=%s", current.id, current.name)
+                # Ensure exactly one active remains
+                if total <= 1:
+                    # Create a fresh default
+                    pid = str(uuid.uuid4())
+                    ts = self._now_iso()
+                    conn.execute(
+                        "INSERT INTO settings_profiles (id, name, description, is_active, created_at, updated_at) VALUES (?, 'Default', NULL, 1, ?, ?)",
+                        (pid, ts, ts),
+                    )
+                    self._write_meta_active(conn, pid)
+                else:
+                    # Normalize actives
+                    self._ensure_single_active_locked(conn)
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                raise ConcurrencyError("Database is locked") from e
+            raise StorageError(str(e)) from e
 
-            # Cannot delete active
-            cur = conn.execute("SELECT value FROM meta WHERE key='active_profile_id'")
-            r = cur.fetchone()
-            active_id = int(r[0]) if r and str(r[0]).isdigit() else None
-            if active_id == profile_id:
-                raise ValueError("Cannot delete the active profile. Switch to another profile first.")
-
-            # Cannot delete last remaining
-            cur = conn.execute("SELECT COUNT(*) FROM settings_profiles")
-            total = int(cur.fetchone()[0])
-            if total <= 1:
-                raise ValueError("Cannot delete the last remaining profile. Create another profile first.")
-
-            conn.execute("DELETE FROM settings_profiles WHERE id = ?", (profile_id,))
-            logger.info("Deleted settings profile id=%s name=%s", int(row[0]), str(row[1]))
-
-    def copy_profile(self, source_profile_id: int, new_name: str,
-                     make_active: bool = False, make_default: bool = False) -> SettingsProfile:
+    def duplicate_profile(self, source_profile_id: str, new_name: str, description: Optional[str] = None, make_active: bool = False) -> SettingsProfile:
         """
-        Copy a profile into a new profile with a unique name.
-
-        Parameters
-        ----------
-        source_profile_id : int
-            Source profile id to copy.
-        new_name : str
-            Proposed name for the copy (validated; must be unique).
-        make_active : bool
-            If True, make the new copy active.
-        make_default : bool
-            If True, set the new copy as default (clears others).
-
-        Returns
-        -------
-        SettingsProfile
-            Newly created profile.
+        Duplicate a profile (including its items) under a new unique name.
 
         Raises
         ------
-        ValueError
-            On invalid name, collision, or missing source.
+        NotFoundError, ValidationError, AlreadyExistsError, StorageError
         """
-        self.validate_name(new_name)
-        with self.db.get_connection(self.db.settings_db) as conn:
-            src = self._load_profile_by_id(conn, source_profile_id)
-            if not src:
-                raise ValueError(f"Source profile id={source_profile_id} not found")
-            if self._exists_name(conn, new_name):
-                raise ValueError(f"A profile named '{new_name}' already exists (case-insensitive).")
-
-            created = self._now_iso()
-            cur = conn.execute(
-                """
-                INSERT INTO settings_profiles (name, data, is_default, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (new_name, json.dumps(src.data, ensure_ascii=False), 1 if make_default else 0, created, created),
-            )
-            new_id = int(cur.lastrowid)
-            logger.info("Copied profile id=%s -> new id=%s name=%s", source_profile_id, new_id, new_name)
-
-            if make_default:
-                conn.execute("UPDATE settings_profiles SET is_default = 0 WHERE id != ?", (new_id,))
-                conn.execute("UPDATE settings_profiles SET is_default = 1 WHERE id = ?", (new_id,))
-
-            new_prof = self._load_profile_by_id(conn, new_id)
-            if make_active and new_prof:
+        self.validate_profile_name(new_name)
+        try:
+            with self.db.get_connection(self.db.settings_db) as conn:
+                src = self.get_profile(source_profile_id, _conn=conn)
+                if not src:
+                    raise NotFoundError(f"Source profile id={source_profile_id} not found")
+                if self._profile_exists_by_name(conn, new_name):
+                    raise AlreadyExistsError(f"A profile named '{new_name}' already exists (case-insensitive).")
+                pid = str(uuid.uuid4())
+                ts = self._now_iso()
+                act = 1 if make_active else 0
                 conn.execute(
-                    "INSERT OR REPLACE INTO meta (key, value, notes, updated_at) VALUES ('active_profile_id', ?, NULL, CURRENT_TIMESTAMP)",
-                    (str(new_id),),
+                    "INSERT INTO settings_profiles (id, name, description, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (pid, new_name, description, act, ts, ts),
                 )
-                logger.info("Set active_profile_id=%s", new_id)
-                if self.on_active_change:
-                    try:
-                        self.on_active_change(new_prof)
-                    except Exception:
-                        logger.exception("on_active_change callback failed for id=%s name=%s", new_id, new_name)
+                # Copy items
+                cur = conn.execute("SELECT key, value, created_at, updated_at FROM settings_profile_items WHERE profile_id = ?", (src.id,))
+                for key, value, c_at, u_at in cur.fetchall():
+                    conn.execute(
+                        "INSERT INTO settings_profile_items (id, profile_id, key, value, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (str(uuid.uuid4()), pid, str(key), str(value), c_at or ts, u_at or ts),
+                    )
+                if make_active:
+                    conn.execute("UPDATE settings_profiles SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END", (pid,))
+                    self._write_meta_active(conn, pid)
+                # Ensure there is an active profile
+                self._ensure_single_active_locked(conn)
+                logger.info("Duplicated profile %s -> id=%s name=%s", src.id, pid, new_name)
+                return self.get_profile(pid, _conn=conn) or SettingsProfile(
+                    id=pid, name=new_name, description=description, is_active=bool(act), created_at=ts, updated_at=ts
+                )
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                raise ConcurrencyError("Database is locked") from e
+            raise StorageError(str(e)) from e
 
-            return new_prof if new_prof else SettingsProfile(id=new_id, name=new_name, data=src.data, is_default=bool(make_default),
-                                                            created_at=created, updated_at=created)
+    # -------------------------------
+    # Key/Value operations
+    # -------------------------------
 
-    def set_active_profile(self, profile_id: int) -> SettingsProfile:
+    def get_values(self, profile_id: str, keys: Optional[Iterable[str]] = None) -> Dict[str, Any]:
         """
-        Set a profile as Active by id and update meta.active_profile_id.
+        Read key/value items for a profile. When keys is None, returns all.
 
         Returns
         -------
-        SettingsProfile
-            The active profile after the change.
-
-        Raises
-        ------
-        ValueError
-            If the profile id does not exist.
+        Dict[str, Any]
+            Mapping of key -> deserialized Python value.
         """
         with self.db.get_connection(self.db.settings_db) as conn:
-            prof = self._load_profile_by_id(conn, profile_id)
-            if not prof:
-                raise ValueError(f"Profile id={profile_id} not found")
-
-            conn.execute(
-                "INSERT OR REPLACE INTO meta (key, value, notes, updated_at) VALUES ('active_profile_id', ?, NULL, CURRENT_TIMESTAMP)",
-                (str(profile_id),),
-            )
-            logger.info("Set active_profile_id=%s (name=%s)", profile_id, prof.name)
-
-            if self.on_active_change:
+            if not self.get_profile(profile_id, _conn=conn):
+                raise NotFoundError(f"Profile id={profile_id} not found")
+            if keys is None:
+                cur = conn.execute("SELECT key, value FROM settings_profile_items WHERE profile_id = ? ORDER BY key COLLATE NOCASE", (profile_id,))
+            else:
+                self.validate_keys(keys)
+                placeholders = ",".join("?" for _ in keys)
+                params: List[Any] = [profile_id] + [k for k in keys]
+                cur = conn.execute(
+                    f"SELECT key, value FROM settings_profile_items WHERE profile_id = ? AND lower(key) IN ({','.join('lower(?)' for _ in keys)}) ORDER BY key COLLATE NOCASE",
+                    tuple(params),
+                )
+            out: Dict[str, Any] = {}
+            for k, v in cur.fetchall():
                 try:
-                    self.on_active_change(prof)
+                    out[str(k)] = json.loads(v)
                 except Exception:
-                    logger.exception("on_active_change callback failed for id=%s name=%s", profile_id, prof.name)
+                    # Fallback in case of corrupted JSON
+                    out[str(k)] = v
+            return out
 
-            return prof
-
-    def set_default_profile(self, profile_id: int) -> SettingsProfile:
+    def set_values(self, profile_id: str, values: Dict[str, Any]) -> int:
         """
-        Set exactly one Default profile (logic-enforced exclusivity).
+        Upsert a dictionary of key -> value for a profile.
 
         Returns
         -------
-        SettingsProfile
-            The profile marked as default.
+        int
+            Number of keys written.
+        """
+        if not isinstance(values, dict):
+            raise ValidationError("values must be a dict")
+        self.validate_keys(values.keys())
+        ts = self._now_iso()
+        try:
+            with self.db.get_connection(self.db.settings_db) as conn:
+                if not self.get_profile(profile_id, _conn=conn):
+                    raise NotFoundError(f"Profile id={profile_id} not found")
+                written = 0
+                for k, v in values.items():
+                    data = self._jdumps(v)
+                    # Try update (case-insensitive match)
+                    cur = conn.execute(
+                        "UPDATE settings_profile_items SET value = ?, updated_at = ? WHERE profile_id = ? AND lower(key) = lower(?)",
+                        (data, ts, profile_id, k),
+                    )
+                    if cur.rowcount == 0:
+                        # Insert new
+                        conn.execute(
+                            "INSERT INTO settings_profile_items (id, profile_id, key, value, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                            (str(uuid.uuid4()), profile_id, k, data, ts, ts),
+                        )
+                    written += 1
+                return written
+        except sqlite3.IntegrityError as e:
+            # Case-insensitive conflict (should not occur due to update path) – treat as AlreadyExistsError
+            raise AlreadyExistsError("Key uniqueness conflict") from e
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                raise ConcurrencyError("Database is locked") from e
+            raise StorageError(str(e)) from e
 
-        Raises
-        ------
-        ValueError
-            If profile id does not exist.
+    def remove_values(self, profile_id: str, keys: Iterable[str]) -> int:
+        """
+        Remove keys for a profile.
+
+        Returns
+        -------
+        int
+            Number of rows deleted.
+        """
+        keys = list(keys)
+        self.validate_keys(keys)
+        try:
+            with self.db.get_connection(self.db.settings_db) as conn:
+                if not self.get_profile(profile_id, _conn=conn):
+                    raise NotFoundError(f"Profile id={profile_id} not found")
+                placeholders = ",".join("?" for _ in keys)
+                params: List[Any] = [profile_id] + [k for k in keys]
+                cur = conn.execute(
+                    f"DELETE FROM settings_profile_items WHERE profile_id = ? AND lower(key) IN ({','.join('lower(?)' for _ in keys)})",
+                    tuple(params),
+                )
+                return int(cur.rowcount or 0)
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                raise ConcurrencyError("Database is locked") from e
+            raise StorageError(str(e)) from e
+
+    # -------------------------------
+    # Import/Export
+    # -------------------------------
+
+    def export_profile(self, profile_id: str) -> Dict[str, Any]:
+        """
+        Export a profile to a JSON-serializable dict containing metadata and items.
+
+        Returns
+        -------
+        Dict[str, Any]
+            {
+                "profile": {id, name, description, is_active, created_at, updated_at},
+                "items": {key: value}
+            }
         """
         with self.db.get_connection(self.db.settings_db) as conn:
-            prof = self._load_profile_by_id(conn, profile_id)
+            prof = self.get_profile(profile_id, _conn=conn)
             if not prof:
-                raise ValueError(f"Profile id={profile_id} not found")
-
-            conn.execute("UPDATE settings_profiles SET is_default = 0 WHERE id != ?", (profile_id,))
-            conn.execute("UPDATE settings_profiles SET is_default = 1 WHERE id = ?", (profile_id,))
-            logger.info("Set default profile id=%s name=%s", profile_id, prof.name)
-
-            return self._load_profile_by_id(conn, profile_id) or prof
-
-    def export_profile(self, profile_id: int) -> Dict[str, Any]:
-        """
-        Export a profile into a portable dictionary.
-
-        Payload includes:
-        - id, name, is_default
-        - data (deep copy of JSON payload)
-
-        Raises
-        ------
-        ValueError
-            If profile not found.
-        """
-        with self.db.get_connection(self.db.settings_db) as conn:
-            prof = self._load_profile_by_id(conn, profile_id)
-            if not prof:
-                raise ValueError(f"Profile id={profile_id} not found")
+                raise NotFoundError(f"Profile id={profile_id} not found")
+            items = self.get_values(profile_id)
             return {
-                "id": prof.id,
-                "name": prof.name,
-                "is_default": prof.is_default,
-                "data": json.loads(json.dumps(prof.data)),  # deep copy via json
-                "created_at": prof.created_at,
-                "updated_at": prof.updated_at,
+                "profile": {
+                    "id": prof.id,
+                    "name": prof.name,
+                    "description": prof.description,
+                    "is_active": prof.is_active,
+                    "created_at": prof.created_at,
+                    "updated_at": prof.updated_at,
+                },
+                "items": items,
             }
 
-    def import_profile(self, payload: Dict[str, Any], strategy: str = "fail_on_conflict") -> SettingsProfile:
+    def import_profile(
+        self,
+        payload: Dict[str, Any],
+        strategy: str = "rename",
+        make_active: bool = False,
+    ) -> SettingsProfile:
         """
         Import a profile payload.
 
         Parameters
         ----------
         payload : Dict[str, Any]
-            Dictionary containing at least 'name' and 'data' (dict).
+            Must include:
+              - profile: {name: str, description?: str}
+              - items: dict[str, Any]
         strategy : str
-            One of:
-            - 'fail_on_conflict': raise error if name exists
-            - 'rename': append " (copy)" or " (copy N)" to create a unique name
-            - 'overwrite': replace existing profile's data/name defaults with incoming
+            Conflict strategy on name:
+              - "fail_on_conflict": raise AlreadyExistsError
+              - "rename": append " (copy)" or numbered suffix until unique (default)
+              - "overwrite": overwrite the existing profile's items (clear-then-set)
+        make_active : bool
+            Whether to set the imported profile active after import.
 
         Returns
         -------
         SettingsProfile
-            The imported (created or updated) profile.
-
-        Raises
-        ------
-        ValueError
-            On invalid payload, unknown strategy, or conflicts when 'fail_on_conflict'.
         """
         if not isinstance(payload, dict):
-            raise ValueError("Invalid profile payload (must be a dict)")
-        name = payload.get("name")
-        data = payload.get("data", {})
-        is_default = bool(payload.get("is_default", False))
-        self.validate_name(name)
-        if not isinstance(data, dict):
-            raise ValueError("Payload 'data' must be a dictionary")
+            raise ValidationError("payload must be a dict")
+        prof_meta = payload.get("profile") or {}
+        items = payload.get("items") or {}
+        name = prof_meta.get("name")
+        description = prof_meta.get("description")
+        if not isinstance(items, dict):
+            raise ValidationError("payload.items must be a dictionary")
+        self.validate_profile_name(name)
 
-        strategy = str(strategy or "fail_on_conflict").strip().lower()
+        strategy = (strategy or "rename").strip().lower()
         if strategy not in ("fail_on_conflict", "rename", "overwrite"):
-            raise ValueError("Invalid import strategy. Use: fail_on_conflict | rename | overwrite")
+            raise ValidationError("Invalid import strategy")
 
-        with self.db.get_connection(self.db.settings_db) as conn:
-            # Conflict check
-            cur = conn.execute("SELECT id FROM settings_profiles WHERE lower(name) = lower(?) LIMIT 1", (name,))
-            row = cur.fetchone()
+        try:
+            with self.db.get_connection(self.db.settings_db) as conn:
+                cur = conn.execute("SELECT id FROM settings_profiles WHERE lower(name) = lower(?)", (name,))
+                row = cur.fetchone()
+                if row is None:
+                    # New create
+                    created = self.create_profile(name=name, description=description, make_active=make_active)
+                    # Set items
+                    if items:
+                        self.set_values(created.id, items)
+                    return created
 
-            if row is None:
-                # Create new
-                created = self._now_iso()
-                cur = conn.execute(
-                    """
-                    INSERT INTO settings_profiles (name, data, is_default, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (name, json.dumps(data, ensure_ascii=False), 1 if is_default else 0, created, created),
-                )
-                new_id = int(cur.lastrowid)
-                if is_default:
-                    conn.execute("UPDATE settings_profiles SET is_default = 0 WHERE id != ?", (new_id,))
-                    conn.execute("UPDATE settings_profiles SET is_default = 1 WHERE id = ?", (new_id,))
-                logger.info("Imported new profile id=%s name=%s", new_id, name)
-                return self._load_profile_by_id(conn, new_id) or SettingsProfile(id=new_id, name=name, data=data, is_default=is_default, created_at=created, updated_at=created)
-
-            # Conflict handling
-            existing_id = int(row[0])
-            if strategy == "fail_on_conflict":
-                raise ValueError(f"A profile named '{name}' already exists.")
-            elif strategy == "rename":
-                base = name
-                suffix = " (copy)"
-                candidate = f"{base}{suffix}"
-                n = 2
-                while self._exists_name(conn, candidate):
-                    candidate = f"{base}{suffix} {n}"
-                    n += 1
-                created = self._now_iso()
-                cur = conn.execute(
-                    "INSERT INTO settings_profiles (name, data, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                    (candidate, json.dumps(data, ensure_ascii=False), 1 if is_default else 0, created, created),
-                )
-                new_id = int(cur.lastrowid)
-                if is_default:
-                    conn.execute("UPDATE settings_profiles SET is_default = 0 WHERE id != ?", (new_id,))
-                    conn.execute("UPDATE settings_profiles SET is_default = 1 WHERE id = ?", (new_id,))
-                logger.info("Imported profile with rename id=%s old_name=%s new_name=%s", new_id, name, candidate)
-                return self._load_profile_by_id(conn, new_id) or SettingsProfile(id=new_id, name=candidate, data=data, is_default=is_default, created_at=created, updated_at=created)
-            else:
-                # overwrite
-                updated = self._now_iso()
-                conn.execute(
-                    "UPDATE settings_profiles SET data = ?, updated_at = ? WHERE id = ?",
-                    (json.dumps(data, ensure_ascii=False), updated, existing_id),
-                )
-                if is_default:
-                    conn.execute("UPDATE settings_profiles SET is_default = 0 WHERE id != ?", (existing_id,))
-                    conn.execute("UPDATE settings_profiles SET is_default = 1 WHERE id = ?", (existing_id,))
-                logger.info("Imported profile with overwrite id=%s name=%s", existing_id, name)
-                return self._load_profile_by_id(conn, existing_id) or SettingsProfile(id=existing_id, name=name, data=data, is_default=is_default, updated_at=updated)
-
-# End of file
+                existing_id = str(row[0])
+                if strategy == "fail_on_conflict":
+                    raise AlreadyExistsError(f"Profile named '{name}' already exists")
+                elif strategy == "rename":
+                    base = name
+                    suffix = " (copy)"
+                    candidate = f"{base}{suffix}"
+                    n = 2
+                    while self._profile_exists_by_name(conn, candidate):
+                        candidate = f"{base}{suffix} {n}"
+                        n += 1
+                    created = self.create_profile(name=candidate, description=description, make_active=make_active)
+                    if items:
+                        self.set_values(created.id, items)
+                    return created
+                else:
+                    # overwrite: clear items, update meta, set new items
+                    conn.execute("DELETE FROM settings_profile_items WHERE profile_id = ?", (existing_id,))
+                    if items:
+                        self.set_values(existing_id, items)
+                    if description is not None:
+                        self.update_profile(existing_id, name=name, description=description)
+                    if make_active:
+                        self.set_active_profile(existing_id)
+                    return self.get_profile(existing_id, _conn=conn) or SettingsProfile(
+                        id=existing_id, name=name, description=description, is_active=False,
+                        created_at=self._now_iso(), updated_at=self._now_iso()
+                    )
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                raise ConcurrencyError("Database is locked") from e
+            raise StorageError(str(e)) from e

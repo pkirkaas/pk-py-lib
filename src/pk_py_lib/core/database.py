@@ -19,6 +19,8 @@ from typing import Optional, Dict, Any
 import shutil
 import logging
 import datetime
+import uuid
+import json
 
 logger = logging.getLogger("pk_py_lib.core.database")
 
@@ -106,15 +108,32 @@ CREATE TABLE IF NOT EXISTS recent_items (
     CHECK (item_type IN ('file', 'folder', 'session', 'export'))
 );
 
--- Settings profiles manager table (new)
+-- Settings profiles (normalized v2)
 CREATE TABLE IF NOT EXISTS settings_profiles (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
-    data TEXT NOT NULL DEFAULT '{}',
-    is_default INTEGER NOT NULL DEFAULT 0,
+    id TEXT PRIMARY KEY, -- UUID string
+    name TEXT NOT NULL,
+    description TEXT,
+    is_active INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
+
+-- Case-insensitive uniqueness on name using expression index
+CREATE UNIQUE INDEX IF NOT EXISTS ux_settings_profiles_name_lower ON settings_profiles (lower(name));
+
+-- Settings profile items (key/value per profile)
+CREATE TABLE IF NOT EXISTS settings_profile_items (
+    id TEXT PRIMARY KEY, -- UUID string
+    profile_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL, -- JSON-serialized string
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    FOREIGN KEY (profile_id) REFERENCES settings_profiles(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_settings_profile_items_profile_key ON settings_profile_items (profile_id, lower(key));
+CREATE INDEX IF NOT EXISTS ix_settings_profile_items_profile ON settings_profile_items (profile_id);
 
 -- Meta table for schema versioning and global metadata
 CREATE TABLE IF NOT EXISTS meta (
@@ -258,7 +277,7 @@ class SchemaManager:
     - migrate_to_1_1_0(conn) provides a safe migration path from 1.0.0 -> 1.1.0
     """
 
-    CURRENT_VERSION = "1.1.0"  # Updated for app_settings table addition
+    CURRENT_VERSION = "1.2.0"  # Updated for normalized settings_profiles v2
 
     def get_current_version(self, conn: sqlite3.Connection) -> Optional[str]:
         """
@@ -382,8 +401,204 @@ class SchemaManager:
 
         # 5) Update schema version
         self.set_version(conn, "1.1.0")
-
-
+    
+    def migrate_to_1_2_0(self, conn: sqlite3.Connection) -> None:
+        """
+        Migrate to 1.2.0: introduce normalized settings profiles and meta key.
+        
+        This migration is designed to be idempotent and safe to re-run. It ensures:
+          - Presence of normalized tables:
+              settings_profiles(id TEXT UUID PK, name TEXT UNIQUE (CI), description TEXT, is_active INT, created_at, updated_at)
+              settings_profile_items(id TEXT UUID PK, profile_id TEXT FK, key TEXT, value TEXT, created_at, updated_at)
+              Unique index on (lower(name)) and on (profile_id, lower(key))
+          - Meta key 'pk.settings_profiles' exists with JSON value:
+              {"schema_version": 1, "active_profile_id": "<uuid or null>", "last_migrated_at": "<ISO8601 Z>"}
+          - Exactly one active profile is present; if none exists, creates a default profile and sets it active
+          - If a legacy settings_profiles table (with columns like 'data' or 'is_default') exists, migrate rows:
+              - Create a new normalized table, generate UUID ids
+              - Move JSON keys from legacy 'data' dict into settings_profile_items
+              - Map legacy meta.active_profile_id (INTEGER) to the new UUID active profile
+          - Update meta.schema_version to "1.2.0"
+        """
+        logger.info("Applying migration to schema 1.2.0 (normalized settings profiles)")
+    
+        def _now_iso() -> str:
+            return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    
+        # Ensure target tables exist (no-ops if they already do)
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS settings_profiles (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            is_active INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_settings_profiles_name_lower ON settings_profiles (lower(name));
+    
+        CREATE TABLE IF NOT EXISTS settings_profile_items (
+            id TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+            FOREIGN KEY (profile_id) REFERENCES settings_profiles(id) ON DELETE CASCADE
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_settings_profile_items_profile_key ON settings_profile_items (profile_id, lower(key));
+        CREATE INDEX IF NOT EXISTS ix_settings_profile_items_profile ON settings_profile_items (profile_id);
+        """)
+    
+        # Detect legacy schema for settings_profiles (presence of 'data' or 'is_default' columns)
+        legacy = False
+        try:
+            cur = conn.execute("PRAGMA table_info(settings_profiles)")
+            cols = [r[1] for r in cur.fetchall()]
+            legacy = ("data" in cols) or ("is_default" in cols)
+        except sqlite3.OperationalError:
+            # Table might not exist yet (fresh install) - already created above
+            legacy = False
+    
+        if legacy:
+            logger.info("Legacy settings_profiles schema detected; migrating to normalized v2")
+            # Determine legacy active id if present
+            old_active_id: Optional[int] = None
+            try:
+                cur = conn.execute("SELECT value FROM meta WHERE key='active_profile_id'")
+                row = cur.fetchone()
+                if row and str(row[0]).strip().isdigit():
+                    old_active_id = int(str(row[0]).strip())
+            except sqlite3.OperationalError:
+                old_active_id = None
+    
+            # Create a new table with the v2 schema using a temp name to allow rename
+            conn.executescript("""
+            CREATE TABLE IF NOT EXISTS settings_profiles_new_v2 (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                is_active INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """)
+    
+            # Read legacy rows
+            cur = conn.execute("SELECT id, name, data, created_at, updated_at FROM settings_profiles")
+            rows = cur.fetchall()
+            id_map: Dict[int, str] = {}
+            for row in rows:
+                old_id = int(row[0])
+                name = str(row[1])
+                data_text = row[2]
+                created = str(row[3]) if row[3] else _now_iso()
+                updated = str(row[4]) if row[4] else created
+                new_id = str(uuid.uuid4())
+                id_map[old_id] = new_id
+                is_active = 1 if (old_active_id is not None and old_id == old_active_id) else 0
+    
+                conn.execute(
+                    "INSERT INTO settings_profiles_new_v2 (id, name, description, is_active, created_at, updated_at) VALUES (?, ?, NULL, ?, ?, ?)",
+                    (new_id, name, is_active, created, updated),
+                )
+                # Migrate legacy 'data' dictionary into settings_profile_items
+                try:
+                    payload = json.loads(data_text) if data_text else {}
+                    if isinstance(payload, dict):
+                        for k, v in payload.items():
+                            try:
+                                val = json.dumps(v, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                            except Exception:
+                                # Fallback to string representation if not JSON serializable
+                                val = json.dumps(str(v), ensure_ascii=False)
+                            conn.execute(
+                                "INSERT INTO settings_profile_items (id, profile_id, key, value, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                                (str(uuid.uuid4()), new_id, str(k), val, created, updated),
+                            )
+                except Exception:
+                    # Ignore malformed legacy JSON; continue
+                    pass
+    
+            # Replace legacy table atomically
+            conn.execute("DROP TABLE settings_profiles")
+            conn.execute("ALTER TABLE settings_profiles_new_v2 RENAME TO settings_profiles")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_settings_profiles_name_lower ON settings_profiles (lower(name))")
+            logger.info("Legacy settings_profiles migration complete; normalized tables ready")
+    
+        # Ensure at least one profile exists and exactly one is active
+        cur = conn.execute("SELECT id FROM settings_profiles ORDER BY name COLLATE NOCASE")
+        all_ids = [r[0] for r in cur.fetchall()]
+        active_id: Optional[str] = None
+    
+        if not all_ids:
+            # Create a default profile
+            pid = str(uuid.uuid4())
+            ts = _now_iso()
+            conn.execute(
+                "INSERT INTO settings_profiles (id, name, description, is_active, created_at, updated_at) VALUES (?, 'Default', NULL, 1, ?, ?)",
+                (pid, ts, ts),
+            )
+            active_id = pid
+            logger.info("Created default settings profile with id=%s", pid)
+        else:
+            # Normalize active flags to exactly one
+            cur = conn.execute("SELECT id FROM settings_profiles WHERE is_active = 1 ORDER BY name COLLATE NOCASE")
+            actives = [r[0] for r in cur.fetchall()]
+            if len(actives) == 0:
+                # Try to derive from meta.pk.settings_profiles or pick first by name
+                fallback_id: Optional[str] = None
+                try:
+                    c = conn.execute("SELECT value FROM meta WHERE key='pk.settings_profiles'")
+                    row = c.fetchone()
+                    if row:
+                        try:
+                            meta_cfg = json.loads(row[0])
+                            if isinstance(meta_cfg, dict):
+                                candidate = meta_cfg.get("active_profile_id")
+                                if isinstance(candidate, str):
+                                    cur2 = conn.execute("SELECT id FROM settings_profiles WHERE id = ?", (candidate,))
+                                    if cur2.fetchone():
+                                        fallback_id = candidate
+                        except Exception:
+                            pass
+                except sqlite3.OperationalError:
+                    pass
+    
+                if fallback_id is None:
+                    cur = conn.execute("SELECT id FROM settings_profiles ORDER BY name COLLATE NOCASE LIMIT 1")
+                    r = cur.fetchone()
+                    fallback_id = str(r[0]) if r else None
+                if fallback_id:
+                    conn.execute("UPDATE settings_profiles SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END", (fallback_id,))
+                    active_id = fallback_id
+            else:
+                # More than one active; fix to first lexicographically
+                active_id = str(actives[0])
+                if len(actives) > 1:
+                    conn.execute("UPDATE settings_profiles SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END", (active_id,))
+    
+        # If still unresolved, compute from single active row
+        if active_id is None:
+            cur = conn.execute("SELECT id FROM settings_profiles WHERE is_active = 1 LIMIT 1")
+            r = cur.fetchone()
+            active_id = str(r[0]) if r else None
+    
+        # Upsert meta key 'pk.settings_profiles'
+        cfg = {
+            "schema_version": 1,
+            "active_profile_id": active_id,
+            "last_migrated_at": _now_iso(),
+        }
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value, notes, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+            ("pk.settings_profiles", json.dumps(cfg, sort_keys=True, separators=(",", ":")), "Settings profiles manager state"),
+        )
+    
+        # Bump global schema version to 1.2.0
+        self.set_version(conn, "1.2.0")
+        
+        
 class DatabaseManager:
     """
     DatabaseManager creates and initializes the canonical settings and cache databases.
@@ -432,28 +647,21 @@ class DatabaseManager:
                 )
             # Check and handle schema versioning/migration
             current_version = self.schema.get_current_version(conn)
-            
+
             if current_version is None:
-                # Fresh install
-                logger.info("Setting initial schema_version=%s in settings.db", self.schema.CURRENT_VERSION)
-                self.schema.set_version(conn, self.schema.CURRENT_VERSION)
-                
-                # Ensure app_settings has at least one row
-                cur = conn.execute("SELECT COUNT(*) FROM app_settings")
-                if cur.fetchone()[0] == 0:
-                    logger.info("Creating default app_settings row")
-                    conn.execute("""
-                        INSERT INTO app_settings (
-                            theme, language, ui_scale,
-                            max_threads, max_memory_mb, cache_size_mb
-                        ) VALUES (
-                            'light', 'en', 1.0,
-                            4, 2048, 5120
-                        )
-                    """)
-            elif current_version == "1.0.0":
-                # Need to migrate from 1.0.0 to 1.1.0
+                # Fresh install or legacy DB without schema_version:
+                # Run sequential migrations to normalize schema deterministically.
                 self.schema.migrate_to_1_1_0(conn)
+                self.schema.migrate_to_1_2_0(conn)
+
+            elif current_version == "1.0.0":
+                # Sequential migrations
+                self.schema.migrate_to_1_1_0(conn)
+                self.schema.migrate_to_1_2_0(conn)
+
+            elif current_version == "1.1.0":
+                self.schema.migrate_to_1_2_0(conn)
+
             elif current_version != self.schema.CURRENT_VERSION:
                 logger.warning(
                     "Unknown schema version %s (expected %s). Database may need manual migration.",
@@ -475,6 +683,8 @@ class DatabaseManager:
         """
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
+        # Enforce foreign keys for referential integrity
+        conn.execute("PRAGMA foreign_keys = ON")
         try:
             yield conn
             conn.commit()

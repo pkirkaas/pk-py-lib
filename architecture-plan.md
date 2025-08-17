@@ -358,3 +358,40 @@ Next Steps
 - Implement reusable GUI dialog [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1)
 - Add app integration helper [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1) and wire in [img_app/img_app/app.py](img_app/img_app/app.py:60)
 - Add tests: core/API unit tests and pytest-qt GUI/startup flows
+<!-- Settings Manager high-level plan addendum -->
+
+## Settings Manager — High-Level Plan and Cross-References (Final)
+
+Status: Approved
+
+Summary
+- On application launch, a blocking modal Settings/Profile Manager requires the user to create/select/edit/delete/copy settings profiles and confirm an Active profile before the main window is created.
+
+Library-first implementation
+- GUI (reusable, PySide6) will live under:
+  - [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1)
+  - [src/pk_py_lib/gui/settings_manager/controller.py](src/pk_py_lib/gui/settings_manager/controller.py:1)
+  - [src/pk_py_lib/gui/settings_manager/models.py](src/pk_py_lib/gui/settings_manager/models.py:1)
+  - [src/pk_py_lib/gui/settings_manager/validators.py](src/pk_py_lib/gui/settings_manager/validators.py:1)
+- Core and API already implemented:
+  - [SettingsProfilesManager](src/pk_py_lib/core/settings_profiles.py:95) — CRUD/copy/active/default/import/export, invariants
+  - [SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69) — id-centric API returning ApiResponse and ErrorCodes
+  - Active persistence via `meta.active_profile_id` managed in [DatabaseManager.initialize()](src/pk_py_lib/core/database.py:415) and core manager logic
+
+App integration
+- Thin startup helper: [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
+- App bootstrap wiring: [img_app/img_app/app.py](img_app/img_app/app.py:60)
+- After a successful Set Active, align in-process state with [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399)
+
+Acceptance criteria (architecture-level)
+- Blocks main UI until a valid Active is present; Cancel exits app
+- All profile operations occur through the API and respect invariants (no direct DB in GUI)
+- `meta.active_profile_id` is set consistently; list responses include `is_active`
+
+Cross-references
+- UI design and flows: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md:1) (Section 13A)
+- Technical architecture details: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1) (Section 11A)
+- API contract: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1) (Section 13A)
+- Errors and edge cases: [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md:1) (Section 13A)
+- Implementation steps: [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1) (Section 14A)
+- Canonical decisions: [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:1) (Section 17A)

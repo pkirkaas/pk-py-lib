@@ -1431,3 +1431,101 @@ Next Steps
 - Implement [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1) aligning with this contract.
 - Implement core manager [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1) to enforce invariants.
 - Integrate modal at startup (see implementation guide section).
+<!-- Finalized Settings Profiles API aligning with implemented code -->
+
+## 13A. Settings Profiles API — Finalized Contract (Library)
+
+Status: Approved
+
+Purpose
+- Finalize the profile-management API contract to match the implemented library code and canonical decisions. Supersedes earlier placeholders referencing `get_profile(name)` or name-based operations; the canonical API is id-centric.
+
+Scope and Data
+- Persistence: SQLite settings.db via [DatabaseManager.initialize()](src/pk_py_lib/core/database.py:415)
+- Tables used: `settings_profiles`, `meta`
+- Canonical meta key: `meta.active_profile_id` stores the current Active profile id (INTEGER as text)
+- Core logic: [SettingsProfilesManager](src/pk_py_lib/core/settings_profiles.py:95)
+- API adapter (this contract): [SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69)
+- GUI consumers must not access the DB directly; always use the API
+
+Data Shapes
+- SettingsProfile (dictionary returned by API):
+  - id: int
+  - name: str
+  - data: dict (JSON-serializable payload)
+  - is_default: bool
+  - created_at: Optional[str] (ISO8601 Z)
+  - updated_at: Optional[str] (ISO8601 Z)
+  - is_active: bool (added by list_profiles when enriched)
+
+API Surface (implemented)
+- Listing and retrieval
+  - [SettingsProfilesAPI.list_profiles()](src/pk_py_lib/api/settings_profiles.py:109)
+    - Returns List[SettingsProfile] with is_active boolean computed from meta.active_profile_id
+  - [SettingsProfilesAPI.get_profile()](src/pk_py_lib/api/settings_profiles.py:131)
+    - Get by id (int). Returns 404-like ApiResponse.fail when not found (INVALID_CONFIG)
+  - [SettingsProfilesAPI.get_active()](src/pk_py_lib/api/settings_profiles.py:153)
+    - Returns the active profile dict or None when no profiles exist
+
+- Create / Update / Delete / Copy
+  - [SettingsProfilesAPI.create()](src/pk_py_lib/api/settings_profiles.py:172)
+    - Params: name: str, data: Optional[dict] = None, make_active: bool = False, make_default: bool = False
+    - Behavior: validates name; persists; optional default exclusivity; optional set active
+  - [SettingsProfilesAPI.update()](src/pk_py_lib/api/settings_profiles.py:191)
+    - Params: profile_id: int, name?: str, data?: dict, make_default?: bool
+    - Behavior: partial update; name uniqueness preserved; default exclusivity when requested
+  - [SettingsProfilesAPI.delete()](src/pk_py_lib/api/settings_profiles.py:214)
+    - Params: profile_id: int
+    - Invariants: cannot delete Active; cannot delete last remaining
+  - [SettingsProfilesAPI.copy()](src/pk_py_lib/api/settings_profiles.py:230)
+    - Params: source_profile_id: int, new_name: str, make_active: bool = False, make_default: bool = False
+    - Behavior: deep copy (data cloned); optional default/active
+
+- Active / Default management
+  - [SettingsProfilesAPI.set_active()](src/pk_py_lib/api/settings_profiles.py:260)
+    - Params: profile_id: int
+    - Updates meta.active_profile_id; GUI/app must call [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399) afterward to align in-process state
+  - [SettingsProfilesAPI.set_default()](src/pk_py_lib/api/settings_profiles.py:276)
+    - Params: profile_id: int
+    - Sets is_default=1 and clears others
+
+- Validation
+  - [SettingsProfilesAPI.validate_name()](src/pk_py_lib/api/settings_profiles.py:295)
+    - Syntax/length validation; uniqueness enforced on write
+
+- Import / Export
+  - [SettingsProfilesAPI.export_profile()](src/pk_py_lib/api/settings_profiles.py:314)
+    - Params: profile_id: int; returns portable dictionary payload
+  - [SettingsProfilesAPI.import_profile()](src/pk_py_lib/api/settings_profiles.py:329)
+    - Params: payload: dict, strategy: str = "fail_on_conflict" | "rename" | "overwrite"
+    - Behavior: creates/renames/overwrites per strategy; optional is_default honored with exclusivity
+
+Validation Rules (canonical)
+- Name: required; 1–64 chars; charset [A–Z a–z 0–9 space _ -]; case-insensitive uniqueness (enforced by core)
+- Data: JSON-serializable dictionary
+- Default vs Active semantics: setting Default does not change Active; setting Active does not change Default; see [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:261)
+
+Errors and Mappings
+- The API adapter maps exceptions to ErrorCodes:
+  - ValueError → INVALID_CONFIG
+  - sqlite3.OperationalError with "locked" → LOCKED_DB
+  - PermissionError → PERMISSION_DENIED
+  - Otherwise → UNKNOWN_ERROR
+- Reference implementation: [_map_exception](src/pk_py_lib/api/settings_profiles.py:48)
+
+Acceptance Criteria (verifiable)
+- list_profiles returns all profiles sorted by name with is_active flags set correctly
+- create enforces name rules and uniqueness; optional default exclusivity; optional active sets meta.active_profile_id
+- update preserves invariants; default exclusivity when True; timestamps updated
+- delete prevents deleting Active and last remaining; returns success True when deleted
+- copy duplicates data with new unique name; optional default/active behave correctly
+- set_active writes meta.active_profile_id; returned profile matches selected id
+- set_default enforces single default flag across rows
+- export_profile returns full payload dict including data, timestamps
+- import_profile honors strategy semantics and default exclusivity
+- All mutating operations are transactional; on failure, state is unchanged and ApiResponse.fail contains error and ErrorCodes
+- GUI dialog uses id-centric operations exclusively and follows the startup gate contract
+
+Notes on GUI and Module Path
+- Reusable dialog path: [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1) (supersedes older `gui/settings/profile_manager.py` reference)
+- App integration helper: [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1) blocks startup until a valid Active profile is set

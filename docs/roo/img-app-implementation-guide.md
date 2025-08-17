@@ -1318,3 +1318,108 @@ Next Steps
 - Implement core profile manager [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1) and API adapter [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1).
 - Add startup-gate helper in [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1) and wire it in [img_app/img_app/app.py](img_app/img_app/app.py:60).
 - Add pytest-qt tests for modal flows and invariants.
+<!-- Settings Manager implementation updates -->
+
+## 14A. Settings Manager — Library Files, App Integration, and Acceptance
+
+Status: Approved
+
+This section finalizes the concrete implementation plan for the reusable Settings/Profile Manager and its startup integration. It supersedes earlier references to `src/pk_py_lib/gui/settings/profile_manager.py`. The canonical module path is `src/pk_py_lib/gui/settings_manager/`.
+
+14A.1 Library file structure (to implement under pk-py-lib)
+- [src/pk_py_lib/gui/settings_manager/__init__.py](src/pk_py_lib/gui/settings_manager/__init__.py:1)
+- [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1)
+  - ProfileManagerDialog (PySide6 QDialog)
+  - Two-pane List/Detail layout, search/filter, inline validation, Apply/Continue/Cancel
+- [src/pk_py_lib/gui/settings_manager/controller.py](src/pk_py_lib/gui/settings_manager/controller.py:1)
+  - Orchestrates interactions with [SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69)
+  - Performs list/create/update/delete/copy/set_active/set_default/export/import through API
+  - Maps ApiResponse errors (ErrorCodes) to user-facing messages
+- [src/pk_py_lib/gui/settings_manager/models.py](src/pk_py_lib/gui/settings_manager/models.py:1)
+  - View-models and adapters (ProfileVM, ValidationIssues, ListModel if needed)
+- [src/pk_py_lib/gui/settings_manager/validators.py](src/pk_py_lib/gui/settings_manager/validators.py:1)
+  - Name validation (delegates to [SettingsProfilesAPI.validate_name()](src/pk_py_lib/api/settings_profiles.py:295))
+  - Optional helpers (threshold conversions using [threshold helpers](src/pk_py_lib/core/utils/thresholds.py:1)), path checks (non-blocking hooks)
+
+Notes
+- GUI code never touches the DB directly. All persistence flows through [SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69), which delegates to the core [SettingsProfilesManager](src/pk_py_lib/core/settings_profiles.py:95).
+
+14A.2 App-side integration helper (startup gate)
+- Path: [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
+- Responsibilities:
+  - Accept initialized DatabaseManager and ConfigurationManager
+  - Instantiate API [SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69)
+  - Launch [ProfileManagerDialog](src/pk_py_lib/gui/settings_manager/dialog.py:1) as a blocking modal
+  - On success:
+    - Ensure `meta.active_profile_id` points to a real id (API guarantees via core)
+    - Call [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399) to align in-process state
+    - Return True to proceed with main window creation
+  - On cancel/no-active: return False → caller exits app per policy
+
+14A.3 Startup wiring (app main)
+- Entry: [img_app/img_app/app.py](img_app/img_app/app.py:60)
+- Sequence:
+  1) Initialize DB via [DatabaseManager.initialize()](src/pk_py_lib/core/database.py:415)
+  2) Initialize ConfigurationManager [ConfigurationManager](src/pk_py_lib/core/configuration.py:96)
+  3) Run startup gate helper [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
+  4) If gate returns False → exit; else create and show [MainWindow](img_app/img_app/main_window.py:49)
+
+Mermaid (unchanged logic, updated references)
+```mermaid
+flowchart TD
+  A[App start] --> B[Init DatabaseManager]
+  B --> C[Init ConfigurationManager]
+  C --> D[Open Settings/Profile Manager modal]
+  D --> E{Valid Active profile set}
+  E -->|Yes| F[Close modal]
+  E -->|No (Cancel)| X[Exit app]
+  F --> G[Create MainWindow]
+  G --> H[Show main UI]
+```
+
+14A.4 Controller-level API calls and invariants
+- List: [SettingsProfilesAPI.list_profiles()](src/pk_py_lib/api/settings_profiles.py:109) (compute is_active from meta.active_profile_id)
+- Create: [SettingsProfilesAPI.create()](src/pk_py_lib/api/settings_profiles.py:172)
+- Update: [SettingsProfilesAPI.update()](src/pk_py_lib/api/settings_profiles.py:191)
+- Delete: [SettingsProfilesAPI.delete()](src/pk_py_lib/api/settings_profiles.py:214) — blocked for Active or last remaining (core invariant)
+- Copy: [SettingsProfilesAPI.copy()](src/pk_py_lib/api/settings_profiles.py:230)
+- Set Active: [SettingsProfilesAPI.set_active()](src/pk_py_lib/api/settings_profiles.py:260)
+- Set Default: [SettingsProfilesAPI.set_default()](src/pk_py_lib/api/settings_profiles.py:276)
+- Validate name: [SettingsProfilesAPI.validate_name()](src/pk_py_lib/api/settings_profiles.py:295)
+- Export / Import: [SettingsProfilesAPI.export_profile()](src/pk_py_lib/api/settings_profiles.py:314), [SettingsProfilesAPI.import_profile()](src/pk_py_lib/api/settings_profiles.py:329)
+
+14A.5 Error mappings and UX surfaces
+- ValueError → INVALID_CONFIG (inline field errors, dialog banners)
+- sqlite3.OperationalError("locked") → LOCKED_DB (Retry/Exit choice)
+- PermissionError → PERMISSION_DENIED (keep dialog open; allow Export of edits)
+- Else → UNKNOWN_ERROR
+- Reference: [_map_exception](src/pk_py_lib/api/settings_profiles.py:48); detailed UX in [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md:1)
+
+14A.6 Acceptance criteria (implementation-level)
+- Library components exist under `src/pk_py_lib/gui/settings_manager/` and can be imported independently by other apps
+- Dialog behaviors match UI acceptance (see [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md:1), section 13A)
+- All CRUD+copy+set-active+set-default operations go through API and respect invariants (no direct SQL from GUI)
+- Startup gate prevents main window creation unless a valid Active profile exists
+- After acceptance, [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399) invoked with the selected profile for session alignment
+- Error cases mapped to ErrorCodes and surfaced appropriately; no partial writes on failures (transactions)
+
+14A.7 Test guidance (pytest-qt + unit)
+- Core/API unit tests:
+  - Name validation, uniqueness collisions
+  - Delete Active and delete-last blocked
+  - Default exclusivity toggling
+  - Active persistence in `meta.active_profile_id`
+- GUI tests (pytest-qt):
+  - First-run: zero profiles → create → set active → continue
+  - Existing active: dialog shows; Continue immediately available
+  - Delete constraints disabled/grayed appropriately
+  - LOCKED_DB flow shows Retry/Exit
+- Integration:
+  - Startup gate blocks main window without Active
+  - Switching Active affects retrieval via ConfigurationManager
+
+Cross-references
+- Architectural details and persistence: [img-app-technical-architecture.md §11A](docs/roo/img-app-technical-architecture.md:1)
+- API contract and acceptance: [img-app-api-specifications.md §13A](docs/roo/img-app-api-specifications.md:1)
+- Errors and concurrency: [img-app-error-handling-edge-cases.md §13A](docs/roo/img-app-error-handling-edge-cases.md:1)
+- Canonical decisions: [canonical-decisions.md §17A](docs/roo/canonical-decisions.md:1)

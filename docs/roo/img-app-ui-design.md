@@ -887,3 +887,68 @@ stateDiagram-v2
 - Implement API adapter [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1) with methods documented in API specs.
 - Integrate dialog at startup in [img_app/img_app/app.py](img_app/img_app/app.py:60) prior to creating the main window.
 - Add tests using pytest-qt for dialog behaviors (zero profiles, active selection, delete constraints).
+<!-- Settings Manager UI finalization -->
+
+## 13A. Settings/Profile Manager — Finalized UI, States, and Acceptance Criteria
+
+Status: Approved
+
+Path update and scope
+- Supersedes earlier references to `src/pk_py_lib/gui/settings/profile_manager.py`.
+- Canonical reusable dialog path is now:
+  - [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1)
+  - Controller, models, validators co-located under `src/pk_py_lib/gui/settings_manager/` (see technical architecture addendum 11A).
+- The dialog consumes the library API [SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69) and never touches the DB directly.
+
+UI states
+- Empty state (no profiles)
+  - List pane shows guidance; primary CTA “Create profile”
+  - Detail pane shows inline create form; name validation immediate via [SettingsProfilesAPI.validate_name()](src/pk_py_lib/api/settings_profiles.py:295)
+- List state (>=1 profile)
+  - List pane with search/filter; badges:
+    - ★ Default (is_default=1)
+    - ● Active (matches meta.active_profile_id)
+  - Toolbar: New, Copy, Delete
+- Edit state (detail form)
+  - Fields bound to JSON payload in `settings_profiles.data`
+  - Inline validation; Apply persists via [SettingsProfilesAPI.update()](src/pk_py_lib/api/settings_profiles.py:191)
+  - Set Active and Set Default actions wired to [SettingsProfilesAPI.set_active()](src/pk_py_lib/api/settings_profiles.py:260) and [SettingsProfilesAPI.set_default()](src/pk_py_lib/api/settings_profiles.py:276)
+
+Startup modal contract
+- Runs as a blocking modal before main window creation (see integration helper under [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1))
+- Continue is enabled only when a valid Active profile exists; Cancel exits app per policy (see decisions)
+
+Key interactions (library API-backed)
+- Create profile: [SettingsProfilesAPI.create()](src/pk_py_lib/api/settings_profiles.py:172)
+- Copy profile: [SettingsProfilesAPI.copy()](src/pk_py_lib/api/settings_profiles.py:230)
+- Update profile: [SettingsProfilesAPI.update()](src/pk_py_lib/api/settings_profiles.py:191)
+- Delete profile: [SettingsProfilesAPI.delete()](src/pk_py_lib/api/settings_profiles.py:214) — disabled when Active or last remaining
+- Set Active: [SettingsProfilesAPI.set_active()](src/pk_py_lib/api/settings_profiles.py:260)
+- Set Default: [SettingsProfilesAPI.set_default()](src/pk_py_lib/api/settings_profiles.py:276)
+- List and highlight Active: [SettingsProfilesAPI.list_profiles()](src/pk_py_lib/api/settings_profiles.py:109)
+- Name validation: [SettingsProfilesAPI.validate_name()](src/pk_py_lib/api/settings_profiles.py:295)
+
+UX details
+- Search/filter is case-insensitive substring on name (and optional description if present in payload)
+- Name entry uses immediate validation with inline error text; Save/Apply disabled when invalid
+- Dangerous actions (Delete) require confirmation with explicit invariant hints
+- Non-blocking “Validate Paths” and “Preview Effective” hooks are optional for MVP; when present, they must not block core CRUD flows
+
+Keyboard and accessibility
+- Shortcuts: Alt+N (New), Alt+C (Copy), Alt+D (Delete), Alt+A (Apply), Alt+K (Continue), Esc (Cancel)
+- Focus order: List → Detail → Actions
+- Screen reader: accessible names for fields and badges; announce validation errors
+
+Acceptance criteria (UI)
+- First launch (no profiles): Create → Save with valid name → Continue becomes enabled
+- Existing profiles but no active: Selecting a profile and hitting Set Active enables Continue
+- Existing active profile: Continue enabled on open; CRUD operations available; Delete disabled if selected is Active or when only one profile exists
+- Name rules enforced: ^[A-Za-z0-9 _-]{1,64}$; collisions surface INVALID_CONFIG via API; UI shows inline error
+- Set Default reflects exclusivity immediately in list badges
+- Continue closes the dialog only when a valid Active profile exists
+- Cancel exits the app regardless of prior active (policy)
+
+References
+- Core invariants: [SettingsProfilesManager.delete_profile()](src/pk_py_lib/core/settings_profiles.py:439), [SettingsProfilesManager.set_default_profile()](src/pk_py_lib/core/settings_profiles.py:574)
+- Active persistence: [SettingsProfilesManager.set_active_profile()](src/pk_py_lib/core/settings_profiles.py:541) writes meta.active_profile_id and triggers on_active_change
+- Startup integration: [img_app/img_app/app.py](img_app/img_app/app.py:60) and helper [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)

@@ -318,3 +318,92 @@ References
 Next Steps
 - Implement core, API, GUI, and app integration per targets above.
 - Add tests: unit (core/API), pytest-qt (GUI), and integration (startup gate).
+<!-- Settings Manager canonicalization additions -->
+
+## 17A. Settings Manager — Module Path, Bridging, and Finalization
+
+Status: Approved
+
+Purpose
+- Finalize canonical decisions for the Settings/Profile Manager feature so it is implementable in pk-py-lib and integrated at app startup.
+
+17A.1 Module path and structure (approved)
+- Library-first, reusable GUI component under:
+  - [src/pk_py_lib/gui/settings_manager/__init__.py](src/pk_py_lib/gui/settings_manager/__init__.py)
+  - [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py)
+    - ProfileManagerDialog (PySide6 QDialog) with two-pane List/Detail, search/filter, validation, blocking modal flow
+  - [src/pk_py_lib/gui/settings_manager/controller.py](src/pk_py_lib/gui/settings_manager/controller.py)
+    - Mediates between GUI and API; performs CRUD/copy/validate; enforces invariants and maps errors for UX
+  - [src/pk_py_lib/gui/settings_manager/models.py](src/pk_py_lib/gui/settings_manager/models.py)
+    - View-models and data mappers (ProfileVM, ValidationIssues)
+  - [src/pk_py_lib/gui/settings_manager/validators.py](src/pk_py_lib/gui/settings_manager/validators.py)
+    - Name and field validators; threshold conversions; path checks (non-blocking hooks)
+
+- App integration (thin glue):
+  - [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
+    - Creates and runs the modal at startup, returning True to proceed only if a valid Active profile exists
+
+- Core and API dependencies:
+  - [SettingsProfilesManager](src/pk_py_lib/core/settings_profiles.py:95)
+    - CRUD/copy/active/default, JSON payload persistence, invariants
+    - Key methods:
+      - [SettingsProfilesManager.create_profile()](src/pk_py_lib/core/settings_profiles.py:292)
+      - [SettingsProfilesManager.update_profile()](src/pk_py_lib/core/settings_profiles.py:362)
+      - [SettingsProfilesManager.delete_profile()](src/pk_py_lib/core/settings_profiles.py:439)
+      - [SettingsProfilesManager.copy_profile()](src/pk_py_lib/core/settings_profiles.py:476)
+      - [SettingsProfilesManager.set_active_profile()](src/pk_py_lib/core/settings_profiles.py:541)
+      - [SettingsProfilesManager.set_default_profile()](src/pk_py_lib/core/settings_profiles.py:574)
+      - [SettingsProfilesManager.export_profile()](src/pk_py_lib/core/settings_profiles.py:599)
+      - [SettingsProfilesManager.import_profile()](src/pk_py_lib/core/settings_profiles.py:625)
+  - [SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69)
+    - High-level API, returns ApiResponse; methods include:
+      - [SettingsProfilesAPI.list_profiles()](src/pk_py_lib/api/settings_profiles.py:109)
+      - [SettingsProfilesAPI.get_profile()](src/pk_py_lib/api/settings_profiles.py:131)
+      - [SettingsProfilesAPI.get_active()](src/pk_py_lib/api/settings_profiles.py:153)
+      - [SettingsProfilesAPI.create()](src/pk_py_lib/api/settings_profiles.py:172)
+      - [SettingsProfilesAPI.update()](src/pk_py_lib/api/settings_profiles.py:191)
+      - [SettingsProfilesAPI.delete()](src/pk_py_lib/api/settings_profiles.py:214)
+      - [SettingsProfilesAPI.copy()](src/pk_py_lib/api/settings_profiles.py:230)
+      - [SettingsProfilesAPI.set_active()](src/pk_py_lib/api/settings_profiles.py:260)
+      - [SettingsProfilesAPI.set_default()](src/pk_py_lib/api/settings_profiles.py:276)
+      - [SettingsProfilesAPI.validate_name()](src/pk_py_lib/api/settings_profiles.py:295)
+      - [SettingsProfilesAPI.export_profile()](src/pk_py_lib/api/settings_profiles.py:314)
+      - [SettingsProfilesAPI.import_profile()](src/pk_py_lib/api/settings_profiles.py:329)
+
+17A.2 Persistence and data model (approved)
+- Primary store: SQLite settings.db via [DatabaseManager.initialize()](src/pk_py_lib/core/database.py:415)
+- Canonical tables:
+  - settings_profiles(id INTEGER PK AUTOINCREMENT, name UNIQUE COLLATE NOCASE, data JSON TEXT, is_default INT, created_at TEXT, updated_at TEXT) — already created by schema
+  - meta(key TEXT PRIMARY KEY, value TEXT, notes, updated_at)
+- Canonical meta key:
+  - meta.active_profile_id stores the session’s Active profile id (INTEGER as text)
+  - Startup initialization: if missing/dangling and profiles exist, set Active to Default; else lexicographically-first by name
+- Profile data payload: free-form JSON in settings_profiles.data. Profile editor manages well-known fields (paths, hashing, thresholds, etc.) within this JSON for MVP; deeper normalization is future work.
+
+17A.3 Bridging and migration: profiles vs settings_profiles
+- Context: The existing [ConfigurationManager](src/pk_py_lib/core/configuration.py:1) uses a separate profiles/settings schema and [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399) addresses profile switching.
+- Phase A (MVP, non-breaking):
+  - The Settings Manager uses settings_profiles + meta.active_profile_id for identity and selection
+  - After setting Active via API, call [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399) by name to align in-process state for this session
+  - Document that, temporarily, profile identity is name-based for alignment. Avoid ambiguous duplicate names (enforced by manager)
+- Phase B (unification migration):
+  - Migrate to use settings_profiles.id as the sole profile id
+  - Update the foreign key in the legacy settings table to reference settings_profiles(id)
+  - Deprecate the legacy profiles table and remove duplication
+  - Provide Alembic migration and backfill; preserve timestamps and is_default
+  - Expose ConfigurationManager APIs that operate by profile id as well as by name
+- Rationale: Enables immediate GUI/Profile Manager while defining a clean path to a single source of truth.
+
+17A.4 UX and startup policy (approved)
+- Startup modal: blocking; app proceeds only with a valid Active profile
+- Cancel behavior: exit app even if a previous Active exists (explicit confirmation each run)
+- Empty state: first-run requires creating a profile and setting it Active before Continue is enabled
+
+17A.5 Validation, errors, invariants (approved)
+- Name: ^[A-Za-z0-9 _-]{1,64}$; case-insensitive unique; enforced by [SettingsProfilesManager.validate_name()](src/pk_py_lib/core/settings_profiles.py:144)
+- Invariants:
+  - Cannot delete Active profile
+  - Cannot delete last remaining profile
+  - Single Default at most; setting one clears others
+- Error mapping: API maps exceptions to ErrorCodes; database locked → LOCKED_DB; invalid input → INVALID_CONFIG
+- Logging namespace: "pk_py_lib.settings_profiles" for core and API

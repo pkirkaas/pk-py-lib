@@ -1342,3 +1342,80 @@ Scope
 - Map errors to ApiResponse with ErrorCodes; see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:164).
 - Add pytest-qt tests covering dialog error flows (duplicate name, delete active, cancel on startup).
 - Implement fallback JSON writer/reader hooks in [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1) guarded by explicit error cases.
+<!-- Settings Manager errors finalization -->
+
+## 13A. Settings/Profile Manager — Finalized Errors, Concurrency, and Scalability
+
+Status: Approved
+
+Path and scope updates
+- Supersedes prior references to `src/pk_py_lib/gui/settings/profile_manager.py`.
+- Canonical GUI module path for the reusable dialog is [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1).
+- All profile operations go through the API [SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69); GUI must not touch the DB directly.
+
+13A.1 Data integrity and recovery
+- Dangling or missing meta.active_profile_id
+  - Detection: Active retrieval returns None or resolves to a non-existent id.
+  - Core behavior: [SettingsProfilesManager.get_active_profile()](src/pk_py_lib/core/settings_profiles.py:273) repairs by setting Default (if present) else first-by-name and persists meta.active_profile_id.
+  - GUI: show a non-blocking info banner “Active profile repaired to <name>” on dialog open.
+- Corrupted JSON in settings_profiles.data
+  - Detection: Core loads data via `json.loads` and wraps non-dict into dict or {} on exception; see [SettingsProfilesManager._row_to_profile()](src/pk_py_lib/core/settings_profiles.py:175).
+  - Behavior: GUI should allow opening and saving; save will write a normalized dictionary and repair the payload.
+  - Logging: WARNING with context; surface INVALID_CONFIG if user attempts to save invalid structures.
+
+13A.2 Validation and naming (reaffirmed)
+- Name rules: [SettingsProfilesManager.validate_name()](src/pk_py_lib/core/settings_profiles.py:144) — ^[A–Z a–z 0–9 _ - and space]{1,64}$ (case-insensitive unique)
+- Duplicate name collisions
+  - Create/Update/Copy: API returns INVALID_CONFIG with message; GUI keeps focus in Name and suggests “(copy)” strategy.
+  - Import: strategy “rename” auto-synthesizes unique candidate; see [SettingsProfilesManager.import_profile()](src/pk_py_lib/core/settings_profiles.py:625)
+
+13A.3 Invariants (delete/copy/default/active)
+- Cannot delete Active profile: enforced in [SettingsProfilesManager.delete_profile()](src/pk_py_lib/core/settings_profiles.py:439) with INVALID_CONFIG surface
+- Cannot delete last remaining profile: enforced in delete_profile
+- Single Default invariant: [SettingsProfilesManager.set_default_profile()](src/pk_py_lib/core/settings_profiles.py:574) clears others
+- Copy collisions: handled via name validation; GUI should pre-fill “<name> (copy)” and iterate “(copy N)”
+
+13A.4 Concurrency and multi-instance
+- Database locked
+  - Symptom: sqlite3.OperationalError “database is locked”; API maps to LOCKED_DB (see [_map_exception](src/pk_py_lib/api/settings_profiles.py:48))
+  - GUI: show modal “Database in use” with actions: Retry (exponential backoff), Exit. Provide tip to close other instances.
+- Lost-update avoidance
+  - Design: All writes transactional; GUI fetches fresh item before Apply; consider warning if timestamps changed (optional future enhancement via updated_at comparison).
+- Two app instances performing conflicting operations
+  - Disposition: last successful transaction wins; invariants still enforced; user-facing errors guided by ApiResponse.
+
+13A.5 I/O and persistence failures
+- Disk full / permissions
+  - Create/Update/Delete/Copy: return PERMISSION_DENIED or UNKNOWN_ERROR; GUI must not lose edits; keep dialog open; allow Export to JSON as backup.
+- Fallback persistence (rare)
+  - Trigger: catastrophic SQLite init failure during startup (outside normal operations)
+  - Behavior: core may write `profiles.json` fallback (see decisions); GUI shows warning banner; changes migrate on next successful DB init; logging at WARNING.
+
+13A.6 Scalability: large number of profiles
+- UI responsiveness
+  - Use in-memory filtering over the list returned by [SettingsProfilesAPI.list_profiles()](src/pk_py_lib/api/settings_profiles.py:109).
+  - For N > 2,000, enable incremental filtering (debounce 150ms) and consider virtualized list rendering.
+- Sorting
+  - Default: case-insensitive by name; maintain stable order while editing.
+- Search
+  - Case-insensitive substring on name (and optional description if present in data payload).
+
+13A.7 Startup modal outcomes (policy)
+- Cancel without any Active profile: exit application immediately
+- Cancel with existing Active profile: exit application to enforce explicit confirmation each run (canonical policy)
+- Continue: only enabled when a valid Active profile exists; after accept, app invokes [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399)
+
+13A.8 Import/Export errors (reaffirmed)
+- Import invalid JSON: INVALID_CONFIG; do not mutate DB; show details and allow retry
+- Import name collision: offer rename; auto-fill “(imported)”
+- Export write failure: PERMISSION_DENIED; offer alternate path
+
+13A.9 Test matrix (minimum)
+- Name validation: invalid chars, too long, duplicate case-insensitive
+- CRUD invariants: delete Active; delete last; set Default exclusivity
+- Concurrency: simulate LOCKED_DB on write → Retry/Exit flow
+- Scalability: seed 5,000 profiles; verify search debounce and UI responsiveness
+- Repair path: dangling meta.active_profile_id auto-repair behavior surfaced to UI
+
+Error codes used
+- INVALID_CONFIG, LOCKED_DB, PERMISSION_DENIED, UNKNOWN_ERROR — see [ErrorCodes](docs/roo/img-app-api-specifications.md:1167)
