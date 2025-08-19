@@ -1,4 +1,7 @@
 # KDC Image Organizer - Implementation Guide
+> Updated for Settings Profiles v1 (Option A) — Balanced Defaults — Package A — Set A
+>
+> This guide now includes a phased plan to introduce a strongly typed Settings Profile schema, a centralized validator (single source of truth), normalization utilities, and GUI progressive enable/disable behaviors, followed by migration from the current key/value settings manager. Cross-references: data model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), UI [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md), API [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), architecture [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), errors [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md), decision §18 [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
 
 ## 1. Overview
 
@@ -138,7 +141,37 @@ Implementation checklist alignment
 - Ensure DatabaseManager performs quick_check integrity_check and meta schema_version checks then runs Alembic with pre migration backup and retention
 - Ensure CacheManager provides staged sha256 hashing with partial first and last 256 KiB and invalidation on path size mtime_ns inode
 - Ensure Results panel follows single dual and inverse display rules
-- Ensure Settings GUI provides full profile CRUD defaults path validation preview and test hashing
+- Ensure Settings GUI provides full profile CRUD; for Option A Balanced defaults, path validation blocks Save/Run until required pool paths are valid
+
+### 1.3 Balanced Defaults — Implementation Steps (Option A v1)
+
+Source of truth and wiring
+- Central defaults module (library, no code changes here; design reference):
+  - Path: src/pk_py_lib/core/settings/defaults.py
+  - Contents: constants for Balanced defaults:
+    - Pools: recurse=True; max_depth=0 (unlimited); follow_symlinks=False; include_hidden=False; include=["**/*"]; exclude=[]; type_filters=[".jpg",".jpeg",".png",".webp",".tiff",".bmp",".gif",".heic",".heif"]
+    - Similarity: algorithm="pHash"; degree_ui=90; pHash.hash_size=8
+    - Duplicates: algorithm="blake3" fixed; no degree
+    - Scope/Direction: kind="two_pool"; direction="A_TO_B"
+    - Output: mode="report_only"
+- JSON Schema annotations:
+  - Encode the same defaults with "default" on applicable properties to document expected behavior (see [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md:965))
+- Centralized validator behavior:
+  - Apply default-filling on validate/load to produce a normalized profile (returned to GUI/API); treat omitted fields as defaults
+  - Enforce OS-aware pattern case: Windows case-insensitive; POSIX case-sensitive
+- Extension filter matching is case-insensitive on all operating systems
+  - Enforce path existence/readability; block Save/Run until valid
+- GUI initialization:
+  - Initialize widgets from the normalized profile returned by validator so the UI shows the applied defaults (e.g., Degree=90, Recurse checked, Max depth=0, A→B selected when both pools validate)
+- Direction enabling:
+  - Only enable and auto-select A→B after Pools A and B validate; otherwise keep direction radios disabled
+- Tests (see 14B.7 S6 and additions below):
+  - Minimal payload → normalized with defaults (criteria, pools, scope.direction, output)
+  - OS-aware case matching behavior for patterns
+  - Path validation blocks Save/Run until fixed
+  - Hidden files excluded by default; follow_symlinks False
+  - max_depth=0 interpreted as unlimited traversal
+  - RAW formats off by default; enabling RAW should require explicit opt-in via type_filters
 
 ## 2. Development Environment Setup
 
@@ -1220,7 +1253,7 @@ Scope and References
 - Proposed APIs:
   - Library core profiles manager: [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1)
   - Library API adapter: [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
-  - Reusable GUI dialog: [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1)
+  - Reusable GUI dialog: [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1)
   - App integration helper: [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
 
 14.1 Startup Gate: High-Level Sequence
@@ -1249,7 +1282,7 @@ flowchart TD
 - Construct [ConfigurationManager](src/pk_py_lib/core/configuration.py:126) with the database manager instance.
 
 2) Display the startup modal
-- Invoke the reusable dialog from [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1) as a blocking modal.
+- Invoke the reusable dialog from [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1) as a blocking modal.
 - The dialog is responsible for:
   - Listing profiles and showing an empty-state for zero profiles
   - Creating/copying/editing/deleting profiles with validation
@@ -1314,7 +1347,7 @@ flowchart TD
 - The reusable dialog emphasizes library-first design and reusability across apps.
 
 Next Steps
-- Implement the reusable dialog in [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1) per the UI spec.
+- Implement the reusable dialog in [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1) per the UI spec.
 - Implement core profile manager [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1) and API adapter [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1).
 - Add startup-gate helper in [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1) and wire it in [img_app/img_app/app.py](img_app/img_app/app.py:60).
 - Add pytest-qt tests for modal flows and invariants.
@@ -1324,7 +1357,7 @@ Next Steps
 
 Status: Approved
 
-This section finalizes the concrete implementation plan for the reusable Settings/Profile Manager and its startup integration. It supersedes earlier references to `src/pk_py_lib/gui/settings/profile_manager.py`. The canonical module path is `src/pk_py_lib/gui/settings_manager/`.
+This section finalizes the concrete implementation plan for the reusable Settings/Profile Manager and its startup integration. It supersedes earlier references to `src/pk_py_lib/gui/settings_manager/dialog.py`. The canonical module path is `src/pk_py_lib/gui/settings_manager/`.
 
 14A.1 Library file structure (to implement under pk-py-lib)
 - [src/pk_py_lib/gui/settings_manager/__init__.py](src/pk_py_lib/gui/settings_manager/__init__.py:1)
@@ -1423,3 +1456,370 @@ Cross-references
 - API contract and acceptance: [img-app-api-specifications.md §13A](docs/roo/img-app-api-specifications.md:1)
 - Errors and concurrency: [img-app-error-handling-edge-cases.md §13A](docs/roo/img-app-error-handling-edge-cases.md:1)
 - Canonical decisions: [canonical-decisions.md §17A](docs/roo/canonical-decisions.md:1)
+## 14B. Settings Profiles v1 (Option A) — Step-by-Step Implementation Plan
+
+Scope
+- Introduce a strongly-typed Settings Profile model for Option A, a centralized validator (single source of truth), normalization utilities, GUI progressive enable/disable wiring, and a migration path from the current key/value settings manager. Execution in v1 is report-only.
+- Cross-references: data model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), UI [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md), API [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), architecture [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), errors [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md), decision §18 [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
+
+14B.1 Phased delivery overview
+- S0: Author JSON Schema for Option A (done; see data model).
+- S1: Centralized Validator (core) + ValidationReport shape.
+- S2: Normalization utilities (degree mapping; pHash distance-to-similarity).
+- S3: GUI progressive enable/disable wiring to validator.
+- S4: API endpoints: /profiles/validate and /runs/(duplicates|similarity) (report-only).
+- S5: Migration from key/value settings manager to profile model.
+- S6: Test matrix and fixtures (unit, integration, GUI).
+- S7: Sample profiles and validation examples.
+- S8: Documentation hardening and acceptance checks.
+
+14B.2 S1 — Centralized Validator (core)
+- Module placement (design reference):
+  - Core entry (public): src/pk_py_lib/core/settings_profiles.py validate_option_a(profile_dict) -> ValidationReport
+  - Internal module: src/pk_py_lib/core/settings/validators/profile_option_a.py (recommended)
+- Responsibilities:
+  - Validate against JSON Schema (shape), then enforce invariants:
+    - Mode=duplicates → algorithm=blake3; degree_ui absent; Pools ≥ 1; scope single/two matches direction rules.
+    - Mode=similarity → algorithm=phash; degree_ui ∈ [0..100]; direction required for two-pool.
+    - Pools: root_path existence; include/exclude compile; type_filters syntax; constraints ranges coherent.
+  - Normalize:
+    - degree_normalized = degree_ui / 100 (present only for similarity).
+    - phash.hash_size default 8; include default ["**/*"]; exclude default [].
+  - Return ValidationReport:
+    - is_valid: bool
+    - errors: list of {path, code, message}
+    - warnings: list of {path, code, message}
+    - normalized: SettingsProfileOptionA (or null on fatal errors)
+- Error codes: INVALID_CONFIG, FILE_MISSING, PERMISSION_DENIED, UNKNOWN_ERROR.
+
+14B.3 S2 — Normalization utilities
+- Degree helpers in [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1):
+  - ui_to_internal(pct: int|float) -> float in [0,1], clamped
+  - internal_to_ui(x: float) -> int [0..100]
+- pHash mapping:
+  - For hash_size h, D_max = h*h; s = 1 − (d / D_max); match if s ≥ degree_normalized.
+
+14B.4 S3 — GUI progressive wiring
+- Controller flow:
+  - On any form change, construct a draft profile (Option A shape) and call validator (debounced).
+  - Render inline hints (errors/warnings); toggle Save/Run based on is_valid.
+  - Populate a read-only "Resolved configuration preview" from normalized.
+  - Enable Direction radios only when validator reports both pools valid and scope.two_pool active.
+- Components (design reference):
+  - [src/pk_py_lib/gui/settings_manager/controller.py](src/pk_py_lib/gui/settings_manager/controller.py:1)
+  - [src/pk_py_lib/gui/settings_manager/validators.py](src/pk_py_lib/gui/settings_manager/validators.py:1) delegates to core.
+
+14B.SA Set A — Capability flags and initial-state gating
+
+Status: Approved
+
+Purpose
+- Centralize progressive enable/disable in the validator and consume the outcome in the GUI controller to guarantee deterministic UI behavior for Set A.
+- Capabilities are emitted by ValidationReport.capabilities (see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1)).
+
+Capabilities (shape and meaning)
+- can_run: boolean — true only when report.is_valid and all pools required by normalized.scope.kind are valid
+- can_save: boolean — true when report.is_valid and Pool A is valid (Set A policy)
+- can_enable_direction_controls: boolean — true when normalized.scope.kind == "two_pool" AND both pools validate
+- can_enable_degree_controls: boolean — true when normalized.mode == "similarity"
+- required_pools: ["A"] or ["A","B"] — derived from normalized.scope.kind
+
+Derivation (authoritative rules)
+- required_pools:
+  - "single_pool" → ["A"]
+  - "two_pool"   → ["A","B"]
+- can_enable_direction_controls:
+  - kind == "two_pool" AND pools.A.valid AND pools.B.valid
+- can_enable_degree_controls:
+  - mode == "similarity"  (algorithm label: pHash)
+- can_save (Set A):
+  - report.is_valid AND pools.A.valid
+- can_run:
+  - report.is_valid AND every pool in required_pools is valid
+
+Controller consumption
+- The controller in [src/pk_py_lib/gui/settings_manager/controller.py](src/pk_py_lib/gui/settings_manager/controller.py:1) MUST read capabilities and map them 1:1 to UI state:
+  - Save enabled iff can_save
+  - Run enabled iff can_run
+  - Direction radio group enabled iff can_enable_direction_controls; when it becomes enabled, default-select A_TO_B
+  - Degree controls enabled iff can_enable_degree_controls
+  - Use required_pools to render concise “missing inputs” guidance
+
+Pseudo-implementation (illustrative)
+```python
+caps = report.capabilities
+ui.save_btn.setEnabled(caps["can_save"])
+ui.run_btn.setEnabled(caps["can_run"])
+
+ui.direction_group.setEnabled(caps["can_enable_direction_controls"])
+if caps["can_enable_direction_controls"] and not ui.direction_group.hasSelection():
+    ui.direction_group.select("A_TO_B")  # default when first enabled
+
+ui.degree_controls.setEnabled(caps["can_enable_degree_controls"])
+```
+
+Set A initial-state acceptance overlay (UI)
+- Initial mode: duplicates
+- single_pool_clustering: unchecked by default
+- Save/Run: disabled until Pool A validates (can_save=false, can_run=false)
+- Pool B inputs: enabled from start; only Direction radios are gated
+- Direction radios: disabled until both pools validate; when enabled, default A_TO_B
+- Degree controls: disabled in duplicates; enabled only for similarity
+
+14B.5 S4 — API endpoints (report-only runs)
+- Validate:
+  - POST /profiles/validate → ValidationReport (used by GUI and pre-run checks).
+- Runs:
+  - POST /runs/duplicates and POST /runs/similarity
+  - Accept profile_id or inline profile override; always validate+normalize server-side.
+  - Duplicates returns clusters or per-reference matches; Similarity returns groups/matches with similarity values (0.0–1.0).
+- Error mapping per [ErrorCodes](docs/roo/img-app-api-specifications.md:1167) and [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
+
+14B.6 S5 — Migration path (key/value → profile model)
+- Current state: GUI Settings Manager edits key/value items.
+- Target: Profile-based model with typed Option A payload stored in settings_profiles.data.
+- Steps:
+  1) Introduce coexistence phase:
+     - Keep legacy key/value read-only in GUI; add a "Profiles (Option A)" tab.
+     - New profiles created using the Option A editor; legacy settings not editable here.
+  2) Initialize default Profile:
+     - On first launch (or migration run), create a "Default Option A" profile with safe defaults (Pool A empty, single-pool, duplicates).
+  3) Optional import:
+     - Provide a one-time helper to import common paths/globs from legacy settings into Pool A (best-effort).
+  4) Active profile semantics:
+     - Use meta.active_profile_id; require an Active profile at startup (startup modal policy remains).
+  5) Deprecation:
+     - Document legacy key/value as deprecated for scan configuration; retain for unrelated app preferences until separate AppSettings is fully in place.
+
+14B.7 S6 — Testing approach
+- Unit tests (core validator):
+  - Valid/invalid combinations from the validation matrix:
+    - Duplicates with degree_ui present → INVALID_CONFIG
+    - Similarity missing degree_ui → INVALID_CONFIG
+    - Two-pool direction missing or Pool B missing → INVALID_CONFIG
+    - Path non-existent or unreadable → FILE_MISSING / PERMISSION_DENIED
+    - Pattern compile failure → INVALID_CONFIG
+    - Bounds: max_depth ≥ 0; min_bytes ≤ max_bytes; min_date ≤ max_date
+  - Normalization correctness (Balanced defaults):
+    - Omitted criteria → {"algorithm":"pHash","degree_ui":90,"pHash":{"hash_size":8}}
+    - degree_ui 85 → degree_normalized 0.85
+    - Pools.* defaults: recurse=True, max_depth=0, include=["**/*"], exclude=[], follow_symlinks=False, include_hidden=False
+    - Scope defaults: kind="two_pool" when omitted; direction="A_TO_B" once both pools validate
+    - Output defaults: mode="report_only"
+  - OS-aware pattern case:
+    - Windows: "*.JPG" matches "photo.jpg"
+    - POSIX: "*.JPG" does not match "photo.jpg"
+- Integration tests (API):
+  - /profiles/validate returns normalized with defaults applied when omitted
+  - /runs/duplicates clusters by blake3; /runs/similarity respects degree_normalized
+  - Missing/invalid paths block run (error codes per ErrorCodes)
+- GUI tests (pytest-qt):
+  - Direction enabled only when both pools validate; Degree default 90 in Similarity
+  - Initial widget states reflect defaults (Recurse checked; Max depth=0; Follow symlinks off; Hidden off; preselected file types)
+  - Continue/Run disabled until is_valid and paths validate
+  - Resolved configuration preview updates with normalized defaults
+
+14B.8 S7 — Samples and fixtures
+- Store sample profile JSONs under docs/roo/samples/:
+  - single_pool_duplicates.json
+  - single_pool_similarity_85.json
+  - two_pool_duplicates_A_TO_B.json
+  - two_pool_similarity_A_TO_B_90.json
+  - two_pool_similarity_A_without_in_B_90.json
+
+14B.9 S8 — Acceptance checklist (Option A)
+- Centralized validator exists; GUI and API use it; no duplicated logic.
+- Degree normalization and pHash mapping implemented and used consistently.
+- Duplicates uses blake3; Similarity uses pHash; report-only runs produce the documented result shapes.
+- Startup modal enforces an Active profile; Direction radios gated by validator.
+- Test matrix covers all rule families; sample payloads validate successfully.
+
+Mermaid overview (evaluate → normalize → enable/disable → save/run)
+```mermaid
+flowchart TD
+  A[User edits Option A form] --> B[Build draft profile JSON]
+  B --> C[POST /profiles/validate]
+  C --> D{is_valid?}
+  D -->|No| E[Render inline errors; disable Save/Run]
+  D -->|Yes| F[Enable Save/Run; show Normalized preview]
+  F --> G[Save -> update profile]
+  F --> H[Run -> report-only execution]
+```
+## 14B.7 S6 — Package A test additions (v1)
+
+Add the following Package A–specific tests to the matrix:
+
+- Degree rounding parity (64-bit pHash)
+  - For representative Hamming distances d ∈ {0, 1, 2, 8, 16, 32, 48, 63, 64}, assert:
+    - degree_ui == round(100 * (1 - d/64))
+    - Match rule uses degree_ui ≥ threshold_ui
+- OS-aware case for patterns
+  - Windows: "*.JPG" matches "photo.jpg"
+  - POSIX: "*.JPG" does NOT match "photo.jpg"
+- Extension filter case-insensitivity (all OS)
+  - Filters [".jpg"] match files ".JPG", ".jPg", ".jpg"
+- Hidden exclusion via attribute (not patterns)
+  - With exclude=[] and include=["**/*"], assert hidden files are excluded unless include_hidden=true
+- Path validation gating
+  - Missing or unreadable pools.*.root_path → validation error (FILE_MISSING or PERMISSION_DENIED) and Save/Run disabled
+## 15. Settings Profiles v1 (Option A) — Implementation Guide (Option A + Balanced Defaults + Package A + Set A)
+
+Note
+- This section is synchronized with the canonical decision in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md) and aligned with [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md), [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), and [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md).
+
+### 15.1 Overview and goals
+
+This guide delivers a step-by-step plan to implement Settings Profiles v1 using:
+- A strongly typed schema and embedded JSON Schema
+- A centralized validator (single source of truth) and normalization utilities
+- Progressive GUI enable/disable driven by validator capability flags
+- Report-only run endpoints for duplicates (BLAKE3) and similarity (pHash with Degree UI 0–100 normalized to [0.0..1.0])
+
+Cross-references
+- Canonical decisions: [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md)
+- Data model and schema: [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md)
+- UI flows and states: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md)
+- API contracts and examples: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)
+- Technical architecture: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
+- Errors and edge cases: [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md)
+
+### 15.2 Step-by-step implementation plan (A–F)
+
+A) Data model and schema (typed + JSON Schema)
+- Define the typed SettingsProfileOptionA entity per the authoritative schema in [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md:1239). Include profile identity (id, name, timestamps) and structured sections for pools, mode/criteria, scope/direction, output.
+- Generate and maintain a JSON Schema (Draft 2020-12) alongside the types. Encode the Balanced defaults using property "default" annotations (documentational; actual filling by validator).
+- Defaults (authoritative; embed via JSON Schema where applicable):
+  - pools[*].include = ["**/*"], pools[*].exclude = []
+  - pools[*].recurse = true; pools[*].max_depth = 0 (unlimited)
+  - pools[*].include_hidden = false; pools[*].follow_symlinks = false
+  - pools[*].type_filters (UI label "File types") default = [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"] (case-insensitive match on all OS)
+  - mode default = "duplicates"
+  - duplicates criteria: algorithm fixed "blake3" (UI label "BLAKE3"); no degree
+  - similarity criteria: algorithm = "pHash"; degree_ui default = 90
+  - scope.direction default = "A_TO_B" (inert until both pools validate)
+  - scope.single_pool_clustering default = false
+- Include a schema versioning field for future evolution:
+  - profile_version default "1.0.0" (see [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md:1252))
+
+B) Defaults and normalization utilities
+- Degree normalization mapping: degree_ui ∈ [0..100] → degree_norm ∈ [0.0..1.0] as degree_norm = clamp(degree_ui / 100) (helpers in [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1)).
+- Package A degree formula (64‑bit pHash): degree_ui = round(100 * (1 - d/64)) where d is Hamming distance; match rule: match iff degree_ui ≥ threshold_ui (see [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:508)).
+- Encapsulate OS-aware case behavior for glob patterns (Windows = case-insensitive; POSIX = case-sensitive) and make extension filtering case-insensitive on all OS (see [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md:1111)). Hidden items are excluded by attribute by default (include_hidden=false).
+
+C) Centralized validator and rule engine
+- Compose JSON Schema validation with Option A compatibility rules (see [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1348)):
+  - Duplicates mode: degree_ui must be absent; criteria.algorithm="blake3"; pools ≥ 1
+  - Similarity mode: criteria.algorithm="pHash"; degree_ui in [0..100]
+  - Two-pool directions enabled only when both Pools A and B validate; single_pool scope must omit direction
+  - Path existence and readability checks; include/exclude pattern compile checks; bounds and ordering sanity checks
+- Compute capability flags (single source of truth consumed by GUI; see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1666)):
+  - can_run, can_enable_direction_controls, can_cluster_single_pool, can_run_similarity, can_run_duplicates, can_enable_degree_controls, can_save, required_pools
+- Output a normalized profile (defaults materialized, degree_normalized for similarity) and a structured validation report {is_valid, errors[], warnings[], capabilities{...}}.
+- Design references: validator entry in [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1); GUI façade delegates to core in [src/pk_py_lib/gui/settings_manager/validators.py](src/pk_py_lib/gui/settings_manager/validators.py:1).
+
+D) GUI wiring (progressive enable/disable)
+- On each user edit: Validate → Normalize → Compute capabilities → Update UI states (see [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1636)).
+- Initial state (Set A; see [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md:993)):
+  - mode="duplicates"
+  - Pool A inputs enabled (empty); Pool B visible from start; direction controls disabled until both pools validate
+  - single_pool_clustering=false
+  - Save/Run disabled until Pool A is valid; when both pools validate and scope.kind="two_pool", direction group enables with A_TO_B selected
+- Resolved configuration preview renders the validator-normalized profile and capability flags (see [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md:1174)).
+
+E) API façade integration
+- Validate-before-run pattern (see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:2109)):
+  - POST /profiles/validate → returns normalized profile + report + capabilities
+  - POST /profiles (create), PUT /profiles/{id} (update)
+  - POST /runs/duplicates and POST /runs/similarity (report-only), server re-validates and normalizes; responses include the normalized profile snapshot used for the run (provenance)
+- Library adapter design reference: [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:69)
+
+F) Intended code locations (design references only; do not edit code here)
+- Core schema/validator: [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1)
+- API façade: [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
+- GUI controller: [src/pk_py_lib/gui/settings_manager/controller.py](src/pk_py_lib/gui/settings_manager/controller.py:1)
+
+### 15.3 Migration from key/value settings manager
+
+Objective
+- Convert existing key/value settings into a single typed Option A Settings Profile JSON and persist via the profiles API, with defaults filled by the centralized validator.
+
+Inventory and mapping (legacy → profile)
+- Paths and patterns:
+  - include_dirs/exclude_dirs + include_globs/exclude_globs → pools.A/B.include and pools.A/B.exclude (relative to root_path); recurse → pools.*.recurse; maxDepth → pools.*.max_depth; follow_symlinks → pools.*.follow_symlinks; include_hidden → pools.*.include_hidden; extension filters → pools.*.type_filters
+- Mode and criteria:
+  - duplicates vs similarity → mode
+  - pHash degree (%) → criteria.degree_ui; algorithm fixed by mode (duplicates="blake3", similarity="pHash")
+- Scope and direction:
+  - single vs dual → scope.kind; inverse/non-match variants map to directions "A_WITHOUT_IN_B" or "B_WITHOUT_IN_A"; default direction is "A_TO_B"
+  - single-pool clustering toggle → scope.single_pool_clustering
+- Output:
+  - v1 is report-only → output.mode="report_only"
+
+Implementation notes
+- Introduce a migration helper in core (design-only), e.g. [SettingsProfilesManager.migrate_legacy_to_option_a()](src/pk_py_lib/core/settings_profiles.py:1):
+  - Read legacy key/value; construct a partial Option A payload
+  - Call validator to apply Balanced defaults and return normalized
+  - Persist via [SettingsProfilesAPI.create()](src/pk_py_lib/api/settings_profiles.py:172) and optionally [SettingsProfilesAPI.set_active()](src/pk_py_lib/api/settings_profiles.py:260)
+- Coexistence and rollback:
+  - Keep the legacy settings UI read-only during migration; expose a one-time import in the Profiles editor
+  - Document that Option A profiles own scan configuration going forward; legacy key/value deprecated for scan configuration (retain for unrelated app preferences until AppSettings migration completes)
+  - If needed, allow export of the legacy-derived profile JSON for external backup
+
+### 15.4 Testing strategy (comprehensive)
+
+Unit tests (validator, normalization, rules)
+- Schema default application (each default enumerated under 15.2.A)
+  - Pools include/exclude; recurse=true; max_depth=0; include_hidden=false; follow_symlinks=false; type_filters default list
+  - mode default="duplicates"; criteria defaults for similarity; output.mode="report_only"; scope.direction default "A_TO_B" (gated)
+- Normalization:
+  - degree_ui → degree_norm mapping: 0, 1, 2, 10, 32, 64 → 0.00, 0.01, 0.02, 0.10, 0.32, 0.64 (via [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1))
+  - Package A degree rounding parity for d ∈ {0,1,2,10,32,64}: degree_ui == round(100 * (1 - d/64)); enforce match rule (degree_ui ≥ threshold_ui)
+- Compatibility rules:
+  - Duplicates with degree present → INVALID_CONFIG
+  - Similarity missing degree → INVALID_CONFIG
+  - Two-pool direction set without both pools valid → INVALID_CONFIG
+- OS-aware pattern case and type filter behavior:
+  - Windows: "*.JPG" matches ".jpg"; POSIX: "*.JPG" does not match ".jpg"
+  - Extension filters case-insensitive on all OS
+  - Hidden excluded via attribute when include_hidden=false by default
+- Capability flags combinations:
+  - valid/invalid Pool A; valid/invalid Pool B; mode switches; direction gating; single_pool_clustering toggles; verify can_run and can_save policies
+- Path validation and pattern compile failures:
+  - Missing/unreadable root_path → FILE_MISSING/PERMISSION_DENIED; bad glob → INVALID_CONFIG
+
+Integration tests (API)
+- POST /profiles/validate applies defaults and returns stable normalized profiles and correct capability flags (see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1562))
+- Run endpoints accept only valid profiles; re-validate/normalize; responses include the normalized profile snapshot used for execution
+
+GUI interaction tests (pytest-qt; if applicable)
+- Set A initial states; progressive enable/disable; direction gating; degree control visibility by mode
+- Resolved configuration preview renders normalized/defaulted profile and capabilities
+
+Example profile fixtures (to store under docs/roo/samples)
+- Minimal single-pool duplicates
+- Minimal single-pool similarity
+- Two-pool duplicates (A_TO_B)
+- Two-pool similarity (A_TO_B and A_WITHOUT_IN_B)
+- Fully explicit profile with all defaults materialized
+
+### 15.5 Developer notes and pitfalls
+
+- Single source of truth for defaults
+  - Keep a central defaults pack in code (design reference: src/pk_py_lib/core/settings/defaults.py) and surface the same values via JSON Schema "default" and through the validator’s normalized output
+- Avoid duplicating defaults in UI
+  - GUI must render from the normalized profile returned by the validator; do not hardcode defaults in widgets
+- Error objects and codes
+  - Use structured error codes defined in [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1175) and map consistently in API responses
+- Option A vs legacy hashing guidance
+  - For Option A duplicates, use BLAKE3 per [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:481); legacy SHA‑256 guidance remains valid for general cache identity outside Option A runs
+- Direction gating and defaults
+  - Direction "A_TO_B" is default but MUST remain inert (disabled) until both pools validate; enablement and default-select are validator-driven
+
+### 15.6 Definition of done (DoD)
+
+- All tests passing per the strategy in 15.4, including Package A specifics and capability gating cases
+- UI states and progressive enable/disable exactly match [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md) (Set A overlay)
+- Endpoints behave as specified in [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md) (validate-before-run; normalized snapshots)
+- Technical architecture constraints satisfied per [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md) (centralized validator; normalization helpers; provenance)
+- Edge cases and error handling aligned with [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md)
+- Intended code locations match design references only (no divergence): [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1), [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1), [src/pk_py_lib/gui/settings_manager/controller.py](src/pk_py_lib/gui/settings_manager/controller.py:1)

@@ -1,3 +1,45 @@
+## DEC-SettingsProfilesV1-OptionA-Balanced-PackageA-SetA — 2025-08-19T18:05:14Z
+
+Summary
+A concise summary binding Option A, Balanced defaults, Package A specifics, and Set A initial-state defaults for Settings Profiles v1, establishing a typed schema, centralized validation, and progressive GUI enable/disable.
+
+Decisions (authoritative; verbatim)
+- Option A approved: Two pools (A/B); duplicates via BLAKE3; similarity via pHash; degree 0–100 (internal 0..1); report-only actions; strongly typed schema; progressive GUI enable/disable.
+- Balanced defaults adopted:
+  - Patterns: glob (gitignore-style); OS-aware case (Windows=case-insensitive, POSIX=case-sensitive)
+  - Recursion on (max_depth=0 means unlimited); follow_symlinks=false; include_hidden=false
+  - File types default: jpg, jpeg, png, webp, tiff, bmp, gif, heic, heif (RAW off by default)
+  - Similarity default degree=90; similarity algorithm default=pHash (64-bit grayscale DCT)
+  - Duplicates algorithm: BLAKE3 full-file (no chunking) fixed in duplicates mode
+  - Two-pool default: A→B matches only (others off initially)
+  - Path validation: all pool paths must exist and be readable; Save/Run blocked if invalid
+  - Pattern semantics: patterns relative to pool root; multi-line/list allowed
+- Package A specifics:
+  - pHash→degree formula: degree = round(100 * (1 - d/64)) where d is 64-bit Hamming distance
+  - Match rule: match requires degree ≥ threshold
+  - Defaults include=["**/*"]; exclude=[]; hidden excluded via attribute (not patterns)
+  - Extension filter case-insensitive on all OS; patterns OS-aware case
+  - Save/Run blocked if any pool path missing/unreadable
+- Set A initial-state defaults:
+  - Initial mode="duplicates"
+  - Pool A enabled (empty); Pool B visible but disabled until valid path
+  - single_pool_clustering=false
+  - Save/Run disabled until Pool A path valid
+  - Direction “A→B matches” becomes enabled (and may be pre-selected) once Pool B path valid; direction controls disabled otherwise
+
+Impacts (clickable references):
+- [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md)
+- [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md)
+- [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)
+- [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
+- [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md)
+- [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md)
+- [architecture-plan.md](architecture-plan.md)
+- [docs/img-app-spec.md](docs/img-app-spec.md)
+
+Status: Effective
+
+Notes: “Updated for Settings Profiles v1 (Option A) — Balanced Defaults — Package A — Set A initial-state defaults”
 # Canonical Decisions — KDC Image Organizer
 
 Purpose
@@ -407,3 +449,75 @@ Purpose
   - Single Default at most; setting one clears others
 - Error mapping: API maps exceptions to ErrorCodes; database locked → LOCKED_DB; invalid input → INVALID_CONFIG
 - Logging namespace: "pk_py_lib.settings_profiles" for core and API
+
+## 18) Settings Profiles v1 — Option A (canonical)
+
+Status: Approved
+
+Date: 2025-08-19T01:32:08Z
+
+Summary
+- Two pools (A/B) model with single-pool support. Pools are independently configurable (root path, include/exclude patterns, recurse flag, max_depth, file-type filters, optional size/date constraints).
+- Modes:
+  - Duplicates: fixed content-identity algorithm BLAKE3 (no degree/threshold).
+  - Similarity: perceptual hash (pHash) with user Degree 0–100 UI; internal normalization [0.0..1.0].
+- Direction/scope:
+  - Single-pool clustering (within-pool groups).
+  - Two-pool queries: A→B, B→A, A without matches in B, B without matches in A.
+- Output mode: report-only in v1 (no file mutations).
+- Strongly typed Settings Profile schema with a centralized validator (single source of truth) consumed by both GUI and core. GUI uses progressive enable/disable driven by validator outcomes.
+- Normalization:
+  - UI Degree d_ui in [0..100] maps to internal d = d_ui / 100.
+  - For pHash of size h: max distance D_max = h*h; normalized_similarity = 1 - (distance / D_max). Comparison uses normalized threshold d.
+- Validation (selected invariants):
+  - Duplicates mode: algorithm fixed to blake3; degree must be absent.
+  - Similarity mode: algorithm must be phash; degree_ui must be present in [0..100].
+  - Two-pool directions enabled only when both pools validate.
+  - Paths must exist (validator checks); patterns must compile; numeric bounds enforced; mutually exclusive options rejected.
+- Dependencies (design reference for v1): BLAKE3 for duplicates; pHash for similarity.
+
+Overrides and compatibility
+- This decision supersedes prior identical-file algorithm guidance under Decision 4 (File Hashing Strategy) when a profile is run in Mode "duplicates". For Option A v1 runs:
+  - Use BLAKE3 for duplicate detection in reports.
+  - Existing SHA-256 decisions remain applicable to general cache identity, staged hashing pipelines, or future non-Option-A flows unless explicitly migrated.
+- Centralized validator becomes the canonical gate for GUI enablement and API acceptance.
+
+Specifications updated (cross-references)
+- Data model including JSON Schema, normalization, validation matrix, and examples: [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md:1)
+- UI design for Pools/Mode/Direction panels, progressive enable/disable, validation UX, and state diagrams: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md:1)
+- API specifications: profile I/O, validate, and run (report-only) shapes and examples: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1)
+- Technical architecture: centralized validator, normalization utilities, GUI-controller flow, module placement, and dependencies: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1)
+- Implementation guide: phased adoption (typed schema → validator → normalization → GUI wiring) and migration from key/value settings: [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1)
+- Error handling and edge cases for Option A validation conflicts and large trees: [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md:1)
+
+Implementation touchpoints
+- Central validator module (design reference): [src/pk_py_lib/gui/settings_manager/validators.py](src/pk_py_lib/gui/settings_manager/validators.py:1)
+- Degree helpers (design reference): [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1)
+- SettingsProfiles API adapter (design reference): [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:69)
+- Core manager for profile CRUD/invariants (design reference): [SettingsProfilesManager.create_profile()](src/pk_py_lib/core/settings_profiles.py:292), [SettingsProfilesManager.update_profile()](src/pk_py_lib/core/settings_profiles.py:362)
+
+Rationale
+- Fixing duplicates to BLAKE3 simplifies identity while improving speed and collision resistance relative to SHA-256, and aligns with report-only v1 scope.
+- A single validator ensures consistent behavior across GUI and core, enabling progressive UI logic and preventing invalid combinations from persisting.
+- Normalizing UI degrees to internal [0..1] harmonizes storage, APIs, and algorithm thresholds across the stack.
+
+### 19) Package A specifics for v1 defaults
+
+Date: 2025-08-19T15:34:30Z
+
+Authoritative specifics (encode verbatim)
+- pHash degree formula: degree = round(100 * (1 - d/64)) where d is 64-bit pHash Hamming distance
+- Match rule (similarity): a match requires degree ≥ threshold
+- Default include patterns: ["**/*"]
+- Default exclude patterns: [] (empty). Hidden files are excluded via attribute, not patterns
+- Extension filter: case-insensitive on all OS
+- Pattern matching case: OS-aware (case-insensitive on Windows; case-sensitive on POSIX)
+- Save/Run is blocked if any pool path is missing or unreadable
+
+Notes
+- These specifics are reflected across the Balanced Defaults v1 Option A documentation and schemas:
+  - Data model and JSON Schema defaults: [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md)
+  - UI initial states and UX rules: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md)
+  - API validation/normalization semantics and examples: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)
+  - Technical defaults source-of-truth and OS-aware matching: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
+  - Error handling (blocking Save/Run on invalid/missing paths): [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md)

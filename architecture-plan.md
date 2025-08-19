@@ -1,4 +1,125 @@
 # PK-Py-Lib Architecture Implementation Plan
+> Updated for Settings Profiles v1 (Option A) — Balanced Defaults — Package A — Set A
+>
+> This plan reflects the adoption of a strongly typed Settings Profile model with a centralized validator (single source of truth), Option A algorithms (BLAKE3 for duplicates; pHash for similarity with Degree UI 0–100 normalized to [0.0..1.0]), two-pool directions, and report-only execution in v1. Cross-references: data model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), UI [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md), API [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), technical architecture [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), errors [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md), canonical decision §18 [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
+
+## Executive summary — Settings Profiles v1 (Option A)
+
+Settings Profiles v1 standardizes two pools (Pool A, Pool B) with two Modes: duplicates (fixed BLAKE3) and similarity (pHash). The Degree is entered in the UI as 0–100 and normalized to [0.0..1.0] for processing. v1 runs are report-only. A centralized validator is the single source of truth for schema/defaults/compatibility and emits capability flags that drive progressive GUI enable/disable per Set A initial states (initial Mode=duplicates, Pool A enabled, Direction disabled until both pools validate). Canonical decision: DEC‑SettingsProfilesV1‑OptionA‑Balanced‑PackageA‑SetA in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
+
+## System components and responsibilities
+
+- Data model and JSON Schema (source of truth): [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md)
+- Centralized validator and rule engine (defaults + compatibility + capability flags): [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
+- Normalization utilities (degree_ui → degree_norm; Package A degree formula): [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md)
+- GUI (Settings Manager) and progressive enable/disable: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md)
+- API façade (validate → normalize → run → report): [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)
+- Error handling and UX patterns: [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md)
+
+Intended implementation locations (design pointers only; no code edits):
+- Core schema/validator: [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1)
+- API façade: [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
+- GUI controller: [src/pk_py_lib/gui/settings_manager/controller.py](src/pk_py_lib/gui/settings_manager/controller.py:1)
+
+## End-to-end flows (high-level, non-code)
+
+- Profile authoring
+  - Edit in GUI → Validate (centralized) → Normalize (defaults applied; degree_ui→degree_norm) + Capability flags → Save or Run
+  - Refs: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md), [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
+- Duplicates run (report-only)
+  - profile_id or inline JSON → Validate/Normalize → Execute (BLAKE3 exact-identity) → Return groups report
+  - Refs: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
+- Similarity run (report-only)
+  - profile_id or inline JSON → Validate/Normalize → Direction gating (A→B default when both pools valid) → Return matches (and non-matches when requested)
+  - Refs: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md)
+
+## Defaults and gating overview (Balanced + Package A + Set A)
+
+Balanced defaults (v1):
+- include = ["**/*"], exclude = [], recurse = true, max_depth = 0 (0 = unlimited)
+- include_hidden = false, follow_symlinks = false
+- type_filters default image list: [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]
+
+Modes and algorithms:
+- mode default "duplicates"
+- duplicates algorithm = BLAKE3 (fixed); no degree
+- similarity algorithm default "pHash"; degree_ui default = 90
+- direction default A→B (inactive until both pools validate)
+- single_pool_clustering = false
+
+Package A degree mapping (64-bit pHash):
+- degree_ui = round(100 * (1 - d/64)), where d is Hamming distance
+- Match rule: a match requires degree_ui ≥ threshold_ui
+
+Set A initial states (GUI):
+- mode = "duplicates"
+- Pool A enabled (empty)
+- Pool B disabled until valid
+- Save/Run disabled until Pool A valid
+- Direction disabled until both pools validate
+
+## Acceptance criteria alignment
+
+- JSON Schema with defaults present and self‑consistent: [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md)
+- UI initial states and progressive logic: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md)
+- API request/response contracts and default‑filling examples: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)
+- Technical architecture gating/capabilities and OS/FS semantics: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
+- Tests and migration plan: [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md)
+- Error taxonomy and UX: [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md)
+
+## Out of scope (v1)
+
+- N‑pool comparisons
+- Additional similarity algorithms beyond pHash
+- Action endpoints (non‑reporting)
+- Performance optimizations
+- Pagination in API responses
+- RAW formats enabled by default
+
+## Roadmap notes
+
+- Next iterations: N‑pool support, extended similarity algorithms, action endpoints, pagination for large results
+- Evolve schema versioning alongside changes (profile_version baseline; see [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md))
+## Option A Overview — Data Model, Validator, and GUI Enablement (v1)
+
+Scope
+- Profiles define Pools A and B with root_path, include/exclude patterns (glob; gitignore-style), recurse and max_depth, type filters, optional size/date constraints. Patterns are evaluated relative to each pool root.
+- Modes:
+  - Duplicates: fixed algorithm BLAKE3, no degree/threshold.
+  - Similarity: pHash, Degree UI 0–100 normalized to [0.0..1.0].
+- Two-pool directions: A→B, B→A, A without matches in B, B without matches in A; single-pool clustering supported.
+- Output: report-only in v1.
+
+Balanced Defaults — v1 (authoritative)
+- Recursion: recurse=true; max_depth=0 means unlimited.
+- Symlinks: follow_symlinks=false.
+- Hidden files: include_hidden=false (excluded by default).
+- File types: images only [.jpg .jpeg .png .webp .tiff .bmp .gif .heic .heif]; RAW off by default.
+- Similarity defaults: algorithm="pHash" (64-bit grayscale DCT; hash_size=8), degree_ui=90.
+- Duplicates: algorithm="blake3" fixed; no degree.
+- Scope/Direction: default kind="two_pool"; direction default "A_TO_B" (selected only when both pools validate).
+- Pattern matching case: OS-aware (Windows case-insensitive; POSIX case-sensitive).
+
+Centralized validator
+- Single source of truth shared by GUI and core; produces ValidationReport with is_valid, errors, warnings, and a normalized profile view (includes degree_normalized for similarity).
+- Applies Balanced defaults to omitted fields; GUI progressive enable/disable states derive exclusively from validator outcomes.
+
+Normalization
+- Degree mapping: degree = degree_ui / 100.
+- pHash mapping: for hash_size h, max distance D_max = h*h; similarity s = 1 − (d/D_max); match if s ≥ degree.
+
+Implementation notes
+- For Option A "duplicates", BLAKE3 supersedes earlier generic identical-file notes in this document. Existing SHA-256 guidance remains relevant for general cache/identity concerns outside Option A runs.
+- See detailed JSON Schema, defaults, and examples in [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md:864).
+
+Acceptance snapshots
+- Centralized validator present and invoked by both GUI and API; absent fields normalized with Balanced defaults.
+- GUI initial states reflect Balanced defaults (Recurse checked; Max depth=0; Follow symlinks OFF; Hidden OFF; File types preselected; Degree=90 in Similarity).
+- single_pool_clustering: unchecked by default.
+- Path validation is strict: invalid/missing pool paths block Save/Run until fixed.
+- Direction radios: default A→B preselected only when both pools validate; other directions off initially.
+- Run endpoints perform report-only execution with response shapes documented in [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1536).
+- Pattern engine respects OS-aware case rules (Windows case-insensitive; POSIX case-sensitive).
 
 ## Phase 1: Core Structure Setup (Week 1)
 
@@ -355,7 +476,7 @@ Cross-References
 
 Next Steps
 - Implement core manager [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1) and API adapter [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
-- Implement reusable GUI dialog [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1)
+- Implement reusable GUI dialog [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1)
 - Add app integration helper [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1) and wire in [img_app/img_app/app.py](img_app/img_app/app.py:60)
 - Add tests: core/API unit tests and pytest-qt GUI/startup flows
 <!-- Settings Manager high-level plan addendum -->
@@ -395,3 +516,27 @@ Cross-references
 - Errors and edge cases: [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md:1) (Section 13A)
 - Implementation steps: [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1) (Section 14A)
 - Canonical decisions: [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:1) (Section 17A)
+
+## Addendum — Package A specifics alignment (Option A, Balanced Defaults v1)
+
+This addendum records the Package A specifics adopted for v1 and serves as acceptance criteria overlays:
+
+- Include/Exclude defaults
+  - include = ["**/*"]
+  - exclude = []
+  - Hidden handled via attribute: include_hidden=false by default (do not use patterns to hide)
+- Extension filter: case-insensitive on all operating systems
+- Pattern matching case: OS-aware (case-insensitive on Windows; case-sensitive on POSIX)
+- Similarity (pHash)
+  - Default algorithm: "pHash"; default degree_ui: 90
+  - Degree formula (64-bit pHash): degree_ui = round(100 * (1 - d/64)), where d is Hamming distance
+  - Match rule: a match requires degree_ui ≥ threshold_ui
+- Path validation gating
+  - Save/Run is blocked by the validator when any required pool path is missing or unreadable
+
+References
+- Data model and JSON Schema defaults: [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md)
+- UI initial states and UX rules: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md)
+- API validation/normalization semantics: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)
+- Technical architecture (OS-aware matching, defaults SOoT): [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
+- Errors (blocking behavior): [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md)

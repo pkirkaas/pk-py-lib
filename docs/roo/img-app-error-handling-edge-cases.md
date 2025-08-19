@@ -1,4 +1,373 @@
 # KDC Image Organizer - Error Handling & Edge Cases
+> Updated for Settings Profiles v1 (Option A) — Balanced Defaults — Package A — Set A
+>
+> This document now catalogs Option A–specific validation failures, conflicts, edge cases at scale, and UX guidance tied to the centralized validator and progressive enable/disable UI. Cross-references: data model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), UI [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md), API [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), architecture [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), decision §18 [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
+## Settings Profiles v1 (Option A) — Error Handling Canonical
+Option A + Balanced Defaults + Package A + Set A. Terminology, invariants, and defaults align with the canonical decision in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md) and the contracts in [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md), and [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md).
+
+1) Philosophy and scope
+- v1 prioritizes correctness and rich diagnostics over permissiveness. All validation failures surface structured, machine-readable errors with JSON Pointers.
+- Save and Run are gated by centralized validator capability flags; buttons remain disabled until required conditions are satisfied (Set A policy).
+- Execution is report-only in v1. Run endpoints never alter files; actions are deferred (see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)).
+- Consistency: GUI, API, and engine consume the same centralized validator. Defaults and normalization always flow through the validator.
+
+2) Canonical structured error format
+- Detail object (per issue) returned by validator and APIs:
+```json
+{
+  "code": "PATH_MISSING",
+  "message": "Pool A root_path is required",
+  "details": { "pool": "A" },
+  "path": "/pools/A/root_path",
+  "hint": "Select an existing, readable directory"
+}
+```
+- Where it appears
+  - Validation (200 OK): { success:true, data:{ is_valid:false, errors:[…], warnings:[…], normalized:null, capabilities:{…} }, code:null, error:null } (see §13B.2 in [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)).
+  - Fail-fast errors (e.g., malformed JSON): top-level ApiResponse.fail with code and metadata.details (see “Structured error payload” in [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:2101)).
+- Fields
+  - code: machine-readable string (see taxonomy below)
+  - message: concise, human-readable description
+  - details: optional map with context (e.g., pool="A", index=2, algorithm="pHash")
+  - path: JSON Pointer to offending field in the profile payload
+  - hint: optional suggestion to resolve the issue
+
+3) Error taxonomy (detail-level codes and when they occur)
+Note: These are validator-level detail codes. API top-level codes (e.g., INVALID_CONFIG, FILE_MISSING, PERMISSION_DENIED) wrap or accompany these details as appropriate (see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1172)).
+
+- PATH_MISSING
+  - Occurs when a required path field is empty or omitted (e.g., /pools/A/root_path is missing/blank).
+  - Example triggers: No Pool A root_path; Pool B required by two_pool scope but omitted.
+- PATH_UNREADABLE
+  - Occurs when a provided path does not exist or is unreadable (permissions, offline network path, unmounted volume, or Windows path length issues).
+  - Mapping: often paired with top-level FILE_MISSING or PERMISSION_DENIED depending on OS error.
+- DEGREE_OUT_OF_RANGE
+  - Occurs when criteria.degree_ui is provided but not in [0..100] inclusive.
+- INVALID_COMBINATION
+  - Occurs on incompatible field combinations, including:
+    - degree_ui present with mode="duplicates"
+    - duplicates algorithm not "blake3"
+    - similarity algorithm not "pHash"
+    - scope.single_pool but a direction is provided
+    - single_pool_clustering used when scope.kind != "single_pool"
+- POOL_B_REQUIRED_FOR_DIRECTION
+  - Occurs when a direction is requested but Pool B is invalid or missing, or when direction is set while scope.kind="single_pool".
+- PATTERN_COMPILE_ERROR
+  - Occurs when include/exclude patterns cannot be parsed (invalid glob syntax). details typically include pattern and index.
+- SCHEMA_VALIDATION_ERROR
+  - Occurs when the payload violates JSON Schema (types, enums, required fields). Often reported for malformed JSON with HTTP 400 in REST variants.
+- UNSUPPORTED_FILE_TYPE (warning)
+  - Occurs when files outside the default image set are referenced while type_filters constrain to defaults. Hint to add extensions explicitly.
+- NORMALIZATION_CONFLICT (warning)
+  - Occurs when inputs require normalization adjustments (e.g., degree_ui rounding, coercing negative max_depth to 0). The normalized profile reflects the resolved values.
+
+4) Edge-case catalogue — scenarios, behavior, UX
+- Paths
+  - Pool A missing/invalid
+    - Behavior: Save/Run disabled; inline error and banner show PATH_MISSING or PATH_UNREADABLE for /pools/A/root_path.
+    - OS/FS hints: For Windows long paths or network shares, suggest enabling long path support or verifying mount/credentials.
+  - Pool B invalid while a direction is selected
+    - Behavior: Direction controls are gated off by capabilities; attempting to run returns POOL_B_REQUIRED_FOR_DIRECTION detail and top-level INVALID_CONFIG in run APIs.
+  - Network/unmounted drives, offline shares, permission denied
+    - Behavior: PATH_UNREADABLE; top-level may be FILE_MISSING or PERMISSION_DENIED with OS-specific hint text.
+- Patterns and filters
+  - Invalid glob pattern
+    - Behavior: PATTERN_COMPILE_ERROR with offending pattern and index (e.g., /pools/A/include/2).
+  - Empty include with exclude=[]
+    - Behavior: Balanced defaults applied (include=["**/*"]); info note in warnings as applicable.
+  - Hidden handling
+    - Default include_hidden=false; hidden files are excluded even if matched by patterns. Toggle include_hidden to include them explicitly.
+  - Symlinks
+    - Default follow_symlinks=false; avoids traversal loops. Broken links are skipped without errors.
+  - File type mismatches and RAW formats
+    - Defaults restrict to common image types; RAW is off by default. Provide a hint to add specific RAW extensions into type_filters.
+- Mode/criteria
+  - Duplicates with degree provided
+    - Behavior: INVALID_COMBINATION at /criteria/degree_ui.
+  - Similarity with algorithm != "pHash"
+    - Behavior: INVALID_COMBINATION at /criteria/algorithm.
+  - Degree out of range
+    - Behavior: DEGREE_OUT_OF_RANGE at /criteria/degree_ui.
+  - Direction requested in single-pool contexts
+    - Behavior: POOL_B_REQUIRED_FOR_DIRECTION (direction incompatible without Pool B or when scope.kind="single_pool").
+- Large trees and recursion
+  - max_depth=0 (unlimited) on massive trees
+    - Behavior: allowed; add a performance warning. Suggest setting a positive max_depth. Save/Run allowed if otherwise valid.
+- Result/data issues
+  - Empty result sets (no duplicates/matches)
+    - Behavior: valid; return an empty report with a summary that indicates zero matches.
+  - Per-file metadata read failures
+    - Behavior: captured as warnings in the report with file path and reason; do not fail the entire run.
+
+5) UX guidance (GUI behaviors)
+- Inline, non-blocking hints directly beneath offending widgets with concise messages and tooltips for details.
+- Capability-gated controls and buttons:
+  - Save and Run remain disabled until capability flags allow (can_save/can_run). Direction radios are disabled until both pools validate. See [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md) and [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md).
+- Error banner with a “Copy JSON” action that copies the structured error list (details[]) for support/debugging.
+- Focus management: highlight the first actionable error; pressing Enter in a field re-validates and re-focuses the next error.
+- Tooltips for controls summarize constraints (e.g., “Degree 0–100; normalized internally to [0.0..1.0]”).
+
+6) Logging and diagnostics
+- Logger namespace: pk_py_lib.settings_profiles (INFO: validate/normalize/run; WARNING: validation failures/default fallbacks; ERROR: IO/DB/algorithm).
+- Validator logging includes:
+  - counts of errors/warnings by code,
+  - list of JSON Pointers for first-N issues,
+  - applied-defaults counters per section (pools, criteria, scope, output),
+  - capability flags snapshot (can_run, can_save, can_enable_*).
+- Provenance: every Run response includes the normalized profile snapshot used for execution (see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)).
+
+7) Cross-references to rules and defaults
+- Data model defaults and normalization (authoritative)
+  - Balanced defaults pack and JSON Schema: [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md).
+  - Degree UI normalization and Package A formula: degree_ui = round(100 * (1 - d/64)) for 64‑bit pHash; match if degree_ui ≥ threshold_ui (see [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:508)).
+- UI progressive enable/disable and state flows
+  - Panels, widgets, gating, and preview: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md).
+- Capability flags and gating rules
+  - Derivation and consumption: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md).
+- Implementation tests and acceptance strategy
+  - Validation, normalization, and capability test matrix: [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md).
+
+8) Error message templates and examples
+Templates (message strings; variables in braces):
+- PATH_MISSING: "Pool {pool} root_path is required"
+- PATH_UNREADABLE: "Path not found or not readable: {path}"
+- DEGREE_OUT_OF_RANGE: "Degree out of range: {value} (expected 0–100)"
+- INVALID_COMBINATION: "Invalid combination: {reason}"
+  - Examples: "degree_ui is not allowed in duplicates mode", "algorithm must be 'blake3' for duplicates", "algorithm must be 'pHash' for similarity", "direction not allowed in single_pool scope"
+- POOL_B_REQUIRED_FOR_DIRECTION: "Direction {direction} requires a valid Pool B root_path"
+- PATTERN_COMPILE_ERROR: "Invalid pattern at index {index}: {pattern}"
+- SCHEMA_VALIDATION_ERROR: "Schema validation failed at {path}: {why}"
+- UNSUPPORTED_FILE_TYPE (warning): "File type {ext} is not enabled by default; add it to type_filters to include"
+- NORMALIZATION_CONFLICT (warning): "Normalized {field} from {original} to {normalized}"
+
+Example payloads (validator 200 OK with is_valid=false):
+```json
+{
+  "success": true,
+  "data": {
+    "is_valid": false,
+    "errors": [
+      {
+        "code": "PATH_MISSING",
+        "message": "Pool A root_path is required",
+        "details": { "pool": "A" },
+        "path": "/pools/A/root_path",
+        "hint": "Select an existing, readable directory"
+      }
+    ],
+    "warnings": [],
+    "normalized": null,
+    "capabilities": {
+      "can_run": false,
+      "can_save": false,
+      "can_enable_direction_controls": false,
+      "can_enable_degree_controls": false,
+      "required_pools": ["A"]
+    }
+  },
+  "code": null,
+  "error": null
+}
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "is_valid": false,
+    "errors": [
+      {
+        "code": "DEGREE_OUT_OF_RANGE",
+        "message": "Degree out of range: 110 (expected 0–100)",
+        "details": { "value": 110 },
+        "path": "/criteria/degree_ui",
+        "hint": "Enter an integer between 0 and 100"
+      },
+      {
+        "code": "INVALID_COMBINATION",
+        "message": "degree_ui is not allowed in duplicates mode",
+        "details": { "mode": "duplicates" },
+        "path": "/criteria/degree_ui"
+      }
+    ],
+    "warnings": [
+      {
+        "code": "NORMALIZATION_CONFLICT",
+        "message": "Normalized max_depth from -1 to 0 (unlimited)",
+        "details": { "original": -1, "normalized": 0 },
+        "path": "/pools/A/max_depth"
+      }
+    ],
+    "normalized": null,
+    "capabilities": {
+      "can_run": false,
+      "can_save": false,
+      "can_enable_direction_controls": false,
+      "can_enable_degree_controls": false,
+      "required_pools": ["A"]
+    }
+  },
+  "code": null,
+  "error": null
+}
+```
+
+Pattern and direction examples:
+```json
+{
+  "success": true,
+  "data": {
+    "is_valid": false,
+    "errors": [
+      {
+        "code": "PATTERN_COMPILE_ERROR",
+        "message": "Invalid pattern at index 2: **/*.[jpg",
+        "details": { "index": 2, "pattern": "**/*.[jpg" },
+        "path": "/pools/B/include/2"
+      },
+      {
+        "code": "POOL_B_REQUIRED_FOR_DIRECTION",
+        "message": "Direction A_TO_B requires a valid Pool B root_path",
+        "details": { "direction": "A_TO_B" },
+        "path": "/scope/direction",
+        "hint": "Provide pools.B.root_path or switch to single_pool"
+      }
+    ],
+    "warnings": [],
+    "normalized": null,
+    "capabilities": {
+      "can_run": false,
+      "can_save": true,
+      "can_enable_direction_controls": false,
+      "can_enable_degree_controls": true,
+      "required_pools": ["A","B"]
+    }
+  }
+}
+```
+
+Schema example (malformed JSON; REST variant may respond with 400):
+```json
+{
+  "success": false,
+  "error": "Malformed JSON payload",
+  "code": "INVALID_CONFIG",
+  "metadata": {
+    "details": [
+      {
+        "code": "SCHEMA_VALIDATION_ERROR",
+        "message": "Expected object at /criteria, got string",
+        "path": "/criteria"
+      }
+    ]
+  }
+}
+```
+
+## 13B. Settings Profiles v1 (Option A) — Validation Failures, Conflicts, and UX
+
+Scope
+- Applies to Option A’s strongly typed Settings Profile schema with two Pools (A/B), Modes (duplicates vs similarity), Directions for two-pool scope, UI Degree 0–100 (normalized to [0..1]), and report-only execution.
+- Centralized validator is the source of truth; GUI progressive enable/disable derives from validator outcome.
+
+13B.1 Canonical validation failures (with suggested resolutions)
+- Degree present in duplicates mode
+  - Symptom: criteria.degree_ui provided while mode="duplicates".
+  - Error: INVALID_CONFIG.
+  - Resolution: Remove degree_ui; duplicates uses fixed algorithm BLAKE3 and no threshold.
+- Missing degree in similarity mode
+  - Symptom: mode="similarity" without criteria.degree_ui, or out of [0..100].
+  - Error: INVALID_CONFIG.
+  - Resolution: Provide degree_ui in range 0–100 (UI); validator normalizes to [0..1].
+- Two-pool direction constraints
+  - Symptom: scope.kind="two_pool" but missing direction; or direction set without valid Pools A and B.
+  - Error: INVALID_CONFIG.
+  - Resolution: Ensure Pools A and B validate; set one of A_TO_B, B_TO_A, A_WITHOUT_IN_B, B_WITHOUT_IN_A.
+- Pool path existence / access
+  - Symptom: pools.A.root_path or pools.B.root_path does not exist or is inaccessible.
+  - Error: FILE_MISSING or PERMISSION_DENIED (depending on failure).
+  - Resolution: Correct the path, mount the drive, or adjust permissions. GUI preserves input and shows inline hints.
+- Pattern compilability / syntax
+  - Symptom: invalid glob in include/exclude.
+  - Error: INVALID_CONFIG.
+  - Resolution: Fix offending patterns; validator identifies the specific index (e.g., /pools/A/include/2).
+- Numeric/date bounds
+  - Symptom: max_depth < 0; min_bytes > max_bytes; min_date > max_date.
+  - Error: INVALID_CONFIG.
+  - Resolution: Adjust values to satisfy ordering and bounds.
+- Unsupported file-type tokens
+  - Symptom: type_filters contains empty/invalid strings.
+  - Error: INVALID_CONFIG.
+  - Resolution: Remove empties; use “.jpg”, “.png”, etc.
+
+13B.1a Balanced Defaults — additional cases and messages
+- Hidden files excluded by default
+  - Symptom: expected files (dotfiles or hidden attributes) not appearing.
+  - Root cause: include_hidden=false by default.
+  - Resolution: enable Include hidden on the Pools panel or add explicit patterns that surface them; message: "Hidden files are excluded by default. Enable 'Include hidden' to include them."
+- Symlink traversal disabled by default
+  - Symptom: files reachable only via symlinks are missing; potential "no files matched" in folders using junctions/links.
+  - Root cause: follow_symlinks=false by default (prevents loops and surprises).
+  - Resolution: enable Follow symlinks explicitly; message: "Following symlinks is disabled by default. Enable 'Follow symlinks' to traverse linked folders (use with caution to avoid cycles)."
+- RAW formats off by default
+  - Symptom: RAW files (e.g., .CR2, .NEF, .ARW) not included in scans.
+  - Root cause: default type_filters include common image formats only.
+  - Resolution: add RAW extensions to type_filters; message: "RAW formats are not included by default. Add desired RAW extensions to File types to include them."
+- Unlimited recursion risks (depth)
+  - Symptom: very slow traversal or huge result sets in deep trees.
+  - Root cause: max_depth=0 means unlimited recursion by default.
+  - Resolution: set a positive max_depth to limit traversal; message: "Unlimited recursion may be slow on deep trees. Consider setting a positive Max depth."
+- OS-aware case behavior in patterns
+  - Symptom: pattern matches differ across OS (e.g., '*.JPG' matches on Windows but not on Linux/macOS).
+  - Root cause: patterns are case-insensitive on Windows, case-sensitive on POSIX.
+  - Resolution: adjust pattern case or use multiple patterns; message: "Pattern case is OS-aware: case-insensitive on Windows, case-sensitive on POSIX."
+
+13B.2 Large-scale and extreme scenarios (performance-safe behaviors)
+- Empty pools or zero-effective files
+  - Behavior: Validator may return is_valid=true with warnings; GUI allows Save/Run, but run will produce empty reports. UX: show “No files matched your criteria.”
+- Massive directory trees (deep recursion)
+  - Risk: Long-running previews and validations.
+  - Guidance: Provide max_depth; limit “Preview Effective Paths” to 100 items with progress/cancel. Inline warning on extreme depth.
+- Huge file counts (n^2 comparisons)
+  - Run engines should rely on hashing prefilters and degree thresholds; validator unaffected. UX: show progress; allow cancel; report-only ensures no destructive operations.
+- Network/unavailable drives
+  - Behavior: FILE_MISSING/PERMISSION_DENIED; present retry hints; keep Save disabled until fixed (unless UI allows warnings-only saves per policy).
+- Permission issues (locked folders/files)
+  - Behavior: PERMISSION_DENIED; keep dialog open; allow Export of current draft profile to JSON for later recovery.
+
+13B.3 Error mapping and API shapes
+- Validator response (see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)):
+  - is_valid: bool
+  - errors: [{ path, code, message }]
+  - warnings: [{ path, code, message }]
+  - normalized: profile (degree_normalized present when similarity)
+- Error codes used: INVALID_CONFIG, FILE_MISSING, PERMISSION_DENIED, LOCKED_DB, UNKNOWN_ERROR.
+
+13B.4 Progressive enable/disable UX (examples)
+- Single-pool duplicates
+  - Degree controls hidden; Run enabled only when Pool A valid.
+- Single-pool similarity
+  - Degree controls enabled; Run enabled when Pool A valid and Degree valid.
+- Two-pool modes
+  - Direction radios disabled until both Pools validate.
+  - “Without matches” options enabled only for two-pool.
+
+13B.5 Preservation of user input
+- On any validation failure, user input remains intact; inline hints and summary list indicate offending fields.
+- Save/Run disabled only for errors; warnings are non-blocking.
+
+13B.6 Conflict and recovery examples
+- Example: user switches from similarity (degree_ui=85) to duplicates
+  - Validator error surfaces “Degree is not allowed in duplicates mode”.
+  - GUI auto-disables Degree controls; user removes Degree or switches mode back to similarity.
+- Example: direction set to A_TO_B but Pool B missing
+  - Validator flags missing pools.B; Direction radios remain visible but disabled until B is valid.
+
+References
+- Central validator and normalization utilities: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
+- Data model rules and JSON Schema: [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md)
+- UI progressive logic and preview: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md)
+- API validation/run contracts: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)
 
 ## 1. Overview
 
@@ -1321,7 +1690,7 @@ Scope
 
 13.6 Path Validation and Long-Running Checks
 - Missing/inaccessible paths
-  - User message: inline warnings per path; allow save with warnings (non-strict mode).
+  - User message: inline warnings per path; block Save/Run until corrected (strict for Option A — Package A).
   - Recovery: "Fix Issues" dialog; list inaccessible paths; allow Ignore Warnings.
 - Slow or huge path previews
   - Behavior: limit preview to 100 items; show progress; allow cancel.
@@ -1419,3 +1788,42 @@ Path and scope updates
 
 Error codes used
 - INVALID_CONFIG, LOCKED_DB, PERMISSION_DENIED, UNKNOWN_ERROR — see [ErrorCodes](docs/roo/img-app-api-specifications.md:1167)
+
+## 13B.SA Set A capability-gated cases (Option A)
+
+The following UX and API behaviors are explicitly tied to the validator’s capability flags in ValidationReport.capabilities. These rules ensure deterministic, centralized gating of controls.
+
+Direction toggle when Pool B invalid (UI prevented)
+- Condition:
+  - capabilities.can_enable_direction_controls = false
+  - Typical cause: scope.kind = "two_pool" with pools.B missing/invalid
+- UI behavior:
+  - Direction radio group is disabled; user cannot change selection
+  - Tooltip/help text: "Direction is available only after both Pool A and Pool B validate."
+- Logging:
+  - INFO gate event with context { a_valid, b_valid, scope_kind: "two_pool" }
+- Reference:
+  - API: ValidationReport.capabilities.can_enable_direction_controls (see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1666))
+
+Two-pool Run without both pools valid (blocked)
+- Condition:
+  - capabilities.can_run = false because required_pools = ["A","B"] and pools.B is missing/invalid
+- UI behavior:
+  - Run button disabled; inline summary shows what’s missing (e.g., “Pool B path is required for two-pool runs”)
+- API behavior (server-side re-validation on POST /runs/*):
+  - Return ApiResponse.fail with code = "INVALID_CONFIG"
+  - Message example: "Two-pool run requires valid Pool A and Pool B root_path values."
+- User guidance:
+  - "Provide a valid path for Pool B or switch Scope to Single Pool."
+- Reference:
+  - API: Run endpoints and ErrorCodes (see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1726), [ErrorCodes](docs/roo/img-app-api-specifications.md:1169))
+
+Save gating for Set A (A-only valid)
+- Condition:
+  - capabilities.can_save = true when report.is_valid = true and Pool A is valid
+  - capabilities.can_run = false until all required_pools validate
+- UI behavior:
+  - Save enabled; Run disabled
+  - Degree controls enabled only in Similarity mode (capabilities.can_enable_degree_controls = true when mode = "similarity")
+- Reference:
+  - Capabilities derivation rules (see [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1459))

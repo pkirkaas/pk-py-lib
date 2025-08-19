@@ -1,9 +1,17 @@
 # KDC Image Organizer - API Specifications
+> Updated for Settings Profiles v1 (Option A) — Balanced Defaults — Package A — Set A
+>
+>
+> This document adds canonical Option A profile I/O (create/update/get/validate), normalized views, and run specifications for duplicates (BLAKE3) and similarity (pHash with Degree 0–100 UI → [0.0..1.0]). Cross-references: data model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), UI [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md), technical architecture [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), errors [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md), decision §18 in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
 
 ## 1. Overview
 
 This document defines the API interfaces between the img-app application and the pk-py-lib component library. All APIs follow consistent patterns for error handling, data validation, and async operations.
 
+Note — v1 scope and sources of truth
+- Report-only in v1: All Run endpoints produce reports only; no file-altering actions (move/delete/copy) are exposed in v1. Action endpoints are deferred (see [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)).
+- Centralized validator and schema: Default-filling and validation rules are enforced by the centralized validator and the canonical JSON Schema. The normalized view returned by the API includes defaults applied and degree normalization. References: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), and decision DEC-SettingsProfilesV1-OptionA-Balanced-PackageA-SetA in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
+- Direction gating (Set A): Direction defaults to A_TO_B but remains disabled until both pools validate; Save/Run buttons are gated by the validator’s capability flags (see [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md) and [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)).
 ## 2. Core API Principles
 
 ### 2.1 Design Principles
@@ -158,7 +166,7 @@ class SimilarityAPI:
         self,
         image1: Union[Image, Path],
         image2: Union[Image, Path],
-        algorithm: str = "phash",
+        algorithm: str = "pHash",
         **kwargs
     ) -> ApiResponse[float]:
         """
@@ -178,7 +186,7 @@ class SimilarityAPI:
         self,
         images: List[Path],
         threshold: float = 0.85,
-        algorithms: List[str] = ["phash"],
+        algorithms: List[str] = ["pHash"],
         reference_set: Optional[List[Path]] = None,
         progress_callback: Optional[Callable] = None
     ) -> ApiResponse[List[SimilarityGroup]]:
@@ -1299,7 +1307,7 @@ if result.success:
     similar = similarity_api.find_similar_images(
         images,
         threshold=0.90,
-        algorithms=["phash", "histogram"],
+        algorithms=["pHash", "histogram"],
         progress_callback=on_progress
     )
     
@@ -1419,7 +1427,7 @@ Validation Rules (canonical)
 - Thresholds:
   - UI percent 0–100 maps to internal 0.0–1.0; see helpers in [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1).
 - Paths:
-  - Validation warns on inaccessible paths; Save is allowed with warnings (non-strict mode).
+  - Balanced defaults policy (Option A v1): required pool root paths MUST exist and be readable; Save and Run are blocked until fixed. Errors: FILE_MISSING or PERMISSION_DENIED.
 - Hashing options:
   - Algorithm values per canonical list; staged hashing boolean; partial size in KB range [64, 2048] (advisory).
 
@@ -1529,3 +1537,748 @@ Acceptance Criteria (verifiable)
 Notes on GUI and Module Path
 - Reusable dialog path: [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1) (supersedes older `gui/settings/profile_manager.py` reference)
 - App integration helper: [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1) blocks startup until a valid Active profile is set
+
+## 13B. Settings Profiles v1 (Option A) — API I/O, Validation, and Run (report-only)
+
+Scope
+- Canonicalize the API contracts specific to Option A:
+  - Strongly-typed Settings Profile payload (Pools A/B; Mode: duplicates vs similarity; Scope/Direction; Output=report_only).
+  - Centralized validation returning normalized view and UI enablement signals.
+  - Run specifications for duplicates (BLAKE3) and similarity (pHash; Degree UI 0–100 → internal [0.0..1.0]).
+- Cross-references: data model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), UI [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md), architecture [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), errors [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md), decision §18 in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
+- Validation utilities (design reference): [src/pk_py_lib/gui/settings_manager/validators.py](src/pk_py_lib/gui/settings_manager/validators.py:1), degree helpers: [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1).
+- Profiles API adapter (design reference): [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:69).
+
+13B.0 Balanced Defaults — Defaulting and Normalization (Option A v1)
+- Absent fields are filled by the centralized validator using the Balanced defaults pack and returned explicitly in the normalized view.
+- Defaults (authoritative; see [data model](docs/roo/img-app-data-model.md:864)):
+  - Pools: recurse=true; max_depth=0 (unlimited); follow_symlinks=false; include_hidden=false; include=["**/*"]; exclude=[]; type_filters images only [.jpg .jpeg .png .webp .tiff .bmp .gif .heic .heif].
+  - Similarity: algorithm="pHash"; degree_ui=90; phash.hash_size=8.
+  - Duplicates: algorithm fixed "blake3" (no degree).
+  - Scope/Direction: kind defaults to "two_pool"; direction defaults to "A_TO_B" (enabled only when both pools validate).
+  - Output: mode="report_only".
+  - Patterns: glob (gitignore-style), relative to pool root; case handling is OS-aware (Windows case-insensitive; POSIX case-sensitive).
+- Normalized responses:
+  - POST /profiles/validate and all Run endpoints return a normalized profile with defaults applied.
+
+Example — validate with omitted fields (defaults applied)
+Request:
+```json
+POST /profiles/validate
+{
+  "profile": {
+    "id": "11111111-2222-3333-4444-555555555555",
+    "name": "A→B similar (defaults)",
+    "pools": {
+      "A": { "root_path": "D:/Reference" },
+      "B": { "root_path": "F:/Target" }
+    },
+    "mode": "similarity",
+    "criteria": {},
+    "scope": { "kind": "two_pool" },
+    "output": {}
+  }
+}
+```
+Response (excerpt):
+```json
+{
+  "success": true,
+  "data": {
+    "is_valid": true,
+    "errors": [],
+    "warnings": [],
+    "normalized": {
+      "mode": "similarity",
+      "criteria": { "algorithm": "pHash", "degree_ui": 90, "degree_normalized": 0.9, "phash": { "hash_size": 8 } },
+      "scope": { "kind": "two_pool", "direction": "A_TO_B" },
+      "output": { "mode": "report_only" },
+      "pools": {
+        "A": { "root_path": "D:/Reference", "recurse": true, "max_depth": 0, "include": ["**/*"], "exclude": [], "follow_symlinks": false, "include_hidden": false,
+               "type_filters": [".jpg",".jpeg",".png",".webp",".tiff",".bmp",".gif",".heic",".heif"] },
+        "B": { "root_path": "F:/Target",   "recurse": true, "max_depth": 0, "include": ["**/*"], "exclude": [], "follow_symlinks": false, "include_hidden": false,
+               "type_filters": [".jpg",".jpeg",".png",".webp",".tiff",".bmp",".gif",".heic",".heif"] }
+      }
+    }
+  }
+}
+```
+
+13B.1 Profile I/O shapes (create, update, get)
+- Input/Output payloads use the Option A profile schema defined in the data model (see JSON Schema in [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md)).
+- Minimal canonical shapes:
+
+Create
+- Request body (JSON):
+```
+{
+  "name": "A→B similar (90%)",
+  "data": { /* full SettingsProfileOptionA object (see schema) */ },
+  "make_active": false,
+  "make_default": false
+}
+```
+- Response body:
+```
+{
+  "success": true,
+  "data": {
+    "id": 42,
+    "name": "A→B similar (90%)",
+    "is_default": false,
+    "is_active": false,
+    "created_at": "2025-08-19T00:00:00Z",
+    "updated_at": "2025-08-19T00:00:00Z",
+    "data": { /* stored profile object */ }
+  },
+  "error": null,
+  "code": null,
+  "metadata": {}
+}
+```
+
+Update
+- Request body (JSON):
+```
+{
+  "profile_id": 42,
+  "name": "A uniques vs B (90%)",
+  "data": { /* partial or full profile object; server applies merge-with-validate */ },
+  "make_default": false
+}
+```
+- Response body mirrors Create.
+
+Get
+- Request: by id (preferred) or list.
+- Response: ApiResponse with SettingsProfile entries; list responses include computed is_active.
+
+13B.2 Validation API (centralized; GUI and core use the same source of truth)
+- Endpoint: POST /profiles/validate
+- Purpose: Validate a draft Settings Profile (Option A) and return:
+  - is_valid boolean (block Save/Run when false),
+  - errors and warnings with JSON Pointers to offending fields,
+  - normalized view for UI preview and for engine consumption (degree normalized, defaults applied).
+
+Request
+```
+{
+  "profile": { /* full or partial profile per Option A schema */ }
+}
+```
+
+Response
+```
+{
+  "success": true,
+  "data": {
+    "is_valid": true,
+    "errors": [],
+    "warnings": [
+      { "path": "/pools/A/exclude/0", "code": "PATTERN_WARN", "message": "Pattern excludes hidden files broadly" }
+    ],
+    "capabilities": {
+      "can_run": true,
+      "can_enable_direction_controls": true,
+      "can_enable_degree_controls": true,
+      "required_pools": ["A","B"],
+      "can_save": true
+    },
+    "normalized": {
+      "mode": "similarity",
+      "criteria": {
+        "algorithm": "pHash",
+        "degree_ui": 90,
+        "degree_normalized": 0.90,
+        "phash": { "hash_size": 8 }
+      },
+      "scope": { "kind": "two_pool", "direction": "A_TO_B" },
+      "output": { "mode": "report_only" },
+      "pools": {
+        "A": { "root_path": "D:/Reference", "recurse": true, "include": ["**/*.jpg"], "exclude": [] },
+        "B": { "root_path": "F:/Target", "recurse": true, "include": ["**/*.jpg"], "exclude": [] }
+      }
+    }
+  },
+  "error": null,
+  "code": null,
+  "metadata": {}
+}
+```
+
+Capabilities (validator response)
+- can_run: boolean — current draft can be executed (no blocking errors)
+- can_enable_direction_controls: boolean — scope.kind="two_pool" and both pools validate
+- can_enable_degree_controls: boolean — mode="similarity" with degree_ui in range
+- required_pools: array — ["A"] or ["A","B"] depending on scope
+- can_save: boolean — profile structure valid to persist
+
+Validation rules (excerpt; full list in data model)
+- Mode duplicates: criteria.algorithm = blake3; degree_ui MUST be absent.
+- Mode similarity: criteria.algorithm = pHash; degree_ui ∈ [0..100].
+- Single-pool: direction omitted; Two-pool: B required and direction required.
+- Paths exist; patterns compile; numeric ranges (depth, size, dates) coherent.
+
+Error codes
+- INVALID_CONFIG (syntax, bounds, incompatible options),
+- FILE_MISSING (nonexistent root_path),
+- PERMISSION_DENIED (inaccessible path),
+- LOCKED_DB (rare, for persistence-backed validation),
+- UNKNOWN_ERROR.
+
+13B.3 Run API (report-only) — Duplicates and Similarity
+
+Contract
+- The Run endpoints accept either:
+  - profile_id (server loads and validates the stored profile, then normalizes), or
+  - inline profile payload (validate + normalize; nothing is persisted).
+- Execution is report-only in v1: no file mutations.
+
+Endpoints
+- POST /runs/duplicates
+- POST /runs/similarity
+
+Common request shape
+```
+{
+  "profile_id": 42,
+  "override": { /* optional partial profile to override before validate+normalize */ },
+  "limit": { "max_groups": 1000, "max_items_per_group": 100 },
+  "progress": { "subscribe": false }
+}
+```
+- Alternatively: replace profile_id with "profile": { /* full profile */ }.
+
+13B.3.1 Duplicates (BLAKE3)
+
+Behavior
+- Single-pool: cluster duplicate files within Pool A; groups consist of files sharing the same blake3 hash.
+- Two-pool A→B or B→A: report only matches found in the target pool; reference pool items show as group headers; no degree.
+- Two-pool "without" directions: list items in reference pool with zero matches in the opposite pool.
+
+Response (single-pool)
+```
+{
+  "success": true,
+  "data": {
+    "mode": "duplicates",
+    "scope": { "kind": "single_pool" },
+    "summary": { "groups": 23, "files": 124, "reference_pool": "A" },
+    "groups": [
+      {
+        "group_id": "g-0001",
+        "hash_blake3": "a1b2c3...",
+        "files": [
+          { "path": "C:/Photos/x.jpg", "size": 5242880, "pool": "A" },
+          { "path": "C:/Photos/y.jpg", "size": 5242880, "pool": "A" }
+        ]
+      }
+    ]
+  },
+  "error": null,
+  "code": null,
+  "metadata": {}
+}
+```
+
+Response (two-pool A→B)
+```
+{
+  "success": true,
+  "data": {
+    "mode": "duplicates",
+    "scope": { "kind": "two_pool", "direction": "A_TO_B" },
+    "summary": { "references": 300, "matches": 512, "reference_pool": "A", "target_pool": "B" },
+    "matches_by_reference": [
+      {
+        "reference": { "path": "D:/Masters/a.jpg", "size": 7331 },
+        "matches": [
+          { "path": "E:/Working/a_copy.jpg", "size": 7331, "hash_blake3": "f00d..." }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Response (A without matches in B)
+```
+{
+  "success": true,
+  "data": {
+    "mode": "duplicates",
+    "scope": { "kind": "two_pool", "direction": "A_WITHOUT_IN_B" },
+    "summary": { "non_matches": 127, "reference_pool": "A", "target_pool": "B" },
+    "non_matches": [
+      { "path": "D:/Masters/unique.jpg", "size": 12345 }
+    ]
+  }
+}
+```
+
+13B.3.2 Similarity (pHash, Degree)
+
+Behavior
+- Similarity uses normalized degree t = degree_ui / 100.
+- For 64-bit pHash with Hamming distance d: degree_ui = round(100 * (1 - d/64)); a match requires degree_ui ≥ threshold_ui.
+- Single-pool: cluster similar images within A (s ≥ t).
+- Two-pool directions: produce matches per reference in the target pool; "without" lists reference items with zero matches above threshold.
+
+Response (single-pool)
+```
+{
+  "success": true,
+  "data": {
+    "mode": "similarity",
+    "criteria": { "algorithm": "pHash", "degree_ui": 90, "degree_normalized": 0.90 },
+    "scope": { "kind": "single_pool" },
+    "summary": { "groups": 18, "files": 96, "reference_pool": "A" },
+    "groups": [
+      {
+        "group_id": "s-0001",
+        "representative": { "path": "C:/Photos/ref.jpg", "size": 4123 },
+        "members": [
+          { "path": "C:/Photos/ref.jpg", "similarity": 1.00 },
+          { "path": "C:/Photos/var.jpg", "similarity": 0.93 }
+        ],
+        "stats": { "avg_similarity": 0.94, "min_similarity": 0.90, "max_similarity": 1.00 }
+      }
+    ]
+  }
+}
+```
+
+Response (two-pool A→B)
+```
+{
+  "success": true,
+  "data": {
+    "mode": "similarity",
+    "criteria": { "algorithm": "pHash", "degree_ui": 85, "degree_normalized": 0.85 },
+    "scope": { "kind": "two_pool", "direction": "A_TO_B" },
+    "summary": { "references": 300, "matches": 842, "reference_pool": "A", "target_pool": "B" },
+    "matches_by_reference": [
+      {
+        "reference": { "path": "D:/Reference/a.jpg" },
+        "matches": [
+          { "path": "F:/Target/a1.jpg", "similarity": 0.92 },
+          { "path": "F:/Target/a2.jpg", "similarity": 0.87 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Response (A without matches in B)
+```
+{
+  "success": true,
+  "data": {
+    "mode": "similarity",
+    "criteria": { "algorithm": "pHash", "degree_ui": 90, "degree_normalized": 0.90 },
+    "scope": { "kind": "two_pool", "direction": "A_WITHOUT_IN_B" },
+    "summary": { "non_matches": 54, "reference_pool": "A", "target_pool": "B" },
+    "non_matches": [
+      { "path": "D:/Reference/r001.jpg" },
+      { "path": "D:/Reference/r002.jpg" }
+    ]
+  }
+}
+```
+
+13B.4 Error conditions and messages (Option A)
+- INVALID_CONFIG
+  - degree_ui present with mode=duplicates
+  - mode=similarity with missing/out-of-range degree_ui
+  - scope.two_pool without Pool B or without direction
+  - pattern compilation error; max_depth < 0; inverted min/max size or date
+  - Message examples:
+    - "Degree is not allowed in duplicates mode"
+    - "Degree must be between 0 and 100"
+    - "Two-pool direction requires both pools A and B"
+- FILE_MISSING
+  - "Root path does not exist or is inaccessible: C:/Missing"
+- PERMISSION_DENIED
+  - "Insufficient permissions to read: D:/Locked"
+- LOCKED_DB
+  - "Settings database is in use; retry later"
+- UNKNOWN_ERROR
+  - Generic fallback (include diagnostics)
+
+13B.5 Example end-to-end payloads (aligned with schema)
+
+A) Validate + Run (two-pool similarity; A→B)
+- Validate request:
+```
+POST /profiles/validate
+{
+  "profile": {
+    "id": "9b0d3f12-0d0a-4a3b-8e0f-4c1d2e3f4a5b",
+    "name": "A→B similar (90%)",
+    "pools": {
+      "A": { "root_path": "D:/Reference", "recurse": true, "include": ["**/*.jpg"] },
+      "B": { "root_path": "F:/Target", "recurse": true, "include": ["**/*.jpg"] }
+    },
+    "mode": "similarity",
+    "criteria": { "algorithm": "pHash", "degree_ui": 90 },
+    "scope": { "kind": "two_pool", "direction": "A_TO_B" },
+    "output": { "mode": "report_only" },
+    "created_at": "2025-08-19T00:00:00Z",
+    "updated_at": "2025-08-19T00:00:00Z"
+  }
+}
+```
+- Run request:
+```
+POST /runs/similarity
+{
+  "profile_id": 42
+}
+```
+- Run response: see "Response (two-pool A→B)" above.
+
+B) Validate failure (duplicates with degree)
+- Request has: "mode": "duplicates", "criteria": { "algorithm": "blake3", "degree_ui": 80 }
+- Response:
+```
+{
+  "success": true,
+  "data": {
+    "is_valid": false,
+    "errors": [
+      { "path": "/criteria/degree_ui", "code": "INVALID_CONFIG", "message": "Degree is not allowed in duplicates mode" }
+    ],
+    "warnings": [],
+    "normalized": null
+  },
+  "error": null,
+  "code": "INVALID_CONFIG"
+}
+```
+
+Implementation notes
+- The validator applies normalization and supplies "normalized" to GUI preview and to execution.
+- Degree normalization uses helpers in [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1).
+- The API adapter maps exceptions to ErrorCodes (see §10.0 and [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md)).
+
+### 13B.SA Set A validation examples (capabilities)
+
+Example — Only Pool A valid (Set A initial state; single-pool duplicates)
+Request:
+```json
+POST /profiles/validate
+{
+  "profile": {
+    "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "name": "A only — duplicates",
+    "pools": {
+      "A": { "root_path": "D:/Reference" }
+    },
+    "mode": "duplicates",
+    "criteria": { "algorithm": "blake3" },
+    "scope": { "kind": "single_pool" },
+    "output": { "mode": "report_only" }
+  }
+}
+```
+Response (excerpt):
+```json
+{
+  "success": true,
+  "data": {
+    "is_valid": true,
+    "errors": [],
+    "warnings": [],
+    "capabilities": {
+      "can_run": true,
+      "can_enable_direction_controls": false,
+      "can_enable_degree_controls": false,
+      "required_pools": ["A"],
+      "can_save": true
+    },
+    "normalized": {
+      "mode": "duplicates",
+      "criteria": { "algorithm": "blake3" },
+      "scope": { "kind": "single_pool" },
+      "output": { "mode": "report_only" },
+      "pools": {
+        "A": {
+          "root_path": "D:/Reference",
+          "recurse": true,
+          "max_depth": 0,
+          "include": ["**/*"],
+          "exclude": [],
+          "follow_symlinks": false,
+          "include_hidden": false,
+          "type_filters": [".jpg",".jpeg",".png",".webp",".tiff",".bmp",".gif",".heic",".heif"]
+        }
+      }
+    }
+  }
+}
+```
+
+Example — Both Pools valid (two-pool similarity; direction enabled with default A_TO_B)
+Request:
+```json
+POST /profiles/validate
+{
+  "profile": {
+    "id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+    "name": "A↔B similarity (90%)",
+    "pools": {
+      "A": { "root_path": "D:/Reference" },
+      "B": { "root_path": "F:/Target" }
+    },
+    "mode": "similarity",
+    "criteria": { "algorithm": "pHash", "degree_ui": 90 },
+    "scope": { "kind": "two_pool" },
+    "output": { "mode": "report_only" }
+  }
+}
+```
+Response (excerpt):
+```json
+{
+  "success": true,
+  "data": {
+    "is_valid": true,
+    "errors": [],
+    "warnings": [],
+    "capabilities": {
+      "can_run": true,
+      "can_enable_direction_controls": true,
+      "can_enable_degree_controls": true,
+      "required_pools": ["A","B"],
+      "can_save": true
+    },
+    "normalized": {
+      "mode": "similarity",
+      "criteria": {
+        "algorithm": "pHash",
+        "degree_ui": 90,
+        "degree_normalized": 0.90,
+        "phash": { "hash_size": 8 }
+      },
+      "scope": { "kind": "two_pool", "direction": "A_TO_B" },
+      "output": { "mode": "report_only" },
+      "pools": {
+        "A": { "root_path": "D:/Reference", "recurse": true, "max_depth": 0, "include": ["**/*"], "exclude": [], "follow_symlinks": false, "include_hidden": false,
+               "type_filters": [".jpg",".jpeg",".png",".webp",".tiff",".bmp",".gif",".heic",".heif"] },
+        "B": { "root_path": "F:/Target",   "recurse": true, "max_depth": 0, "include": ["**/*"], "exclude": [], "follow_symlinks": false, "include_hidden": false,
+               "type_filters": [".jpg",".jpeg",".png",".webp",".tiff",".bmp",".gif",".heic",".heif"] }
+      }
+    }
+  }
+}
+```
+
+Notes
+- Direction radios are enabled only in the second example because capabilities.can_enable_direction_controls = true when both pools validate.
+- Degree controls are enabled only in similarity mode (can_enable_degree_controls = true).
+- required_pools is an array (["A"] or ["A","B"]) and should be used verbatim by the UI to render concise gating messages.
+- See capabilities derivation rules in [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1459) and UI consumption in [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md:999).
+
+## 13B.0a Normalization mapping and Package A addenda (Option A v1)
+- Degree normalization
+  - UI degree 0–100 maps to internal degree_normalized ∈ [0.0..1.0] as degree_normalized = degree_ui / 100 (see helpers in [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1)).
+- Package A degree formula (64‑bit pHash)
+  - degree_ui = round(100 * (1 - d/64)) where d is the Hamming distance between 64‑bit hashes.
+  - Match rule (similarity): a match requires degree_ui ≥ threshold_ui (see decision in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:508)).
+- Addendum to defaults (explicit)
+  - scope.single_pool_clustering default=false (see schema in [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md:1288)).
+  - Direction defaults to A_TO_B but is inert until both pools validate (Set A); see gating notes and capabilities below and [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md:993).
+
+## 13B.1R Profile management endpoints (REST, Option A v1)
+These HTTP contracts complement the library API ([SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69)) and use the Option A schema and normalization rules documented in [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md:1023) and the centralized validator described in [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1348).
+
+Common behaviors
+- Request bodies reference the Option A profile schema. Omitted fields are default-filled in the normalized view by the centralized validator (Balanced defaults).
+- Responses are wrapped in the canonical ApiResponse (see [ApiResponse](docs/roo/img-app-api-specifications.md:22), [ErrorCodes](docs/roo/img-app-api-specifications.md:1169)).
+- Error payloads include a top-level code plus a structured details list with per-field issues (JSON Pointer path).
+
+Structured error payload (embedded within ApiResponse on failure)
+```json
+{
+  "success": false,
+  "error": "Human-readable summary",
+  "code": "INVALID_CONFIG",
+  "metadata": {
+    "details": [
+      { "code": "PATH_MISSING", "message": "Pool A root_path not found", "path": "/pools/A/root_path" }
+    ]
+  }
+}
+```
+
+1) POST /profiles/validate
+- Purpose: Validate a transient (draft) profile payload and return defaults-applied normalized_profile, validation report, and capability flags.
+- Request body:
+  - { "profile": SettingsProfileOptionA (partial allowed) }
+- Response body (success 200):
+  - { success, data: { normalized, errors, warnings, capabilities, is_valid }, code:null, error:null }
+  - normalized includes degree_normalized when mode="similarity"
+- Status codes:
+  - 200 OK on successful validation (even when is_valid=false; error details are returned inside data.errors)
+  - 400 Bad Request on malformed JSON (SCHEMA_VALIDATION_ERROR)
+- See full shape and examples in §13B.2 and examples below.
+
+2) POST /profiles
+- Purpose: Create a profile; persist metadata and data; optionally set as active/default.
+- Request body:
+```json
+{
+  "name": "My Profile",
+  "data": { /* SettingsProfileOptionA per schema; partial allowed, defaults applied on read */ },
+  "make_active": false,
+  "make_default": false
+}
+```
+- Response body (201 Created):
+```json
+{
+  "success": true,
+  "data": {
+    "id": 42,
+    "name": "My Profile",
+    "is_default": false,
+    "is_active": false,
+    "created_at": "2025-08-19T00:00:00Z",
+    "updated_at": "2025-08-19T00:00:00Z",
+    "data": { /* persisted profile object as saved (not normalized view) */ }
+  }
+}
+```
+- Status codes and errors:
+  - 201 Created on success
+  - 400 INVALID_CONFIG (name pattern invalid; payload fails schema/invariants)
+  - 409 INVALID_CONFIG (duplicate name)
+  - 423 LOCKED_DB (database locked)
+  - Error payload includes details[] entries (see common format)
+
+3) PUT /profiles/{profile_id}
+- Purpose: Update profile metadata and/or data; returns updated normalized view and validation report.
+- Request body:
+```json
+{
+  "name": "Renamed Profile (optional)",
+  "data": { /* partial update; server merges then validate+normalize */ },
+  "make_default": false
+}
+```
+- Response body (200 OK):
+```json
+{
+  "success": true,
+  "data": {
+    "profile": { "id": 42, "name": "Renamed Profile (optional)", "is_default": false, "updated_at": "..." },
+    "normalized": { /* normalized profile with defaults applied (includes degree_normalized when applicable) */ },
+    "validation": { "is_valid": true, "errors": [], "warnings": [] },
+    "capabilities": { "can_run": true, "can_enable_direction_controls": true, "required_pools": ["A","B"], "can_save": true }
+  }
+}
+```
+- Status codes and errors:
+  - 200 OK on success
+  - 400 INVALID_CONFIG (invalid fields, e.g., degree in duplicates mode)
+  - 404 INVALID_CONFIG (not found)
+  - 423 LOCKED_DB
+
+4) GET /profiles/{profile_id}
+- Purpose: Fetch a persisted profile (as saved). Optional normalized view.
+- Query:
+  - ?normalized=true to additionally return normalized (defaults applied) beside persisted data
+- Response body (200 OK):
+```json
+{
+  "success": true,
+  "data": {
+    "profile": { "id": 42, "name": "My Profile", "is_default": false, "created_at": "...", "updated_at": "...", "data": { /* as saved */ } },
+    "normalized": { /* present only when normalized=true; defaults applied */ }
+  }
+}
+```
+- Status codes and errors:
+  - 200 OK
+  - 404 INVALID_CONFIG (not found)
+
+5) GET /profiles
+- Purpose: List profiles with basic metadata; optional filters (by name substring, is_default, is_active).
+- Response body (200 OK):
+```json
+{
+  "success": true,
+  "data": [
+    { "id": 12, "name": "Default", "is_default": true,  "is_active": false, "created_at": "...", "updated_at": "..." },
+    { "id": 42, "name": "My Profile", "is_default": false, "is_active": true, "created_at": "...", "updated_at": "..." }
+  ]
+}
+```
+
+6) DELETE /profiles/{profile_id}
+- Purpose: Delete a profile. Optional in v1; if deferred, server should return 405 Method Not Allowed. When implemented, invariants apply (cannot delete Active; cannot delete last remaining).
+- Response (200 OK):
+```json
+{ "success": true, "data": { "deleted": true } }
+```
+- Status codes and errors:
+  - 200 OK on success
+  - 400 INVALID_CONFIG (attempt to delete Active or last remaining)
+  - 404 INVALID_CONFIG (not found)
+  - 405 when deferred in this deployment
+  - 423 LOCKED_DB
+
+Notes
+- Name validation rules: ^[A-Za-z0-9 _-]{1,64}$; uniqueness case-insensitive (see [SettingsProfilesAPI.validate_name()](src/pk_py_lib/api/settings_profiles.py:295)).
+- Active/Default invariants: setting Default does not change Active; setting Active does not change Default (see [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:317) and [SettingsProfilesAPI.set_active()](src/pk_py_lib/api/settings_profiles.py:260), [SettingsProfilesAPI.set_default()](src/pk_py_lib/api/settings_profiles.py:276)).
+
+## 13B.3R Run endpoints (report-only) — quick reference
+This summarizes §13B.3. Full examples remain below.
+
+- POST /runs/duplicates
+  - Input: profile_id or inline "profile". mode must be "duplicates".
+  - Output: single-pool clusters OR two-pool matches/non-matches. No degree. Algorithm fixed to BLAKE3.
+  - Direction defaults to A_TO_B but remains inactive until both pools validate (Set A).
+- POST /runs/similarity
+  - Input: profile_id or inline "profile". mode must be "similarity".
+  - Output: groups or matches with similarity values; non_matches arrays when using WITHOUT directions.
+  - Degree threshold uses degree_normalized = degree_ui / 100; Package A formula defines degree_ui from pHash distances.
+
+## 13B.4a Error formats and canonical codes (Option A v1)
+Structured error format (per-item details) used inside ApiResponse.metadata.details:
+- Fields: code, message, details (optional map), path (JSON Pointer)
+
+Canonical validator-level codes (non-exhaustive)
+- PATH_MISSING — pools.*.root_path does not exist
+- PATH_UNREADABLE — pools.*.root_path exists but is not accessible
+- DEGREE_OUT_OF_RANGE — criteria.degree_ui not in [0..100]
+- INVALID_COMBINATION — incompatible fields (e.g., degree present in duplicates mode)
+- POOL_B_REQUIRED_FOR_DIRECTION — scope.kind="two_pool" requires Pool B and direction
+- PATTERN_COMPILE_ERROR — include/exclude pattern failed to compile
+- SCHEMA_VALIDATION_ERROR — payload shape invalid (JSON Schema)
+- Notes and mappings:
+  - OS-aware pattern case: Windows case-insensitive; POSIX case-sensitive (see [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md:1111), [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1371)).
+  - Extension filter matching is case-insensitive on all OS.
+  - Hidden excluded via attribute by default (include_hidden=false).
+  - These detail codes are typically surfaced under a top-level ApiResponse.code of INVALID_CONFIG, FILE_MISSING, or PERMISSION_DENIED (see [ErrorCodes](docs/roo/img-app-api-specifications.md:1169)).
+
+## 13B.7 Capability flags and gating (summary, Set A)
+Validator emits capability flags consumed by GUI and clients (see derivation rules in [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1459) and UI consumption in [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md:1003)):
+- can_run: boolean — true only when required pools for the current normalized scope are valid and no blocking errors exist
+- can_save: boolean — true when report.is_valid and Pool A is valid (Set A policy)
+- can_enable_direction_controls: boolean — true when scope.kind = "two_pool" AND both pools validate (synonym: can_enable_direction)
+- can_enable_degree_controls: boolean — true when mode = "similarity"
+- required_pools: array — ["A"] or ["A","B"]
+- Save/Run gating:
+  - Save/Run blocked if any required pool path is missing or unreadable (see [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:15))
+  - Direction controls are disabled until both pools validate; when they become enabled, default selection is A_TO_B
+
+## 13B.8 Versioning and extensibility notes
+- Versioning
+  - profile_version defaults to "1.0.0" (see schema in [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md:1252)).
+  - API is report-only in v1; action endpoints (move/delete/copy) are explicitly deferred.
+- Extensibility
+  - Future N-pool support (generalizing A/B), additional similarity algorithms (e.g., histogram, feature-based), and pagination for large reports are planned evolutions.
+  - Direction set expands naturally with N pools; current tokens are canonical: A_TO_B, B_TO_A, A_WITHOUT_IN_B, B_WITHOUT_IN_A (see [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md:1290)).
+  - Library API surface will remain the integration point ([SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69)); REST endpoints mirror that surface for remote or process-separated consumers.

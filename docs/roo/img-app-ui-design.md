@@ -1,4 +1,8 @@
 # KDC Image Organizer - UI/UX Design Document
+> Updated for Settings Profiles v1 (Option A) — Balanced Defaults — Package A — Set A
+>
+>
+> This document adds a dedicated Option A UI mapping for Pools A/B, Mode & Criteria, Scope/Direction, progressive enable/disable states driven by a centralized validator, validation UX, and a resolved configuration preview. Cross-references: data model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), API [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), technical architecture [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), errors [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md), and decision §18 in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
 
 ## 1. Design Principles
 
@@ -709,7 +713,7 @@ References
 - Profile switching: [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399)
 - Proposed profile API: [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
 - Proposed profile core: [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1)
-- Proposed GUI dialog: [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1)
+- Proposed GUI dialog: [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1)
 - App integration widget: [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
 
 13.1 User Flows
@@ -823,7 +827,7 @@ Button/Control States
 Validation Rules
 - Name: required; unique (case-insensitive); 1–64 chars; allowed [A–Z a–z 0–9 _ - and space].
 - Threshold: 0–100 UI percent maps to 0.0–1.0 internal (see [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:148) and [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1)).
-- Paths: warn if missing/inaccessible; do not block saving unless strict mode is enabled.
+- Paths: paths must exist and be readable; Save and Run are blocked until invalid paths are corrected (validator-enforced).
 - Default/Active:
   - Exactly one Default profile can exist (is_default=1).
   - Exactly one Active profile at a time, stored under meta.active_profile_id (see decisions).
@@ -882,7 +886,7 @@ stateDiagram-v2
 - Screen reader labels on all form inputs and buttons; meaningful ARIA-like descriptions.
 
 13.7 Next Steps
-- Implement reusable dialog widget [src/pk_py_lib/gui/settings/profile_manager.py](src/pk_py_lib/gui/settings/profile_manager.py:1) with the two-pane layout and behaviors described.
+- Implement reusable dialog widget [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1) with the two-pane layout and behaviors described.
 - Implement library core [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1) to encapsulate profile CRUD, validation, meta.active_profile_id, and default handling.
 - Implement API adapter [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1) with methods documented in API specs.
 - Integrate dialog at startup in [img_app/img_app/app.py](img_app/img_app/app.py:60) prior to creating the main window.
@@ -952,3 +956,288 @@ References
 - Core invariants: [SettingsProfilesManager.delete_profile()](src/pk_py_lib/core/settings_profiles.py:439), [SettingsProfilesManager.set_default_profile()](src/pk_py_lib/core/settings_profiles.py:574)
 - Active persistence: [SettingsProfilesManager.set_active_profile()](src/pk_py_lib/core/settings_profiles.py:541) writes meta.active_profile_id and triggers on_active_change
 - Startup integration: [img_app/img_app/app.py](img_app/img_app/app.py:60) and helper [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
+
+## 13B. Settings Profiles v1 (Option A) — Panels, Widgets, States, and Preview
+
+Scope
+- This section specifies the UI for Option A (two pools with duplicates/similarity, report-only), driven by a centralized validator and normalized view.
+- Cross-references: data model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), API shapes [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), architecture [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), errors [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md), decision §18 in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
+
+### 13B.A Overview and alignment
+- Option A: Two pools (A/B); Modes: Duplicates (BLAKE3 fixed, no degree) vs Similarity (pHash with Degree UI 0–100 normalized to [0.0..1.0]); report-only outputs.
+- Settings Profiles: Configurations are captured as a typed profile payload; a centralized validator fills Balanced defaults and produces a normalized view consumed by the GUI and the engine.
+- Dependency: Schema, tokens, and Balanced defaults from [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md) are authoritative; this UI maps those into concrete panels, widgets, progressive enable/disable rules, and the resolved configuration preview.
+13B.0 Balanced Defaults — Initial UI state mapping
+- Pools Panel defaults (per pool)
+  - Recurse: checked
+  - Max depth: 0 (0 = unlimited)
+  - Follow symlinks: unchecked
+  - Include hidden: unchecked
+  - Include patterns: prefilled with **/*
+  - Exclude patterns: empty
+  - File types: tokens preselected [.jpg .jpeg .png .webp .tiff .bmp .gif .heic .heif]
+- Mode & Criteria defaults
+  - Duplicates: algorithm fixed to BLAKE3 (read-only label)
+  - Similarity: algorithm dropdown default pHash; Degree default 90 (UI 0–100)
+- Scope/Direction defaults
+  - Scope default: Two Pools
+  - Direction default: A→B, auto-selected when both pools validate; other directions off initially
+- Patterns and case (UX note)
+- Patterns are glob (gitignore-style) and evaluated relative to each pool root
+- Case handling is OS-aware: case-insensitive on Windows; case-sensitive on POSIX
+- Extension filter matching is case-insensitive on all operating systems
+- Hidden excluded via toggle; not via user patterns
+- Path validation (UX note)
+- Save/Run buttons remain disabled while any required pool path is missing or unreadable
+
+### 13B.SA Set A initial-state defaults overlay (Option A)
+
+Authoritative initial UI defaults (encode verbatim)
+- Initial mode = "duplicates"
+- Pool A inputs enabled (empty by default)
+- Pool B inputs enabled from the start; Direction radios remain disabled until both Pool A and Pool B validate
+- Single-pool clustering default = unchecked
+- Save/Run disabled until Pool A path is valid and profile passes validation
+- When both pools validate and scope.kind="two_pool", Direction radios enable with A_TO_B preselected
+
+Capabilities consumed from validator (see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1))
+- capabilities.can_run
+- capabilities.can_enable_direction_controls
+- capabilities.can_enable_degree_controls
+- capabilities.required_pools
+- capabilities.can_save
+
+13B.1 Layout and Sections
+- Pools Panel
+  - Pool A (always present)
+  - Pool B (visible when Scope set to two-pool)
+- Mode & Criteria Panel
+  - Mode: Duplicates vs Similarity
+  - Criteria: Algorithm and Degree (as applicable)
+- Scope/Direction Panel
+  - Single-pool clustering (within A)
+  - Two-pool directions: A→B, B→A, A without matches in B, B without matches in A
+- Validation & Summary Panel
+  - Inline, non-blocking hints
+  - Resolved configuration preview (normalized view)
+  - Error/Warning list
+
+13B.2 Widget Mapping (controls)
+- Pools Panel (per Pool)
+  - Root path: [Browse…] file/folder chooser + read-only path field
+  - Recurse: checkbox (default checked)
+  - Max depth: numeric (integer ≥ 0; 0 = unlimited)
+  - Follow symlinks: checkbox (default unchecked)
+  - Include hidden: checkbox (default unchecked)
+  - Include patterns: multiline text area (semicolon or newline separated; default **/*; relative to root)
+  - Exclude patterns: multiline text area
+  - File-type filters: tokens input, preselected [.jpg .jpeg .png .webp .tiff .bmp .gif .heic .heif]
+  - Optional constraints:
+    - Size: min/max bytes (integers; allow empty)
+    - Date: min/max ISO date-time
+- Mode & Criteria Panel
+  - Mode selector: radio buttons
+    - ● Duplicates (exact; fixed algorithm BLAKE3; no degree)
+    - ○ Similarity (pHash with Degree)
+  - Algorithm selector:
+    - Duplicates: read-only label "BLAKE3 (fixed)"
+    - Similarity: dropdown (present but fixed to "pHash" in v1; future-proofing)
+  - Degree input (Similarity only):
+    - Numeric input 0–100 (integer)
+    - Slider 0–100, synchronized with numeric input
+    - Default: 90
+    - Help text: "UI degree 0–100 is normalized to [0.0..1.0] internally"
+    - Package A specifics:
+      - Degree formula (64-bit pHash): degree_ui = round(100 * (1 - d/64)) where d is the Hamming distance
+      - Match rule: a match requires degree_ui ≥ threshold_ui
+      - Normalization to model: degree_normalized = threshold_ui / 100.0 (see [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md))
+- Scope/Direction Panel
+  - Scope switch: radio buttons
+    - ● Single Pool (cluster within A)
+    - ○ Two Pools (compare A and B)
+  - Direction (Two Pools only; visible when both pools valid):
+    - A→B (default selection when enabled)
+    - B→A
+    - A without matches in B
+    - B without matches in A
+- Validation & Summary Panel
+  - Inline hints under fields (red text for errors, amber for warnings)
+  - Save/Run buttons disabled until validator returns is_valid = true
+  - Resolved configuration preview (read-only JSON-like view)
+  - Button: [Validate] triggers a full pass and updates hints (non-blocking)
+  - Button: [Preview Effective Paths] launches the preview dialog (cap 100 items per pool)
+
+13B.3 Progressive enable/disable logic (validator-driven)
+- The validator is the single source of truth (see [src/pk_py_lib/gui/settings_manager/validators.py](src/pk_py_lib/gui/settings_manager/validators.py:1)); GUI listens to changes, evaluates, normalizes, and updates states.
+- General rules
+  - Save/Run disabled when is_valid = false (any error)
+  - Direction controls enabled only when:
+    - Scope = Two Pools AND Pool A valid AND Pool B valid
+  - Degree controls enabled only when Mode = Similarity
+  - Algorithm control is read-only or preselected per mode (BLAKE3 for duplicates, pHash for similarity)
+- Examples by scenario
+  - Single-pool duplicates (A only):
+    - Enabled: A path fields, Include/Exclude, Recurse, Max depth, Filters
+    - Disabled/Hidden: B controls, Direction controls, Degree controls
+    - Save/Run: enabled when A is valid
+  - Single-pool similarity (A only):
+    - Enabled: A path fields + Degree controls
+    - Disabled/Hidden: B controls, Direction controls
+  - Two-pool duplicates:
+    - Enabled: A + B path fields, Direction controls
+    - Disabled/Hidden: Degree controls
+  - Two-pool similarity:
+    - Enabled: A + B path fields, Direction controls, Degree controls
+
+13B.4 Validation UX and messaging
+- Inline hints appear below the specific control:
+  - Missing path: "This path does not exist or is inaccessible"
+  - Pattern compile error: "One or more patterns are invalid"
+  - Degree out of range: "Degree must be between 0 and 100"
+  - Duplicates with degree present: "Degree is not allowed in Duplicates mode"
+- Summary pane lists:
+  - Errors (block Save/Run)
+  - Warnings (do not block, but still show amber)
+- Save and Run remain disabled until no errors remain. Warnings leave them enabled.
+- The UI preserves all user input as typed (never clears fields on error).
+- See error semantics and UI mappings in [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md).
+
+13B.5 State and flow diagrams (ASCII)
+
+Single-pool flows
+```
+┌───────────────┐      ┌───────────────┐
+│  Pool A valid │ ───▶ │  Mode: Dupes  │ ───▶ Cluster within A (no Degree)
+└───────────────┘      └───────────────┘
+          │
+          ▼
+     ┌───────────────┐
+     │ Mode: Similar │ ───▶ Cluster within A at Degree (UI 0–100 → internal 0..1)
+     └───────────────┘
+```
+
+Two-pool flows
+```
+        ┌───────────────┐
+        │ A & B valid   │
+        └──────┬────────┘
+               ▼
+     ┌─────────────────────┐
+     │  Direction choice   │
+     ├─────────┬───────────┤
+     │ A→B     │ B→A       │  (matches)
+     ├─────────┼───────────┤
+     │ A∖B     │ B∖A       │  (without matches)
+     └─────────┴───────────┘
+         │            │
+         ▼            ▼
+  Mode: Duplicates  Mode: Similarity (+ Degree)
+```
+
+### 13B.5a Scenario diagrams (initial → valid → enablement → Save/Run)
+
+Single-pool duplicates (A only)
+```
+Initial: Mode=duplicates; Scope=single_pool; A path empty; Save/Run disabled
+→ User selects A.root_path
+→ Validator: A invalid? show hint; else A valid
+→ Controls: Direction hidden; Degree hidden
+→ Save/Run: enabled when A valid
+```
+
+Single-pool similarity (A only)
+```
+Initial: Mode=similarity; Scope=single_pool; Degree=90; Save/Run disabled
+→ User selects A.root_path
+→ Validator: A valid
+→ Controls: Degree enabled; Direction hidden
+→ Save/Run: enabled when A valid
+```
+
+Two-pool duplicates (A and B)
+```
+Initial: Mode=duplicates; Scope=two_pool; Direction controls disabled; Save/Run disabled
+→ User selects A.root_path (valid) and B.root_path (valid)
+→ Validator: A valid AND B valid
+→ Controls: Direction controls enabled; default A→B selected
+→ Save/Run: enabled
+```
+
+Two-pool similarity with direction toggles (A and B)
+```
+Initial: Mode=similarity; Scope=two_pool; Degree=90; Direction controls disabled; Save/Run disabled
+→ User selects A.root_path (valid) and B.root_path (valid)
+→ Controls: Degree enabled; Direction enabled with A→B selected
+→ Save/Run: enabled
+```
+
+13B.6 Resolved configuration preview (normalized view)
+- Purpose: Show exactly what will be sent to the engine/API, with normalized fields.
+- Content example (read-only view):
+```
+{
+  "mode": "similarity",
+  "criteria": {
+    "algorithm": "pHash",
+    "degree_ui": 90,
+    "degree_normalized": 0.90,
+    "phash": { "hash_size": 8 }
+  },
+  "scope": { "kind": "two_pool", "direction": "A_TO_B" },
+  "output": { "mode": "report_only" },
+  "pools": {
+    "A": { "root_path": "D:/Reference", "recurse": true, "include": ["**/*.jpg"] },
+    "B": { "root_path": "F:/Target", "recurse": true, "include": ["**/*.jpg"] }
+  }
+}
+```
+- For Duplicates, algorithm is "blake3" and degree_normalized is omitted.
+- Preview includes (exact fields and formatting):
+  - mode: "duplicates" or "similarity"
+  - criteria: algorithm; degree_ui (integer 0–100 in UI units); degree_normalized (0.0–1.0, two decimals shown in UI preview); phash.hash_size when algorithm is pHash
+  - scope: kind; direction token when kind="two_pool" (A_TO_B by default when enabled)
+  - output: mode
+  - pools: A and B objects with all defaults applied and omitted inputs filled (recurse=true; max_depth=0; include_hidden=false; follow_symlinks=false; include=["**/*"]; exclude=[]; type_filters=[".jpg",".jpeg",".png",".webp",".tiff",".bmp",".gif",".heic",".heif"])
+  - capabilities: can_run; can_enable_direction_controls; can_enable_degree_controls; required_pools
+  - visibility flags: e.g., show_degree=true only in Similarity mode
+- The preview renders the validator-normalized view and capability flags returned by the validator; see [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md) and [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md).
+
+13B.7 Validation matrix (concise; UI enablement)
+- Single-pool × Duplicates
+  - Required: Pool A valid
+  - Degree: disabled; Algorithm: BLAKE3 (fixed)
+  - Direction: hidden
+- Single-pool × Similarity
+  - Required: Pool A valid; Degree 0–100 required
+  - Direction: hidden
+- Two-pool × Duplicates
+  - Required: Pools A and B valid; Direction required
+  - Degree: disabled; Algorithm: BLAKE3 (fixed)
+- Two-pool × Similarity
+  - Required: Pools A and B valid; Degree 0–100 required; Direction required
+
+13B.8 Wiring to the centralized validator
+- The dialog/controller emits a "draft profile" JSON (UI shape) and receives a ValidationReport with:
+  - is_valid: bool
+  - errors: [{path, message, code}]
+  - warnings: [{path, message, code}]
+  - normalized: profile-normalized view (degree_normalized computed; defaults applied)
+- Source of truth:
+  - Validator API (design reference) [src/pk_py_lib/gui/settings_manager/validators.py](src/pk_py_lib/gui/settings_manager/validators.py:1)
+  - Degree helpers (design reference) [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1)
+- GUI enables/disables controls and buttons based on is_valid, and renders "normalized" into the Resolved configuration preview.
+
+13B.9 Acceptance criteria (UI for Option A)
+- Controls render as specified for Pools, Mode & Criteria, Scope/Direction.
+- Degree input appears only in Similarity mode and enforces 0–100.
+- Direction radios appear only when two pools are valid; single-pool shows "cluster within A".
+- Inline validation hints appear immediately; Save/Run disabled until valid.
+- Resolved configuration preview shows normalized Degree and fixed algorithms per Mode.
+- Report-only output is clearly labeled; no destructive controls appear in Option A.
+
+### 13B.10 Cross-references and terminology
+- Terms used consistently: Pool A, Pool B, Mode, Degree, Direction, single_pool_clustering
+- Canonical defaults and schema are defined in [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md); UI enable/disable follows validator behaviors in [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md).
+- Error and validation behaviors: [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md).
+- API capabilities consumed by this UI: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md).
+- Canonical decision reference: [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
