@@ -399,7 +399,7 @@ img_app/
 #### 4.2.1 Scalability
 - Handle 100,000+ images
 - Process 1,000 images/minute (similarity detection)
-- Maximum 2GB RAM usage (configurable)
+- Maximum 2048 MB RAM usage (≈2 GB) (configurable)
 - Responsive UI during processing
 
 #### 4.2.2 Optimization Strategies
@@ -583,6 +583,6 @@ img_app/
 
 ### 12.2 System Requirements
 - Windows 10/11, macOS 10.15+, Linux (Ubuntu 20.04+)
-- Minimum 4GB RAM (8GB recommended)
+- Minimum 4096 MB RAM (≈4 GB); 8192 MB recommended (≈8 GB)
 - 500MB disk space + cache
 - OpenGL 2.1+ for hardware acceleration

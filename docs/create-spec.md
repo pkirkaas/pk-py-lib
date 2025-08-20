@@ -56,7 +56,7 @@
 ### Caching Strategy
 - Image thumbnails cached in the application cache folder (platformdirs user_cache_dir or PK_IMG_APP_HOME/cache)
 - Thumbnails stored as files under cache/thumbnails/{size}/; the database stores metadata and relative paths
-- Maximum cache size user configurable, initial/default size 5GB
+- Maximum cache size user configurable, initial/default size 5120 MB (≈5 GB) (application-scoped app_settings.cache_size_mb)
 - Cache invalidation by absolute_path, file_size, mtime_ns (nanoseconds), and inode (where available)
 - Thumbnails on demand
 - Provide user options to clear cache & clean/verify/validate cache

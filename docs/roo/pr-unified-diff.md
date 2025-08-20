@@ -4,23 +4,19 @@ This patch applies the approved canonical changes to the specification and examp
 
 Summary of changes:
 - Canonical internal similarity threshold: 0.0–1.0 (UI displays 0–100%)
-- Update default thumbnail/cache size from 5GB -> 5GB
+- Normalize default cache size to 5120 MB (≈5 GB) and adopt app_settings.cache_size_mb naming in examples; remove legacy max_size_gb/MAX_CACHE_SIZE_GB references
 - Add DB meta/schema_version table and initial entry
 - Annotate image metadata model with inode/device for rename detection
 - Standardize ApiResponse to include machine-readable code field
 - Add `ErrorCodes` enum to API specification
-- Update small code examples (CacheManager, DEFAULT_SETTINGS) to use 5GB default
+- Update small code examples (CacheManager, DEFAULT_SETTINGS) to use 5120 MB (≈5 GB) default
 
 Files changed (high-level):
-- [`docs/roo/img-app-specification.md:20`](docs/roo/img-app-specification.md:20) — Added 'Canonical Conventions' note describing internal vs UI units.
-- [`docs/roo/img-app-api-specifications.md:18`](docs/roo/img-app-api-specifications.md:18) — Standard `ApiResponse` updated, `ErrorCodes` enum added.
-- [`docs/roo/img-app-data-model.md:284`](docs/roo/img-app-data-model.md:284) — Added `meta` table and initial schema_version entry.
-- [`docs/roo/img-app-data-model.md:40`](docs/roo/img-app-data-model.md:40) — Added `file_inode` and `file_device` fields and clarified `file_hash`.
-- [`docs/roo/img-app-data-model.md:551`](docs/roo/img-app-data-model.md:551) — CachePolicy.MAX_CACHE_SIZE_GB changed to 5.0.
-- [`docs/roo/img-app-implementation-guide.md:739`](docs/roo/img-app-implementation-guide.md:739) — DEFAULT_SETTINGS `cache.max_size_gb` set to 5.0.
-- [`docs/roo/img-app-implementation-guide.md:833`](docs/roo/img-app-implementation-guide.md:833) — CacheManager example default set to 5.0 and minor robustness edits.
-- [`docs/create-spec.md:55`](docs/create-spec.md:55) — Default cache mention updated to 5GB.
-- [`docs/roo/img-app-technical-architecture.md:263`](docs/roo/img-app-technical-architecture.md:263) — CacheManager __init__ default changed to 5.0.
+- [docs/img-app-spec.md](docs/img-app-spec.md:1) — Added Canonical Conventions note describing internal vs UI units.
+- [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:16) — Standard ApiResponse updated, ErrorCodes enum added.
+- [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md:1) — Added meta table and initial schema_version entry; cache policy constants now use MB (MAX_CACHE_SIZE_MB=5120).
+- [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1) — Examples updated to use cache_size_mb and max_size_mb.
+- [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:663) — CacheManager.__init__ uses max_size_mb and AppSettings.cache_size_mb.
 
 Detailed diffs (excerpted, not a full patch):
 
@@ -101,21 +97,17 @@ file_inode: Optional[int]        # OS inode (where available) to help detect ren
 file_device: Optional[int]       # Device identifier for the filesystem (where available)
 ```
 
-5) Cache defaults changed to 5GB in multiple places (excerpts):
-- [`docs/roo/img-app-specification.md:318`](docs/roo/img-app-specification.md:318) — Thumbnail cache default changed to 5GB.
-- [`docs/roo/img-app-data-model.md:551`](docs/roo/img-app-data-model.md:551) — CachePolicy.MAX_CACHE_SIZE_GB set to 5.0.
-- [`docs/roo/img-app-implementation-guide.md:739`](docs/roo/img-app-implementation-guide.md:739) — DEFAULT_SETTINGS `cache.max_size_gb` = 5.0
-- [`docs/roo/img-app-implementation-guide.md:833`](docs/roo/img-app-implementation-guide.md:833) — CacheManager.__init__ default = 5.0
-- [`docs/create-spec.md:55`](docs/create-spec.md:55) — initial/default size updated to 5GB
+5) Cache defaults normalized to MB (excerpts):
+- [docs/img-app-spec.md](docs/img-app-spec.md:1) — Thumbnail/cache default documented as 5120 MB (≈5 GB).
+- [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md:913) — CachePolicy.MAX_CACHE_SIZE_MB set to 5120.
+- [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1) — Examples use cache_size_mb and max_size_mb.
+- [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:663) — CacheManager.__init__ uses max_size_mb and AppSettings.cache_size_mb.
 
-6) [`docs/roo/img-app-technical-architecture.md:263`](docs/roo/img-app-technical-architecture.md:263)
----- before ----
-```python
-def __init__(self, cache_dir: Path, max_size_gb: float = 5.0):
-```
+6) [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:663)
 ---- after ----
 ```python
-def __init__(self, cache_dir: Path, max_size_gb: float = 5.0):
+def __init__(self, cache_dir: Path, max_size_mb: int = 5120):
+    self.max_size_bytes = int(max_size_mb * 1024 * 1024)
 ```
 
 Notes & rationale:

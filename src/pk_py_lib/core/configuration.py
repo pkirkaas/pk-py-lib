@@ -46,7 +46,7 @@ class AppSettings:
     # Performance Settings
     max_threads: int = 4
     max_memory_mb: int = 2048
-    cache_size_mb: int = 5120  # 5 GB default
+    cache_size_mb: int = 5120  # 5120 MB (≈5 GB) default
     
     # UI Layout (stored as JSON)
     window_geometry: Optional[Dict[str, Any]] = None

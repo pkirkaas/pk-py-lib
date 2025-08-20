@@ -1,4 +1,13 @@
 # KDC Image Organizer - Implementation Guide
+
+## Conventions
+
+- Cache size is configured via app_settings.cache_size_mb (units: MB). Do not use max_size_gb, MAX_CACHE_SIZE_GB, or ambiguous "GB" phrasing.
+- Thresholds:
+  - UI displays values on a 0–100 scale.
+  - Internal logic uses 0.0–1.0.
+  - Conversions: internal = ui / 100; ui = round(internal * 100).
+- File extension tokens must be dot-prefixed (e.g., .png, .jpg, .jpeg, .tiff, .webp).
 > Updated for Settings Profiles v1 (Option A) — Balanced Defaults — Package A — Set A
 >
 > This guide now includes a phased plan to introduce a strongly typed Settings Profile schema, a centralized validator (single source of truth), normalization utilities, and GUI progressive enable/disable behaviors, followed by migration from the current key/value settings manager. Cross-references: data model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), UI [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md), API [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), architecture [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), errors [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md), decision §18 [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
@@ -186,8 +195,8 @@ Source of truth and wiring
 
 # System requirements
 - Windows 10/11, macOS 10.15+, or Linux (Ubuntu 20.04+)
-- 8GB RAM minimum (16GB recommended)
-- 10GB free disk space
+- 8192 MB RAM minimum (≈8 GB); 16384 MB recommended (≈16 GB)
+- 10240 MB free disk space (≈10 GB)
 ```
 
 ### 2.2 Project Initialization

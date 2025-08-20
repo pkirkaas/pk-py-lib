@@ -257,8 +257,8 @@ class DirectoryTraversal:
                 "tiny": 0,      # < 1KB
                 "small": 0,     # 1KB - 1MB
                 "medium": 0,    # 1MB - 100MB
-                "large": 0,     # 100MB - 1GB
-                "huge": 0       # > 1GB
+                "large": 0,     # 100 MB – 1024 MB (≈1 GB)
+                "huge": 0       # > 1024 MB (≈1 GB)
             },
             "largest_files": [],
             "oldest_file": None,

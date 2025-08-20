@@ -22,7 +22,7 @@ High-priority issues (must-address before implementation):
 1. Similarity threshold unit inconsistency: UI text uses 0–100% while APIs and some docs use 0.0–1.0. Pick canonical internal representation (recommend 0.0–1.0) and convert at UI boundaries.
 2. Database schema versioning: schemas lack a guaranteed single-source schema_version table. Add `meta`/`schema_version` table and migration history.
 3. File move/rename handling: docs treat moved/renamed files as new; suggest adding strategies to detect renames (inode/device where available, SHA-256 content hash, and path history) and document behavior.
-4. Cache defaults and platform locations: 5GB default may be excessive on many laptops. Recommend lower default (5GB) with clear per-OS paths and fallback when lacking space.
+4. Cache defaults and platform locations: Standardize default cache size to 5120 MB (≈5 GB). Provide clear per-OS paths and fallback when lacking space.
 5. Performance metrics are underspecified (e.g., "1,000 images/min"). Define benchmark harness, sample hardware profiles, and exact algorithm/thumbnail sizes used for measurement.
 
 Issues and suggested edits by document
@@ -53,7 +53,7 @@ Issues and suggested edits by document
 - Define a canonical `ErrorCodes` enum for common failures (LOCKED_DB, FILE_MISSING, OOM, PERMISSION_DENIED, CORRUPTED_IMAGE).
 
 6) [`docs/roo/img-app-implementation-guide.md`](docs/roo/img-app-implementation-guide.md:1)
-- Update recommended default cache size to align with suggested change (5GB) and document per-OS default cache paths.
+- Update recommended default cache size to 5120 MB (≈5 GB) and document per-OS default cache paths.
 - Add reproducible benchmark scripts and instructions to run them; include sample expected results for CI regression tests.
 - Add instructions for applying DB migrations and rolling back safely.
 
@@ -65,7 +65,7 @@ Issues and suggested edits by document
 Cross-document consistency items (canonical decisions I propose)
 - Similarity thresholds: canonical internal range 0.0–1.0; UI slider 0–100%; APIs accept 0.0–1.0 (UI adapters convert).
 - Similarity score storage: store floats 0.0–1.0 in DB; present percentages in UI.
-- Default cache size: set to 5GB (configurable per profile); document recommendation to raise to 5GB for heavy users.
+- Default cache size: set to 5120 MB (≈5 GB) (application-scoped app_settings.cache_size_mb); document recommendation to increase for heavy users.
 - Threading defaults: default thread pool = min(4, cpu_count() - 1); allow profile override.
 - DB schema: add table `meta(schema_version TEXT, created_at TIMESTAMP, notes TEXT)` and include migration tooling.
 
@@ -77,7 +77,7 @@ Suggested implementation changes (small actionable edits)
 
 Clarifying questions (please answer to finalize suggested changes)
 1. Canonical threshold unit: confirm you approve internal 0.0–1.0 and UI 0–100% visual representation? (recommended)
-2. Default cache size: prefer 5GB (safer) or keep 5GB as initial default?
+2. Default cache size: prefer 5120 MB (≈5 GB) (safer) or keep 5120 MB (≈5 GB) as initial default?
 3. File move/rename detection: do you want robust move detection (store content SHA-256 + optional device/inode tracking) or a simpler approach (treat as new)? Robust detection increases DB and compute cost.
 4. Telemetry/analytics: should we include optional opt-in telemetry for crash reports (disabled by default)? Current security doc says no telemetry.
 5. RAW support: you previously deferred RAW formats. Confirm RAW support remains Phase 2 and not required for initial release.

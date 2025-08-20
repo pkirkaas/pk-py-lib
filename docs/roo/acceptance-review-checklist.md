@@ -1,5 +1,14 @@
 # Settings Profiles v1 — Acceptance Review Checklist
 
+## Conventions
+
+- Cache size is configured via app_settings.cache_size_mb (units: MB). Do not use max_size_gb, MAX_CACHE_SIZE_GB, or ambiguous "GB" phrasing.
+- Thresholds:
+  - UI displays values on a 0–100 scale.
+  - Internal logic uses 0.0–1.0.
+  - Conversions: internal = ui / 100; ui = round(internal * 100).
+- File extension tokens must be dot-prefixed (e.g., .png, .jpg, .jpeg, .tiff, .webp).
+
 Updated for Settings Profiles v1 (Option A) — Balanced Defaults — Package A — Set A
 
 Documents in scope
@@ -18,12 +27,12 @@ Global acceptance checklist
 - [ ] JSON Schema present in [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md) with defaults:
   - [ ] pools[*].include=["**/*"], exclude=[]
   - [ ] recurse=true, max_depth=0 (unlimited), include_hidden=false, follow_symlinks=false
-  - [ ] filters.file_types default=[jpg, jpeg, png, webp, tiff, bmp, gif, heic, heif]
+  - [ ] pools[*].type_filters default=[.jpg, .jpeg, .png, .webp, .tiff, .bmp, .gif, .heic, .heif]
   - [ ] mode default="duplicates", duplicates.algorithm fixed "BLAKE3"
   - [ ] similarity.algorithm="pHash", similarity.degree=90
   - [ ] direction default="A_TO_B" (inactive until both pools valid)
   - [ ] single_pool_clustering=false
-- [ ] Normalization rule documented: degree_ui 0–100 → degree_norm 0..1
+- [ ] Normalization rule documented: degree_ui 0–100 → degree_norm 0.0–1.0
 - [ ] Package A documented: degree = round(100 * (1 - d/64)) and threshold rule degree ≥ threshold
 - [ ] OS-aware behavior:
   - [ ] Path pattern case handling is OS-aware

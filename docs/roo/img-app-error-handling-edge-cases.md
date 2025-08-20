@@ -1,4 +1,13 @@
 # KDC Image Organizer - Error Handling & Edge Cases
+
+## Conventions
+
+- Cache size is configured via app_settings.cache_size_mb (units: MB). Do not use max_size_gb, MAX_CACHE_SIZE_GB, or ambiguous "GB" phrasing.
+- Thresholds:
+  - UI displays values on a 0–100 scale.
+  - Internal logic uses 0.0–1.0.
+  - Conversions: internal = ui / 100; ui = round(internal * 100).
+- File extension tokens must be dot-prefixed (e.g., .png, .jpg, .jpeg, .tiff, .webp).
 > Updated for Settings Profiles v1 (Option A) — Balanced Defaults — Package A — Set A
 >
 > This document now catalogs Option A–specific validation failures, conflicts, edge cases at scale, and UX guidance tied to the centralized validator and progressive enable/disable UI. Cross-references: data model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), UI [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md), API [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), architecture [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), decision §18 [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).

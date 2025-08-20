@@ -164,7 +164,7 @@ How Roo updates this file
     - Thumbnail cache policy documented and a small example exists
   risk: medium
   last_updated: 2025-08-14
-  notes: Default 5GB policy in docs; implementation TBD
+  notes: Default 5120 MB policy in docs (≈5 GB); implementation TBD
 
 - id: FS-001
   title: Move/rename detection (inode/device + hashing)

@@ -54,7 +54,7 @@ class CacheManager:
     """
 
     # Default policy constants
-    DEFAULT_MAX_SIZE_MB = 5120  # 5 GB = 5120 MB
+    DEFAULT_MAX_SIZE_MB = 5120  # 5120 MB (≈5 GB)
     CLEANUP_ON_SIZE_PERCENT = 0.90  # start cleanup when 90% full
     EVICTION_BATCH_SIZE = 50  # delete up to this many files per cleanup pass
 
@@ -67,7 +67,7 @@ class CacheManager:
         cache_dir : Path
             Base directory where cache data will be stored.
         max_size_mb : int
-            Maximum cache size in megabytes (default: 5120 MB = 5 GB).
+            Maximum cache size in megabytes (default: 5120 MB, ≈5 GB).
         jpeg_quality : int
             Default JPEG quality used when generating thumbnails (informational).
         """

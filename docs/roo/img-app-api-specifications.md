@@ -1167,6 +1167,13 @@ class Events:
     # UI events
     VIEW_CHANGED = "ui.view_changed"
     THEME_CHANGED = "ui.theme_changed"
+    PANEL_TOGGLED = "ui.panel_toggled"
+    
+    # Data events
+    CACHE_CLEARED = "data.cache_cleared"
+    SETTINGS_CHANGED = "data.settings_changed"
+    PROFILE_SWITCHED = "data.profile_switched"
+```
 ### 10.0 Error Codes
 
 ```python
@@ -1184,13 +1191,6 @@ class ErrorCodes(Enum):
     NETWORK_ERROR = "NETWORK_ERROR"       # Network or mount error for remote paths
     TIMEOUT = "TIMEOUT"                   # Operation timed out
     UNKNOWN_ERROR = "UNKNOWN_ERROR"       # Fallback/unspecified error
-```
-    PANEL_TOGGLED = "ui.panel_toggled"
-    
-    # Data events
-    CACHE_CLEARED = "data.cache_cleared"
-    SETTINGS_CHANGED = "data.settings_changed"
-    PROFILE_SWITCHED = "data.profile_switched"
 ```
 
 ## 10. Error Handling

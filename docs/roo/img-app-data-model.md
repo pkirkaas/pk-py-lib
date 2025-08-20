@@ -17,7 +17,7 @@ Key behaviors (summary)
 - Preset name: Balanced (this is the application default if no preset is specified).
 - Paths: required; at least one existing, readable directory. No implicit default path is assumed.
 - Traversal: recursive = true; maxDepth = 0 (0 = unlimited). Guard rails warn on very large scans.
-- Include formats: common consumer formats only by default (jpg, jpeg, png, webp, gif, tiff, bmp, heic, heif). RAW is excluded by default.
+- Include formats: common consumer formats only by default (.jpg, .jpeg, .png, .webp, .gif, .tiff, .bmp, .heic, .heif). RAW is excluded by default.
 - Pattern case behavior: case = auto (OS/FS-aware). On Windows: insensitive. On macOS: insensitive on default APFS/HFS+ volumes; sensitive if FS reports case-sensitive. On Linux: sensitive by default.
 - Exclusions: hidden = true (skip), symlinks = true (do not follow), plus common system-junk patterns.
 - Normalization: API/UI accept partial configs; defaults are applied to produce a normalized config.
@@ -1041,7 +1041,7 @@ Defaults (authoritative)
 - max_depth: 0 means unlimited recursion (default 0). Positive integers limit traversal depth; 1 = only direct children; 0 = no limit.
 - follow_symlinks: false by default.
 - include_hidden: false by default; hidden items are excluded unless explicitly included.
-- File types: images only by default (extensions): ["jpg", "jpeg", "png", "webp", "tiff", "bmp", "gif", "heic", "heif"]. RAW formats are off by default.
+- File types: images only by default (extensions): [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]. RAW formats are off by default.
 - Extension filter matching is case-insensitive on all OS (Package A).
 - Similarity:
   - algorithm default: "pHash" (64-bit grayscale DCT; hash_size=8).
@@ -1090,7 +1090,7 @@ Z) Fully explicit Balanced defaults (two-pool similarity)
       "exclude": [],
       "follow_symlinks": false,
       "include_hidden": false,
-      "type_filters": ["jpg", "jpeg", "png", "webp", "tiff", "bmp", "gif", "heic", "heif"]
+      "type_filters": [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]
     },
     "B": {
       "root_path": "F:/Target",
@@ -1100,7 +1100,7 @@ Z) Fully explicit Balanced defaults (two-pool similarity)
       "exclude": [],
       "follow_symlinks": false,
       "include_hidden": false,
-      "type_filters": ["jpg", "jpeg", "png", "webp", "tiff", "bmp", "gif", "heic", "heif"]
+      "type_filters": [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]
     }
   },
   "mode": "similarity",
@@ -1339,7 +1339,7 @@ Validator enablement contract (for GUI)
         "type_filters": {
           "type": "array",
           "items": { "type": "string" },
-          "default": ["jpg", "jpeg", "png", "webp", "tiff", "bmp", "gif", "heic", "heif"]
+          "default": [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]
         },
         "size_constraints": {
           "type": "object",
@@ -1455,7 +1455,7 @@ A) Single-pool duplicates (cluster within A)
       "max_depth": 0,
       "include": ["**/*.jpg", "**/*.png"],
       "exclude": ["**/tmp/**"],
-      "type_filters": ["jpg", "jpeg", "png"]
+      "type_filters": [".jpg", ".jpeg", ".png"]
     }
   },
   "mode": "duplicates",

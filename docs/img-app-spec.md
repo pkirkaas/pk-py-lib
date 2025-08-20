@@ -1,4 +1,14 @@
 # KDC Image Organizer (img-app) Project Specification
+
+## Conventions
+
+- Cache size is configured via app_settings.cache_size_mb (units: MB). Do not use max_size_gb, MAX_CACHE_SIZE_GB, or ambiguous "GB" phrasing.
+- Thresholds:
+  - UI displays values on a 0–100 scale.
+  - Internal logic uses 0.0–1.0.
+  - Conversions: internal = ui / 100; ui = round(internal * 100).
+- File extension tokens must be dot-prefixed (e.g., .png, .jpg, .jpeg, .tiff, .webp).
+
 > Updated for Settings Profiles v1 (Option A) — Balanced Defaults — Package A — Set A
 >
 > This specification acknowledges the new profile-based configuration model for Option A: two pools (A/B), Modes (duplicates vs similarity), Directions (A→B, B→A, A without matches in B, B without matches in A), UI Degree 0–100 normalized to [0.0..1.0], and report-only execution for v1. See data model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), UI [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md), API [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), architecture [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), errors [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md), and decision §18 in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).

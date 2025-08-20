@@ -68,7 +68,7 @@ def test_migrate_1_0_to_1_1(tmp_path: Path):
     assert abs(ui_scale - 1.25) < 0.001
     assert int(max_threads) == 8
     assert int(max_memory_mb) == 4096
-    # Legacy 5.0 GB -> 5120 MB expected (rounded within migration logic)
+    # Legacy 5.0 GB → 5120 MB expected (converted by migration logic)
     assert int(cache_size_mb) == 5120
 
     # Validate profiles table no longer contains legacy UI columns (pragmatically check PRAGMA)
