@@ -867,6 +867,11 @@ class PoolConfigAPI:
 ```
 
 ### 7.4 File Identity Detection API
+
+> **Note: Option A Algorithm Usage**
+> For Option A Settings Profiles v1, duplicates detection uses BLAKE3 per canonical decision §18.
+> The SHA-256 referenced in this section remains for general cache identity and file validation outside of Option A runs.
+
 ```python
 class FileIdentityAPI:
     """API for file identity and hashing configuration."""

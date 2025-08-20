@@ -24,6 +24,14 @@ Documents in scope
 
 Global acceptance checklist
 
+- [ ] Three-database architecture documented (canonical decision §11):
+  - [ ] settings.db in user_data_dir (user configuration & profiles)
+  - [ ] sessions.db in user_data_dir (scan sessions & results)
+  - [ ] cache.db in user_cache_dir (transient cache data)
+- [ ] File-backed thumbnails policy documented (canonical decision §10):
+  - [ ] Thumbnails stored as files in cache/thumbnails/{size}x{size}/
+  - [ ] Database stores only metadata with relative_path field
+  - [ ] No BLOB storage for thumbnails
 - [ ] JSON Schema present in [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md) with defaults:
   - [ ] pools[*].include=["**/*"], exclude=[]
   - [ ] recurse=true, max_depth=0 (unlimited), include_hidden=false, follow_symlinks=false

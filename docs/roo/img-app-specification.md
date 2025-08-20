@@ -97,6 +97,10 @@ The KDC Image Organizer (img-app) is a cross-platform desktop GUI application de
 
 #### 2.1.3 Settings Profiles and Configuration
 
+> **Note: Option A Settings Profiles Override**
+> For Settings Profiles v1 (Option A), see canonical decision §18 in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
+> Option A uses a strongly-typed JSON profile schema with centralized validation, Balanced defaults, and specific algorithm choices that override some specifications below.
+
 **Profile System:**
 - Multiple named settings profiles for different workflows
 - Each profile contains:
@@ -126,14 +130,20 @@ The KDC Image Organizer (img-app) is a cross-platform desktop GUI application de
 
 **File Identity Detection:**
 - **Identical File Detection:**
-  - Algorithm: SHA-256 hashing
+  - Algorithm: SHA-256 hashing (Note: Option A uses BLAKE3 for duplicates runs)
   - Staged hashing option (default enabled):
     - Stage 1: Group by file size
     - Stage 2: Partial hash (first/last 256KB) for files ≥512KB
-    - Stage 3: Full SHA-256 for candidates
+    - Stage 3: Full SHA-256 for candidates (BLAKE3 in Option A duplicates mode)
   - Cache results with invalidation on size/mtime change
 
 #### 2.1.4 Similarity Detection Engine
+
+> **Note: Option A Algorithm Selection**
+> For Settings Profiles v1 (Option A):
+> - Duplicates mode: Uses BLAKE3 algorithm (fixed)
+> - Similarity mode: Uses pHash algorithm with degree_ui 0-100 normalized to 0.0-1.0
+> See canonical decision §18 and Package A specifications in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
 
 **Algorithms:**
 ```

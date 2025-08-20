@@ -19,15 +19,16 @@ This guide provides step-by-step instructions for implementing the KDC Image Org
 
 This guide is aligned with the canonical decisions. Implementation must follow these cross‑cutting policies:
 
-- Data locations
-  - Use platformdirs with Vendor Pk and App Img App
+- Data locations (canonical decision §11)
+  - Use platformdirs with Vendor "Pk" and App "Img App"
   - Environment override PK_IMG_APP_HOME to relocate base of data and cache trees
-  - Databases
-    - settings.db and sessions.db in user_data_dir
-    - cache.db in user_cache_dir
-  - Directory structure
-    - data back up folder at data/backups
-    - cache thumbnails at cache/thumbnails
+  - Three-database architecture:
+    - settings.db in user_data_dir (user configuration & profiles)
+    - sessions.db in user_data_dir (scan sessions & results)
+    - cache.db in user_cache_dir (transient cache data)
+  - Directory structure:
+    - data/backups/ for database backups
+    - cache/thumbnails/ for file-backed thumbnail storage
 
 - Startup database validation and migration
   - For each of settings.db, sessions.db, cache.db
@@ -394,27 +395,48 @@ class DatabaseManager:
     
     def __init__(self):
         self.settings_db_path = None
+        self.sessions_db_path = None
         self.cache_db_path = None
         
     def initialize(self):
-        """Initialize databases."""
-        # Get database paths from config
-        data_dir = Path.home() / ".kdc_image_organizer"
-        data_dir.mkdir(exist_ok=True)
+        """Initialize databases with platformdirs."""
+        import os
+        from platformdirs import user_data_dir, user_cache_dir
         
+        # Check for environment override
+        base_dir = os.environ.get('PK_IMG_APP_HOME')
+        
+        if base_dir:
+            data_dir = Path(base_dir) / "data"
+            cache_dir = Path(base_dir) / "cache"
+        else:
+            # Use platformdirs with Vendor "Pk" and App "Img App"
+            data_dir = Path(user_data_dir("Img App", "Pk"))
+            cache_dir = Path(user_cache_dir("Img App", "Pk"))
+        
+        # Ensure directories exist
+        data_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Three-database architecture per canonical decision §11
         self.settings_db_path = data_dir / "settings.db"
-        self.cache_db_path = data_dir / "cache.db"
+        self.sessions_db_path = data_dir / "sessions.db"
+        self.cache_db_path = cache_dir / "cache.db"
         
         # Create databases if needed
         self.create_databases()
         
     def create_databases(self):
-        """Create database schemas."""
-        # Create settings database
+        """Create database schemas for three-database architecture."""
+        # Create settings database (user configuration)
         with self.get_connection(self.settings_db_path) as conn:
             conn.executescript(SETTINGS_SCHEMA)
             
-        # Create cache database
+        # Create sessions database (scan sessions & results)
+        with self.get_connection(self.sessions_db_path) as conn:
+            conn.executescript(SESSIONS_SCHEMA)
+            
+        # Create cache database (transient data)
         with self.get_connection(self.cache_db_path) as conn:
             conn.executescript(CACHE_SCHEMA)
             

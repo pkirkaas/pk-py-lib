@@ -458,8 +458,37 @@ LIMIT 1;
 
 ### 3.1 Settings Database (settings.db)
 
+#### Settings Profiles Table (Option A - JSON Payload)
 ```sql
--- Settings profiles table
+-- Canonical table for Option A Settings Profiles with JSON payload
+CREATE TABLE settings_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL COLLATE NOCASE,
+    data TEXT NOT NULL,  -- JSON payload per Option A schema
+    is_default BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Meta table for active profile and schema version
+CREATE TABLE meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    notes TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insert schema version and active profile tracking
+INSERT OR IGNORE INTO meta (key, value, notes) VALUES
+    ('schema_version', '1.0.0', 'Database schema version'),
+    ('active_profile_id', NULL, 'Currently active profile ID');
+```
+
+**Bridging Note**: The typed `profiles` and `profile_paths` tables shown below represent the legacy key/value approach. For Option A implementation, `settings_profiles` with JSON payload is canonical, storing the complete [`SettingsProfileOptionA`](docs/roo/img-app-data-model.md:1239) structure. The core manager [`SettingsProfilesManager`](src/pk_py_lib/core/settings_profiles.py:95) and API [`SettingsProfilesAPI`](src/pk_py_lib/api/settings_profiles.py:69) work exclusively with the JSON-based model.
+
+#### Legacy Profiles Tables (for reference)
+```sql
+-- Legacy typed approach (retained for migration reference)
 CREATE TABLE profiles (
     id TEXT PRIMARY KEY,  -- UUID stored as text
     name TEXT UNIQUE NOT NULL,
@@ -666,13 +695,16 @@ CREATE TABLE IF NOT EXISTS meta (
 INSERT OR IGNORE INTO meta (key, value, notes)
 VALUES ('schema_version', '1.0.0', 'Initial cache schema');
 
--- Thumbnail cache
+-- Thumbnail metadata (file-backed storage per canonical decision)
+-- Note: Actual thumbnail files are stored in cache/thumbnails/ directory
+-- Database only stores metadata and relative file paths
 CREATE TABLE thumbnails (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     image_id INTEGER NOT NULL,
     size INTEGER NOT NULL,
-    thumbnail_data BLOB NOT NULL,
+    relative_path TEXT NOT NULL,  -- Path relative to cache/thumbnails/ directory
     format TEXT DEFAULT 'JPEG',
+    quality INTEGER DEFAULT 85,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     access_count INTEGER DEFAULT 0,
@@ -692,6 +724,49 @@ CREATE TABLE image_hashes (
     FOREIGN KEY (image_id) REFERENCES image_metadata(id) ON DELETE CASCADE,
     UNIQUE(image_id, algorithm)
 );
+
+
+-- Cache statistics
+CREATE TABLE cache_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    total_size_bytes INTEGER DEFAULT 0,
+    thumbnail_count INTEGER DEFAULT 0,
+    image_count INTEGER DEFAULT 0,
+    hash_count INTEGER DEFAULT 0,
+    oldest_entry TIMESTAMP,
+    newest_entry TIMESTAMP,
+    last_cleanup TIMESTAMP,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for performance
+CREATE INDEX idx_metadata_path ON image_metadata(file_path);
+CREATE INDEX idx_metadata_sha256 ON image_metadata(file_hash_sha256);
+CREATE INDEX idx_metadata_partial ON image_metadata(partial_hash_sha256);
+CREATE INDEX idx_metadata_inode ON image_metadata(file_inode, file_device);
+CREATE INDEX idx_metadata_size ON image_metadata(file_size);
+CREATE INDEX idx_metadata_date ON image_metadata(date_taken);
+CREATE INDEX idx_thumbnails_image ON thumbnails(image_id);
+CREATE INDEX idx_thumbnails_accessed ON thumbnails(last_accessed);
+CREATE INDEX idx_hashes_image ON image_hashes(image_id);
+```
+
+### 3.3 Sessions Database (sessions.db)
+
+Per canonical decision [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:61), scan sessions and similarity results are stored in a separate sessions.db database for better separation of concerns and performance.
+
+```sql
+-- Meta table for sessions database
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    notes TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Initialize sessions database metadata
+INSERT OR IGNORE INTO meta (key, value, notes)
+VALUES ('schema_version', '1.0.0', 'Initial sessions schema');
 
 -- Scan sessions
 CREATE TABLE scan_sessions (
@@ -729,34 +804,10 @@ CREATE TABLE similarity_results (
     is_reference BOOLEAN DEFAULT FALSE,
     computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES scan_sessions(id) ON DELETE CASCADE,
-    FOREIGN KEY (image1_id) REFERENCES image_metadata(id),
-    FOREIGN KEY (image2_id) REFERENCES image_metadata(id),
     CHECK (overall_score BETWEEN 0.0 AND 1.0)
 );
 
--- Cache statistics
-CREATE TABLE cache_stats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    total_size_bytes INTEGER DEFAULT 0,
-    thumbnail_count INTEGER DEFAULT 0,
-    image_count INTEGER DEFAULT 0,
-    hash_count INTEGER DEFAULT 0,
-    oldest_entry TIMESTAMP,
-    newest_entry TIMESTAMP,
-    last_cleanup TIMESTAMP,
-    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 -- Create indexes for performance
-CREATE INDEX idx_metadata_path ON image_metadata(file_path);
-CREATE INDEX idx_metadata_sha256 ON image_metadata(file_hash_sha256);
-CREATE INDEX idx_metadata_partial ON image_metadata(partial_hash_sha256);
-CREATE INDEX idx_metadata_inode ON image_metadata(file_inode, file_device);
-CREATE INDEX idx_metadata_size ON image_metadata(file_size);
-CREATE INDEX idx_metadata_date ON image_metadata(date_taken);
-CREATE INDEX idx_thumbnails_image ON thumbnails(image_id);
-CREATE INDEX idx_thumbnails_accessed ON thumbnails(last_accessed);
-CREATE INDEX idx_hashes_image ON image_hashes(image_id);
 CREATE INDEX idx_sessions_profile ON scan_sessions(profile_id);
 CREATE INDEX idx_sessions_status ON scan_sessions(status);
 CREATE INDEX idx_results_session ON similarity_results(session_id);

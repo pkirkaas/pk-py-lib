@@ -342,10 +342,11 @@ class DatabaseManager:
         5. Check schema version
         6. Run migrations if needed
         """
+        # Three-database architecture per canonical decision §11
         for db_path, db_type in [
-            (self.locations.settings_db, "settings"),
-            (self.locations.sessions_db, "sessions"),
-            (self.locations.cache_db, "cache")
+            (self.locations.settings_db, "settings"),  # User configuration
+            (self.locations.sessions_db, "sessions"),  # Scan sessions & results
+            (self.locations.cache_db, "cache")        # Transient cache data
         ]:
             self._initialize_database(db_path, db_type)
             
@@ -548,7 +549,47 @@ CREATE TABLE IF NOT EXISTS meta (
 INSERT OR IGNORE INTO meta (key, value, notes)
 VALUES ('schema_version', '1.0.0', 'Initial schema version');
 
+-- sessions.db schema
+-- Contains scan sessions and results (canonical decision §11)
+
+CREATE TABLE scan_sessions (
+    id INTEGER PRIMARY KEY,
+    profile_id INTEGER,
+    name TEXT,
+    scan_type TEXT NOT NULL,
+    source_paths JSON NOT NULL,
+    reference_paths JSON,
+    algorithms JSON NOT NULL,
+    threshold REAL NOT NULL,
+    algorithm_params JSON,
+    total_images INTEGER,
+    processed_images INTEGER DEFAULT 0,
+    groups_found INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending',
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP,
+    duration REAL,
+    error_message TEXT,
+    CHECK (scan_type IN ('single_set', 'dual_set')),
+    CHECK (status IN ('pending', 'running', 'completed', 'cancelled', 'error')),
+    CHECK (threshold BETWEEN 0.0 AND 1.0)
+);
+
+CREATE TABLE scan_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    group_id INTEGER NOT NULL,
+    image1_id INTEGER NOT NULL,
+    image2_id INTEGER NOT NULL,
+    overall_score REAL NOT NULL,
+    algorithm_scores JSON,
+    is_reference BOOLEAN DEFAULT FALSE,
+    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES scan_sessions(id) ON DELETE CASCADE
+);
+
 -- cache.db schema
+-- Contains transient cache data only
 
 CREATE TABLE image_metadata (
     id INTEGER PRIMARY KEY,
@@ -593,11 +634,13 @@ CREATE INDEX idx_metadata_partial ON image_metadata(partial_hash_sha256);
 CREATE INDEX idx_metadata_inode ON image_metadata(file_inode, file_device);
 CREATE INDEX idx_metadata_size ON image_metadata(file_size);
 
+-- File-backed thumbnails per canonical decision §10
+-- Actual files stored at cache/thumbnails/{size}x{size}/{cache_key}.jpg
 CREATE TABLE thumbnails (
     id INTEGER PRIMARY KEY,
     image_id INTEGER REFERENCES image_metadata(id),
     size INTEGER NOT NULL,
-    thumbnail_data BLOB NOT NULL,
+    relative_path TEXT NOT NULL,  -- Path relative to cache/thumbnails/
     format TEXT DEFAULT 'JPEG',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -615,42 +658,6 @@ CREATE TABLE similarity_cache (
     similarity_score REAL NOT NULL,
     computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(image1_id, image2_id, algorithm)
-);
-
-CREATE TABLE scan_sessions (
-    id INTEGER PRIMARY KEY,
-    profile_id INTEGER,
-    name TEXT,
-    scan_type TEXT NOT NULL,
-    source_paths JSON NOT NULL,
-    reference_paths JSON,
-    algorithms JSON NOT NULL,
-    threshold REAL NOT NULL,
-    algorithm_params JSON,
-    total_images INTEGER,
-    processed_images INTEGER DEFAULT 0,
-    groups_found INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'pending',
-    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    completed_at TIMESTAMP,
-    duration REAL,
-    error_message TEXT,
-    CHECK (scan_type IN ('single_set', 'dual_set')),
-    CHECK (status IN ('pending', 'running', 'completed', 'cancelled', 'error')),
-    CHECK (threshold BETWEEN 0.0 AND 1.0)
-);
-
-CREATE TABLE scan_results (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id INTEGER NOT NULL,
-    group_id INTEGER NOT NULL,
-    image1_id INTEGER NOT NULL,
-    image2_id INTEGER NOT NULL,
-    overall_score REAL NOT NULL,
-    algorithm_scores JSON,
-    is_reference BOOLEAN DEFAULT FALSE,
-    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (session_id) REFERENCES scan_sessions(id) ON DELETE CASCADE
 );
 ```
 
@@ -767,7 +774,7 @@ class MainWindow(QMainWindow):
     def setup_panels(self):
         """Create and configure dockable panels."""
         self.file_panel = FileExplorerPanel()
-        self.results_panel = ResultsPanel()
+        self.results_panel = ResultsPanel()  # src/img_app/gui/panels/results_panel.py
         self.preview_panel = PreviewPanel()
         self.properties_panel = PropertiesPanel()
 ```
