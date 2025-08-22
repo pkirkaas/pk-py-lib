@@ -5,7 +5,7 @@
 
 ## Executive summary — Settings Profiles v1 (Option A)
 
-Settings Profiles v1 standardizes two pools (Pool A, Pool B) with two Modes: duplicates (fixed BLAKE3) and similarity (pHash). The Degree is entered in the UI as 0–100 and normalized to [0.0..1.0] for processing. v1 runs are report-only. A centralized validator is the single source of truth for schema/defaults/compatibility and emits capability flags that drive progressive GUI enable/disable per Set A initial states (initial Mode=duplicates, Pool A enabled, Direction disabled until both pools validate). Canonical decision: DEC‑SettingsProfilesV1‑OptionA‑Balanced‑PackageA‑SetA in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
+Settings Profiles v1 standardizes two pools (Pool A, Pool B) with two Modes: duplicates (fixed BLAKE3) and similarity (pHash). The Degree is entered in the UI as 0–100 and normalized to [0.0..1.0] for processing. v1 runs are report-only. A centralized validator is the single source of truth for schema/defaults/compatibility and emits capability flags that drive progressive GUI enable/disable per Set A initial states (initial Mode=duplicates, Pool A enabled, Direction disabled until both pools validate). **GUI text selectability**: All text elements must be selectable and copyable by mouse to enhance user interaction. Canonical decision: DEC‑SettingsProfilesV1‑OptionA‑Balanced‑PackageA‑SetA in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
 
 ## System components and responsibilities
 

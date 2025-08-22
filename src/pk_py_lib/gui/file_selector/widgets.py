@@ -889,10 +889,37 @@ class MultiPathSelectorWidget(QWidget):
         self._refresh_counts()
 
 
+class DirectorySelectorWidget(PathSelectorDialog):
+    """
+    A widget (dialog) for selecting a single directory.
+    This is a thin wrapper around PathSelectorDialog to provide a consistent interface.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        # Configure for directory selection only
+        filter_spec = PathFilterSpec(
+            allow_dirs=True,
+            allow_files=False,
+            include_hidden=False,
+        )
+        super().__init__(
+            parent=parent,
+            title="Select Directory",
+            start_dir=None,
+            filter_spec=filter_spec,
+        )
+
+    def get_selected_path(self) -> Optional[str]:
+        """Return the selected path as a string, or None."""
+        path = self.selected_path()
+        return str(path) if path else None
+
+
 __all__ = [
     "PathFilterSpec",
     "PathSelectorDialog",
     "MultiPathSelectorWidget",
+    "DirectorySelectorWidget",
     "NamedCategory",
     "category_extensions",
 ]

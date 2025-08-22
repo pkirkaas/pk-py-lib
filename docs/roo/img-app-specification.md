@@ -376,6 +376,7 @@ The KDC Image Organizer (img-app) is a cross-platform desktop GUI application de
 - Adjustable font sizes
 - UI scaling (100%, 125%, 150%, 200%)
 - Tooltips and context help
+- **Text selectability**: All text in GUI elements, dialogs, labels, and informational displays must be selectable and copyable by mouse to facilitate user interaction and data extraction
 
 ## 4. Technical Architecture
 

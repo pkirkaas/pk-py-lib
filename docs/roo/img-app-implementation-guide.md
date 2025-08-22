@@ -1756,6 +1756,7 @@ D) GUI wiring (progressive enable/disable)
   - single_pool_clustering=false
   - Save/Run disabled until Pool A is valid; when both pools validate and scope.kind="two_pool", direction group enables with A_TO_B selected
 - Resolved configuration preview renders the validator-normalized profile and capability flags (see [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md:1174)).
+- **Text selectability**: All GUI text elements, including labels, validation messages, and informational text, must be selectable and copyable by mouse to enhance user interaction and data extraction. This should be implemented using Qt's text interaction flags (e.g., `setTextInteractionFlags(Qt.TextSelectableByMouse)`).
 
 E) API façade integration
 - Validate-before-run pattern (see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:2109)):

@@ -77,6 +77,7 @@ Global acceptance checklist
   - [ ] Tests list: degree rounding, OS case, extension case-insensitive, hidden attribute, direction gating, path gating
 - [ ] Edge cases detailed in [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md)
 - [ ] Alignment docs updated with acceptance criteria: [architecture-plan.md](architecture-plan.md), [docs/img-app-spec.md](docs/img-app-spec.md)
+- [ ] **Text selectability**: All GUI text elements must be selectable and copyable by mouse, including labels, validation messages, and informational text
 
 Rubric — Data Model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md)
 

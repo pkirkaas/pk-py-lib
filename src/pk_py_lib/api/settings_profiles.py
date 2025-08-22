@@ -54,7 +54,7 @@ def _profile_to_dict(p: SettingsProfile, item_count: Optional[int] = None) -> Di
     Returns
     -------
     Dict[str, Any]
-        {id, name, description, is_active, created_at, updated_at, item_count?}
+        {id, name, description, is_active, created_at, updated_at, item_count?, format, json_data?}
     """
     d: Dict[str, Any] = {
         "id": p.id,
@@ -63,9 +63,12 @@ def _profile_to_dict(p: SettingsProfile, item_count: Optional[int] = None) -> Di
         "is_active": p.is_active,
         "created_at": p.created_at,
         "updated_at": p.updated_at,
+        "format": "json" if p.is_json_format() else "legacy",
     }
     if item_count is not None:
         d["item_count"] = int(item_count)
+    if p.is_json_format() and p.json_data:
+        d["json_data"] = p.json_data
     return d
 
 
@@ -152,29 +155,64 @@ class SettingsProfilesAPI:
             logger.exception("get_profile failed id=%s", profile_id)
             return ApiResponse.fail(str(e), code=_map_exception(e))
 
-    def create(self, name: str, description: Optional[str] = None, make_active: bool = False) -> ApiResponse[Dict[str, Any]]:
+    def create(self, name: str, description: Optional[str] = None,
+               make_active: bool = False, json_data: Optional[Dict[str, Any]] = None) -> ApiResponse[Dict[str, Any]]:
         """
         Create a new profile.
+
+        Parameters
+        ----------
+        name : str
+            Profile name
+        description : Optional[str]
+            Profile description
+        make_active : bool
+            Whether to make this profile active
+        json_data : Optional[Dict[str, Any]]
+            JSON schema data for new format profiles
 
         Returns
         -------
         ApiResponse[Dict[str, Any]]
         """
         try:
-            p = self.manager.create_profile(name=name, description=description, make_active=make_active)
-            return ApiResponse.ok(_profile_to_dict(p, item_count=0))
+            p = self.manager.create_profile(name=name, description=description,
+                                           make_active=make_active, json_data=json_data)
+            # For JSON profiles, item_count is 0 (items are in json_data)
+            item_count = 0 if json_data is not None else None
+            return ApiResponse.ok(_profile_to_dict(p, item_count=item_count))
         except Exception as e:
             logger.exception("create failed name=%s", name)
             return ApiResponse.fail(str(e), code=_map_exception(e))
 
-    def update(self, profile_id: str, name: Optional[str] = None, description: Optional[str] = None) -> ApiResponse[Dict[str, Any]]:
+    def update(self, profile_id: str, name: Optional[str] = None,
+               description: Optional[str] = None, json_data: Optional[Dict[str, Any]] = None) -> ApiResponse[Dict[str, Any]]:
         """
-        Update profile's name and/or description.
+        Update profile's name, description, and/or JSON data.
+
+        Parameters
+        ----------
+        profile_id : str
+            Profile ID to update
+        name : Optional[str]
+            New name (if provided)
+        description : Optional[str]
+            New description (if provided)
+        json_data : Optional[Dict[str, Any]]
+            New JSON data (if provided)
+
+        Returns
+        -------
+        ApiResponse[Dict[str, Any]]
         """
         try:
-            p = self.manager.update_profile(profile_id=profile_id, name=name, description=description)
-            counts = [i for i in self.manager.list_profiles_with_counts() if i["id"] == p.id]
-            item_count = counts[0]["item_count"] if counts else 0
+            p = self.manager.update_profile(profile_id=profile_id, name=name,
+                                           description=description, json_data=json_data)
+            # For JSON profiles, item_count is 0 (items are in json_data)
+            item_count = 0 if p.is_json_format() else None
+            if item_count is None:
+                counts = [i for i in self.manager.list_profiles_with_counts() if i["id"] == p.id]
+                item_count = counts[0]["item_count"] if counts else 0
             return ApiResponse.ok(_profile_to_dict(p, item_count=item_count))
         except Exception as e:
             logger.exception("update failed id=%s", profile_id)
@@ -277,6 +315,13 @@ class SettingsProfilesAPI:
     def get_values(self, profile_id: str, keys: Optional[List[str]] = None) -> ApiResponse[Dict[str, Any]]:
         """
         Get values for a profile (all if keys is None).
+
+        For JSON format profiles, this returns an empty dict as items are stored
+        in the json_data field instead.
+
+        Returns
+        -------
+        ApiResponse[Dict[str, Any]]
         """
         try:
             vals = self.manager.get_values(profile_id, keys)
@@ -288,6 +333,9 @@ class SettingsProfilesAPI:
     def set_values(self, profile_id: str, values: Dict[str, Any]) -> ApiResponse[Dict[str, Any]]:
         """
         Upsert key/value pairs for a profile.
+
+        Note: For JSON format profiles, this method is a no-op and returns 0,
+        as items should be updated via update() with json_data.
 
         Returns
         -------
@@ -322,8 +370,14 @@ class SettingsProfilesAPI:
     # ---------------------------------------------------------------------
     def export_profile(self, profile_id: str) -> ApiResponse[Dict[str, Any]]:
         """
-        Export a profile into a JSON-serializable dictionary:
-        {'profile': {...}, 'items': {...}}
+        Export a profile into a JSON-serializable dictionary.
+
+        For JSON format profiles: {'profile': {...}, 'json_data': {...}}
+        For legacy profiles: {'profile': {...}, 'items': {...}}
+
+        Returns
+        -------
+        ApiResponse[Dict[str, Any]]
         """
         try:
             payload = self.manager.export_profile(profile_id)
@@ -339,7 +393,8 @@ class SettingsProfilesAPI:
         Parameters
         ----------
         payload : Dict[str, Any]
-            {'profile': {'name': str, 'description'?: str}, 'items': dict}
+            For JSON profiles: {'profile': {...}, 'json_data': {...}}
+            For legacy profiles: {'profile': {...}, 'items': {...}}
         strategy : str
             'fail_on_conflict' | 'rename' | 'overwrite'
         make_active : bool
@@ -347,11 +402,121 @@ class SettingsProfilesAPI:
         """
         try:
             p = self.manager.import_profile(payload=payload, strategy=strategy, make_active=make_active)
-            counts = [i for i in self.manager.list_profiles_with_counts() if i["id"] == p.id]
-            item_count = counts[0]["item_count"] if counts else 0
+            # For JSON profiles, item_count is 0 (items are in json_data)
+            item_count = 0 if p.is_json_format() else None
+            if item_count is None:
+                counts = [i for i in self.manager.list_profiles_with_counts() if i["id"] == p.id]
+                item_count = counts[0]["item_count"] if counts else 0
             return ApiResponse.ok(_profile_to_dict(p, item_count=item_count))
         except Exception as e:
             logger.exception("import_profile failed strategy=%s", strategy)
+            return ApiResponse.fail(str(e), code=_map_exception(e))
+
+    # ---------------------------------------------------------------------
+    # JSON Schema Methods
+    # ---------------------------------------------------------------------
+
+    def migrate_to_json_format(self, profile_id: str) -> ApiResponse[Dict[str, Any]]:
+        """
+        Migrate a legacy profile to JSON format.
+        
+        Parameters
+        ----------
+        profile_id : str
+            ID of the profile to migrate
+            
+        Returns
+        -------
+        ApiResponse[Dict[str, Any]]
+            The migrated profile data
+        """
+        try:
+            p = self.manager.migrate_to_json_format(profile_id)
+            return ApiResponse.ok(_profile_to_dict(p, item_count=0))
+        except Exception as e:
+            logger.exception("migrate_to_json_format failed id=%s", profile_id)
+            return ApiResponse.fail(str(e), code=_map_exception(e))
+
+    def validate_profile_for_save(self, profile_id: str) -> ApiResponse[Dict[str, Any]]:
+        """
+        Validate if a profile is valid for saving.
+        
+        Parameters
+        ----------
+        profile_id : str
+            Profile ID to validate
+            
+        Returns
+        -------
+        ApiResponse[Dict[str, Any]]
+            {'valid': bool, 'errors': List[str]}
+        """
+        try:
+            is_valid, errors = self.manager.validate_profile_for_save(profile_id)
+            return ApiResponse.ok({"valid": is_valid, "errors": errors})
+        except Exception as e:
+            logger.exception("validate_profile_for_save failed id=%s", profile_id)
+            return ApiResponse.fail(str(e), code=_map_exception(e))
+
+    def validate_profile_for_run(self, profile_id: str) -> ApiResponse[Dict[str, Any]]:
+        """
+        Validate if a profile is valid for running.
+        
+        Parameters
+        ----------
+        profile_id : str
+            Profile ID to validate
+            
+        Returns
+        -------
+        ApiResponse[Dict[str, Any]]
+            {'valid': bool, 'errors': List[str]}
+        """
+        try:
+            is_valid, errors = self.manager.validate_profile_for_run(profile_id)
+            return ApiResponse.ok({"valid": is_valid, "errors": errors})
+        except Exception as e:
+            logger.exception("validate_profile_for_run failed id=%s", profile_id)
+            return ApiResponse.fail(str(e), code=_map_exception(e))
+
+    def get_json_schema(self) -> ApiResponse[Dict[str, Any]]:
+        """
+        Get the JSON schema for SettingsProfileOptionA.
+        
+        Returns
+        -------
+        ApiResponse[Dict[str, Any]]
+            The JSON schema definition
+        """
+        try:
+            from ..core.settings_schema import SETTINGS_PROFILE_SCHEMA
+            return ApiResponse.ok(SETTINGS_PROFILE_SCHEMA)
+        except Exception as e:
+            logger.exception("get_json_schema failed")
+            return ApiResponse.fail(str(e), code=_map_exception(e))
+
+    def create_default_json_profile(self, name: str, description: Optional[str] = None) -> ApiResponse[Dict[str, Any]]:
+        """
+        Create a new profile with default JSON schema values.
+        
+        Parameters
+        ----------
+        name : str
+            Profile name
+        description : Optional[str]
+            Profile description
+            
+        Returns
+        -------
+        ApiResponse[Dict[str, Any]]
+            The created profile data
+        """
+        try:
+            from ..core.settings_schema import create_default_profile
+            json_data = create_default_profile(name, description)
+            return self.create(name=name, description=description, json_data=json_data)
+        except Exception as e:
+            logger.exception("create_default_json_profile failed name=%s", name)
             return ApiResponse.fail(str(e), code=_map_exception(e))
 
 

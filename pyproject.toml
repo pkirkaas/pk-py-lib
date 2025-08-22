@@ -21,6 +21,7 @@ dependencies = [
     "send2trash>=1.8.0",        # Safe file deletion to trash
     "exifread>=3.0.0",          # EXIF data reading
     "pillow-heif>=0.13.0",      # HEIF image support
+    "jsonschema>=4.20.0",       # JSON schema validation
 ]
 requires-python = "<3.14,>=3.13"
 readme = "README.md"

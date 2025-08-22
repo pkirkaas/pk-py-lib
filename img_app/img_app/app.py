@@ -24,7 +24,7 @@ from src.pk_py_lib.gui.utils.messages import show_selectable_error
 from .main_window import MainWindow
 
 from src.pk_py_lib.api.settings_profiles import SettingsProfilesAPI
-from src.pk_py_lib.gui.settings_manager import settings_manager_dialog
+from src.pk_py_lib.gui.settings_manager.structured_dialog import structured_settings_manager_dialog
 
 
 def _ensure_application(argv: Optional[list[str]] = None) -> QApplication:
@@ -114,7 +114,11 @@ def main() -> int:
 
         # 4) Present Settings Manager dialog (always on launch, modal)
         try:
-            settings_manager_dialog(parent=None, modal=True)
+            # Get the active profile from the dialog; exit if canceled
+            active_profile = structured_settings_manager_dialog(parent=None, modal=True)
+            if active_profile is None:
+                # User canceled the dialog, exit the application
+                return 0
         except Exception as dlg_exc:
             show_selectable_error(
                 None,
@@ -123,36 +127,8 @@ def main() -> int:
             )
             return 1
 
-        # 5) Determine the active profile to use for the session
-        r_active = api.get_active()
-        if not r_active.success:
-            show_selectable_error(
-                None,
-                "Startup Error",
-                f"Failed to read active profile:\n{r_active.message or 'Unknown error'}",
-            )
-            return 1
-        active_profile = r_active.data
-
-        # Defensive repair: ensure a default and re-fetch if somehow missing
-        if active_profile is None:
-            again = api.ensure_default_profile()
-            if not again.success:
-                show_selectable_error(
-                    None,
-                    "Startup Error",
-                    f"No active profile and failed to create default:\n{again.message or 'Unknown error'}",
-                )
-                return 1
-            r_active2 = api.get_active()
-            if not r_active2.success:
-                show_selectable_error(
-                    None,
-                    "Startup Error",
-                    f"Failed to read active profile after ensure:\n{r_active2.message or 'Unknown error'}",
-                )
-                return 1
-            active_profile = r_active2.data
+        # 5) Use the active profile returned from the dialog
+        # No need for defensive repair since dialog ensures valid active profile
 
         # Optional managers (best-effort; failures are non-fatal)
         try:

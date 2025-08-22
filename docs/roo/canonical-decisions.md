@@ -169,6 +169,7 @@ Scope
 - Implementation target: [`img_app/img_app/widgets/results_panel.py`](img_app/img_app/widgets/results_panel.py:1)
 
 ### 6) Settings GUI Behaviors (canonical)
+- **Text selectability**: All text in GUI elements, dialogs, labels, and informational displays must be selectable and copyable by mouse to facilitate user interaction and data extraction. This includes validation messages, configuration previews, and status information.
 
 - **CRUD operations**:
   - Create new profile (with name validation)

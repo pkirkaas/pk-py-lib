@@ -1,1252 +1,179 @@
-# KDC Image Organizer - UI/UX Design Document
+# Image Organizer - GUI Design Specifications
+> Updated for Structured Settings Profiles (Option A)
 
-## Conventions
+## Settings Dialog GUI Design
 
-- Cache size is configured via app_settings.cache_size_mb (units: MB). Do not use max_size_gb, MAX_CACHE_SIZE_GB, or ambiguous "GB" phrasing.
-- Thresholds:
-  - UI displays values on a 0–100 scale.
-  - Internal logic uses 0.0–1.0.
-  - Conversions: internal = ui / 100; ui = round(internal * 100).
-- File extension tokens must be dot-prefixed (e.g., .png, .jpg, .jpeg, .tiff, .webp).
-> Updated for Settings Profiles v1 (Option A) — Balanced Defaults — Package A — Set A
->
->
-> This document adds a dedicated Option A UI mapping for Pools A/B, Mode & Criteria, Scope/Direction, progressive enable/disable states driven by a centralized validator, validation UX, and a resolved configuration preview. Cross-references: data model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), API [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), technical architecture [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), errors [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md), and decision §18 in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
+### Mermaid Diagram of Structured Settings Dialog
 
-## 1. Design Principles
-
-### 1.1 Core Principles
-- **Clarity**: Every element should have a clear purpose
-- **Efficiency**: Minimize clicks and navigation for common tasks
-- **Consistency**: Uniform design patterns throughout the application
-- **Feedback**: Immediate visual feedback for all user actions
-- **Flexibility**: Support both novice and power users
-- **Accessibility**: Full keyboard navigation and screen reader support
-
-### 1.2 Visual Hierarchy
-- Primary actions: Prominent buttons with accent colors
-- Secondary actions: Standard buttons with neutral colors
-- Destructive actions: Red coloring with confirmation dialogs
-- Information density: Progressive disclosure for complex features
-
-## 2. Application Layout
-
-### 2.1 Main Window Structure
-```
-┌──────────────────────────────────────────────────────────────┐
-│ KDC Image Organizer                                    [_][□][X]│
-├──────────────────────────────────────────────────────────────┤
-│ File  Edit  View  Tools  Help                               │
-├──────────────────────────────────────────────────────────────┤
-│ [New Scan] [Open] [Save] | [Basic ▼] | [Settings] [Help]    │
-├────────────┬─────────────────────────────┬──────────────────┤
-│            │                             │                  │
-│  Files     │      Results Area           │    Preview       │
-│  Panel     │                             │    Panel         │
-│            │                             │                  │
-│ ┌────────┐ │  ┌─────────────────────┐   │ ┌──────────────┐ │
-│ │□ Folder│ │  │■ Group 1 (5 images) │   │ │              │ │
-│ │  □ img1│ │  │  □ DSC001.jpg      │   │ │   [Image]    │ │
-│ │  □ img2│ │  │  □ DSC002.jpg      │   │ │              │ │
-│ └────────┘ │  └─────────────────────┘   │ └──────────────┘ │
-│            │                             │                  │
-├────────────┴─────────────────────────────┴──────────────────┤
-│ Ready | Files: 1,234 | Groups: 23 | Selected: 5 | ████ 45% │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### 2.2 Panel Specifications
-
-#### 2.2.1 File Browser Panel (Left)
-**Purpose**: File and folder selection for scanning
-
-**Components**:
-- Tab bar: "Single Set" | "Reference/Target Sets"
-- Tree view with checkboxes
-- Quick action buttons:
-  - Add Files [+]
-  - Add Folder [📁]
-  - Remove Selected [−]
-  - Clear All [🗑]
-- Statistics display:
-  - Total files selected
-  - Total size
-  - File type breakdown
-
-**Interactions**:
-- Drag and drop files/folders
-- Right-click context menu
-- Multi-select with Ctrl/Shift
-- Space to toggle selection
-
-#### 2.2.2 Results Panel (Center)
-**Purpose**: Display similarity detection results
-
-**Components**:
-- Toolbar:
-  - View mode selector: [Tree] [Grid] [List]
-  - Sort dropdown: "By Similarity ▼"
-  - Filter button: [Filter ⚙]
-  - Export button: [Export 📤]
-- Results tree/list:
-  - Group headers with statistics
-  - Individual file entries
-  - Selection checkboxes
-  - Action buttons per item
-
-**Group Header Display**:
-```
-▼ Group 1 - 95% Similar (5 images, 25.3 MB total)
-  □ IMG_001.jpg - 5.2 MB - 3024×4032 - 95% match
-  □ IMG_001_copy.jpg - 5.2 MB - 3024×4032 - 100% match
-  □ IMG_001_edited.jpg - 4.8 MB - 3024×4032 - 92% match
-```
-
-#### 2.2.3 Preview Panel (Right)
-**Purpose**: Visual preview and comparison
-
-**View Modes**:
-1. **Single Preview**:
-   - Large image display
-   - Zoom controls: [−][Fit][1:1][+]
-   - Image info overlay
-   
-2. **Comparison View**:
-   - Side-by-side images
-   - Synchronized zoom/pan
-   - Difference highlight toggle
-   
-3. **Grid View**:
-   - Thumbnail grid of group
-   - Adjustable thumbnail size
-
-**Controls**:
-- View mode selector
-- Zoom slider
-- Full screen button
-- Quick actions (rotate, delete, open)
-
-### 2.3 Dialogs and Modals
-
-#### 2.3.1 New Scan Dialog
-```
-┌─────────────────────────────────────────┐
-│     Start New Similarity Scan           │
-├─────────────────────────────────────────┤
-│                                         │
-│ Scan Mode:                              │
-│ ○ Single Set (find duplicates within)   │
-│ ● Two Sets (find matches between)       │
-│                                         │
-│ Algorithms:                             │
-│ ☑ Perceptual Hash (pHash)              │
-│ ☑ Histogram Comparison                  │
-│ ☐ Feature Matching (slower)            │
-│                                         │
-│ Similarity Threshold: [====|----] 85%   │
-│                                         │
-│ ☐ Advanced Options ▼                    │
-│                                         │
-│        [Cancel]  [Start Scan]           │
-└─────────────────────────────────────────┘
-```
-
-#### 2.3.2 Progress Dialog
-```
-┌─────────────────────────────────────────┐
-│         Scanning for Duplicates         │
-├─────────────────────────────────────────┤
-│                                         │
-│ Processing: IMG_2834.jpg                │
-│                                         │
-│ ████████████████░░░░░░░░░ 68%          │
-│                                         │
-│ Files: 823 / 1,210                     │
-│ Groups found: 15                        │
-│ Time elapsed: 00:02:34                 │
-│ Time remaining: ~ 00:01:15              │
-│                                         │
-│ ☐ Close when complete                  │
-│                                         │
-│     [Run in Background]  [Cancel]       │
-└─────────────────────────────────────────┘
-```
-
-## 3. Settings Management UI
-
-### 3.1 Settings Dialog Structure
-```
-┌─────────────────────────────────────────────────────┐
-│                Settings                             │
-├───────────┬─────────────────────────────────────────┤
-│           │                                         │
-│ General   │  Profile: [Default Profile ▼] [➕][📋][🗑]│
-│ Profiles  │                                         │
-│ Pools     │  Profile Name: [___________________]    │
-│ Detection │  Description:  [___________________]    │
-│ Advanced  │                                         │
-│           │  ☑ Set as default profile              │
-│           │                                         │
-│           │  [Validate Paths] [Test Settings]       │
-│           │                                         │
-│           │      [Cancel]  [Apply]  [OK]           │
-└───────────┴─────────────────────────────────────────┘
-```
-
-### 3.2 Profile Management Section
-**CRUD Operations:**
-- **Create Profile** [➕]: Opens new profile dialog with name validation
-- **Clone Profile** [📋]: Copies current profile to new name
-- **Delete Profile** [🗑]: Shows confirmation dialog
-- **Select Profile**: Dropdown with all available profiles
-- **Set Default**: Checkbox to auto-load on startup
-
-**Profile Fields:**
-```
-┌─────────────────────────────────────────────────────┐
-│ Profile Configuration                               │
-├─────────────────────────────────────────────────────┤
-│ Name: [My Workflow_______________] *Required        │
-│ Description: [Optional description text_______]     │
-│                                                     │
-│ Algorithm Defaults:                                 │
-│ ☑ Perceptual Hash (pHash)                          │
-│ ☑ Histogram Comparison                              │
-│ ☐ SHA-256 Identical File Detection                 │
-│                                                     │
-│ Default Threshold: [════════|══] 85%               │
-│                                                     │
-│ [Import Profile...] [Export Profile...]            │
-└─────────────────────────────────────────────────────┘
-```
-
-### 3.3 Pool Configuration Section
-```
-┌─────────────────────────────────────────────────────┐
-│ Pool Configuration                                  │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│ Pool Mode:                                         │
-│ ● Single Pool (find duplicates within)             │
-│ ○ Dual Pool (compare between pools)                │
-│                                                     │
-│ ┌─── Pool 1 (Primary) ─────────────────────────┐  │
-│ │ Include Directories:                         │  │
-│ │ [C:\Photos\2024________________] [Browse...] │  │
-│ │ [D:\Backup\Images_____________] [Browse...] │  │
-│ │ [________________________] [Add] [Remove]    │  │
-│ │                                               │  │
-│ │ Exclude Directories:                         │  │
-│ │ [C:\Photos\2024\temp__________] [Browse...] │  │
-│ │                                               │  │
-│ │ Include Patterns: *.jpg;*.png;*.heic         │  │
-│ │ Exclude Patterns: *_thumb.*;.*.              │  │
-│ └───────────────────────────────────────────────┘  │
-│                                                     │
-│ ┌─── Pool 2 (Target) ──────────────────────────┐  │
-│ │ ⚠️ Only available in Dual Pool mode           │  │
-│ └───────────────────────────────────────────────┘  │
-│                                                     │
-│ ☐ Inverse Mode (show Pool 1 files with no match)  │
-│                                                     │
-│ [Preview Effective Paths...]                       │
-└─────────────────────────────────────────────────────┘
-```
-
-### 3.4 File Identity Detection Section
-```
-┌─────────────────────────────────────────────────────┐
-│ File Identity Detection                            │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│ Hash Algorithm: [SHA-256 (Recommended) ▼]          │
-│                                                     │
-│ ☑ Enable Staged Hashing (Recommended)              │
-│   │                                                 │
-│   ├─ Pre-filter by file size                      │
-│   ├─ Partial hash size: [256] KB per end          │
-│   └─ Full hash only for candidates                │
-│                                                     │
-│ Cache Invalidation Triggers:                       │
-│ ☑ File path changed                                │
-│ ☑ File size changed                                │
-│ ☑ Modification time changed                        │
-│ ☑ Inode changed (where available)                  │
-│                                                     │
-│ [Test Hash Settings...]                            │
-└─────────────────────────────────────────────────────┘
-```
-
-### 3.5 Settings Validation Features
-
-#### 3.5.1 Path Validation Dialog
-```
-┌─────────────────────────────────────────────────────┐
-│         Path Validation Results                    │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│ ✅ C:\Photos\2024 (5,234 files)                    │
-│ ✅ D:\Backup\Images (2,156 files)                  │
-│ ⚠️ E:\OldPhotos (not accessible)                   │
-│ ❌ F:\Missing (path does not exist)                │
-│                                                     │
-│ Total accessible files: 7,390                      │
-│ Total size: 45600 MB (≈45.6 GB)                   │
-│                                                     │
-│ [Fix Issues] [Ignore Warnings] [OK]               │
-└─────────────────────────────────────────────────────┘
-```
-
-#### 3.5.2 Hash Settings Test Dialog
-```
-┌─────────────────────────────────────────────────────┐
-│        Test Hash Settings                          │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│ Testing on 10 sample files...                      │
-│                                                     │
-│ ████████████████████████ 100%                      │
-│                                                     │
-│ Results:                                           │
-│ ├─ Average hash time: 0.23s per file              │
-│ ├─ Partial hash saved: 78% of time                │
-│ ├─ Memory usage: 12 MB peak                       │
-│ └─ No hash collisions detected                    │
-│                                                     │
-│ Recommendation: Current settings are optimal ✅     │
-│                                                     │
-│ [View Details] [Run Again] [Close]                │
-└─────────────────────────────────────────────────────┘
-```
-
-#### 3.5.3 Preview Effective Paths Dialog
-```
-┌─────────────────────────────────────────────────────┐
-│      Preview Effective File List                   │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│ After applying includes/excludes:                  │
-│                                                     │
-│ Pool 1: 5,234 files                               │
-│ ├─ C:\Photos\2024\IMG_001.jpg                     │
-│ ├─ C:\Photos\2024\IMG_002.jpg                     │
-│ ├─ C:\Photos\2024\vacation\DSC_001.jpg            │
-│ └─ ... (showing first 100)                        │
-│                                                     │
-│ Pool 2: 2,156 files                               │
-│ ├─ D:\Backup\Images\2023\photo1.jpg               │
-│ └─ ... (showing first 100)                        │
-│                                                     │
-│ Excluded: 423 files                               │
-│                                                     │
-│ [Export List...] [Refresh] [Close]                │
-└─────────────────────────────────────────────────────┘
-```
-
-### 3.6 Settings GUI Behaviors
-
-#### Profile Management Behaviors:
-1. **Create New Profile**:
-   - Validate name is unique
-   - Cannot use reserved characters
-   - Optionally clone from existing profile
-
-2. **Delete Profile**:
-   - Show confirmation dialog
-   - Cannot delete default profile while it's active
-   - Warn if profile has recent scan sessions
-
-3. **Set as Default**:
-   - Only one profile can be default
-   - Default profile loads on application startup
-   - Visual indicator (star icon) for default profile
-
-#### Validation Behaviors:
-1. **On Save**:
-   - Validate all paths exist
-   - Warn about inaccessible paths
-   - Check disk space for cache requirements
-
-2. **Real-time Feedback**:
-   - Red border for invalid fields
-   - Tooltips with validation errors
-   - Enable/disable Save based on validity
-
-3. **Test Functions**:
-   - Non-blocking test operations
-   - Show progress during tests
-   - Provide actionable recommendations
-
-## 4. User Workflows
-
-### 4.1 Basic Duplicate Scan Workflow
-1. **Launch**: User opens application
-2. **Select**: Drag folder to file panel or click "Add Folder"
-3. **Configure**: Click "New Scan" (uses default settings in basic mode)
-4. **Process**: Progress dialog shows scanning
-5. **Review**: Results appear in center panel
-6. **Preview**: Click group to see preview
-7. **Select**: Check files to delete
-8. **Action**: Click "Delete Selected" with confirmation
-9. **Complete**: Success notification
-
-### 3.2 Advanced Comparison Workflow
-1. **Mode Switch**: Toggle to "Advanced" mode
-2. **Setup Reference**: Add reference images to first set
-3. **Setup Target**: Add target images to second set
-4. **Configure**: 
-   - Select specific algorithms
-   - Adjust threshold
-   - Set processing options
-5. **Execute**: Start comparison
-6. **Filter Results**: Apply filters to narrow results
-7. **Batch Operations**: Select multiple results for operation
-8. **Export**: Export results to CSV/JSON
-
-## 4. Visual Design Specifications
-
-### 4.1 Color Palette
-
-#### Light Theme
-```css
---primary: #0066CC;        /* Primary actions */
---primary-hover: #0052A3;  /* Hover state */
---secondary: #6C757D;      /* Secondary actions */
---success: #28A745;        /* Success states */
---warning: #FFC107;        /* Warnings */
---danger: #DC3545;         /* Destructive actions */
---background: #FFFFFF;     /* Main background */
---surface: #F8F9FA;        /* Panel background */
---border: #DEE2E6;         /* Borders */
---text-primary: #212529;   /* Primary text */
---text-secondary: #6C757D; /* Secondary text */
-```
-
-#### Dark Theme
-```css
---primary: #4A9EFF;        /* Primary actions */
---primary-hover: #3A8EEF;  /* Hover state */
---secondary: #8B959E;      /* Secondary actions */
---success: #3FB950;        /* Success states */
---warning: #D29922;        /* Warnings */
---danger: #F85149;         /* Destructive actions */
---background: #0D1117;     /* Main background */
---surface: #161B22;        /* Panel background */
---border: #30363D;         /* Borders */
---text-primary: #F0F6FC;   /* Primary text */
---text-secondary: #8B949E; /* Secondary text */
-```
-
-### 4.2 Typography
-```css
-/* Font Stack */
-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", 
-             Roboto, "Helvetica Neue", Arial, sans-serif;
-
-/* Font Sizes */
---font-size-h1: 24px;
---font-size-h2: 20px;
---font-size-h3: 16px;
---font-size-body: 14px;
---font-size-small: 12px;
-
-/* Font Weights */
---font-weight-normal: 400;
---font-weight-medium: 500;
---font-weight-bold: 600;
-```
-
-### 4.3 Spacing System
-```css
-/* Spacing Scale (4px base) */
---space-xs: 4px;
---space-sm: 8px;
---space-md: 16px;
---space-lg: 24px;
---space-xl: 32px;
---space-xxl: 48px;
-```
-
-### 4.4 Component Styling
-
-#### Buttons
-```css
-/* Primary Button */
-.btn-primary {
-    background: var(--primary);
-    color: white;
-    padding: 8px 16px;
-    border-radius: 4px;
-    border: none;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.btn-primary:hover {
-    background: var(--primary-hover);
-    transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-}
-
-/* Danger Button */
-.btn-danger {
-    background: var(--danger);
-    /* Additional styling with confirmation */
-}
-```
-
-## 5. Interaction Design
-
-### 5.1 Mouse Interactions
-- **Hover**: Visual feedback on all interactive elements
-- **Click**: Immediate response with visual confirmation
-- **Drag**: Ghost image for drag operations
-- **Right-click**: Context menus for quick actions
-- **Double-click**: Open/expand actions
-
-### 5.2 Keyboard Shortcuts
-```
-Global:
-Ctrl+N          - New scan
-Ctrl+O          - Open results
-Ctrl+S          - Save results
-Ctrl+Q          - Quit application
-F1              - Help
-F11             - Full screen
-
-Navigation:
-Tab             - Next element
-Shift+Tab       - Previous element
-Arrow Keys      - Navigate lists/trees
-Enter           - Activate/expand
-Space           - Toggle selection
-
-View:
-Ctrl+1          - Tree view
-Ctrl+2          - Grid view
-Ctrl+3          - List view
-Ctrl+Plus       - Zoom in
-Ctrl+Minus      - Zoom out
-Ctrl+0          - Reset zoom
-
-Selection:
-Ctrl+A          - Select all
-Ctrl+Shift+A    - Deselect all
-Ctrl+Click      - Toggle selection
-Shift+Click     - Range selection
-
-Actions:
-Delete          - Delete selected
-Ctrl+Z          - Undo
-Ctrl+Y          - Redo
-```
-
-### 5.3 Touch Gestures (Future)
-- **Pinch**: Zoom in/out on images
-- **Swipe**: Navigate between images
-- **Long press**: Context menu
-- **Two-finger scroll**: Pan large images
-
-## 6. Responsive Behavior
-
-### 6.1 Window Resizing
-- **Minimum size**: 1024×768 pixels
-- **Panel behavior**:
-  - Collapsible below 1280px width
-  - Stack vertically below 768px height
-- **Toolbar adaptation**:
-  - Icon-only mode below 1440px
-  - Overflow menu for hidden items
-
-### 6.2 High DPI Support
-- Vector icons for all UI elements
-- Scalable fonts with proper hinting
-- Resolution-independent rendering
-- Per-monitor DPI awareness
-
-## 7. Accessibility Features
-
-### 7.1 Screen Reader Support
-- Semantic HTML structure
-- ARIA labels for all controls
-- Meaningful alt text for images
-- Keyboard navigation announcements
-
-### 7.2 Visual Accessibility
-- High contrast mode support
-- Configurable font sizes
-- Color blind friendly palettes
-- Focus indicators for keyboard navigation
-
-### 7.3 Motor Accessibility
-- Large click targets (minimum 44×44px)
-- Keyboard alternatives for all actions
-- Configurable double-click speed
-- Sticky keys support
-
-## 8. Animation and Transitions
-
-### 8.1 Animation Principles
-- **Purpose**: Animations should guide, not distract
-- **Duration**: 200-300ms for most transitions
-- **Easing**: Use ease-out for entrances, ease-in for exits
-
-### 8.2 Common Animations
-```css
-/* Panel slide */
-@keyframes slideIn {
-    from { transform: translateX(-100%); }
-    to { transform: translateX(0); }
-}
-
-/* Fade */
-@keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-}
-
-/* Progress */
-@keyframes progress {
-    from { width: 0%; }
-    to { width: var(--progress); }
-}
-```
-
-## 9. Error States and Feedback
-
-### 9.1 Error Display
-- **Inline errors**: Red text below fields
-- **Toast notifications**: Temporary alerts
-- **Modal dialogs**: Critical errors
-- **Status bar**: Persistent warnings
-
-### 9.2 Loading States
-- **Skeleton screens**: For initial loads
-- **Progress bars**: For determinate operations
-- **Spinners**: For indeterminate operations
-- **Subtle animations**: Keep UI responsive
-
-### 9.3 Empty States
-- **Helpful messaging**: Guide user to action
-- **Visual interest**: Icons or illustrations
-- **Clear CTAs**: What to do next
-
-## 10. Platform-Specific Considerations
-
-### 10.1 Windows
-- Native title bar with system controls
-- Windows snap support
-- Jump list integration
-- Native file dialogs
-
-### 10.2 macOS
-- Native menu bar
-- Dock integration
-- Full screen mode support
-- Native notifications
-
-### 10.3 Linux
-- GTK/Qt theme integration
-- Desktop environment compliance
-- Standard freedesktop.org compliance
-- Package manager integration
-
-## 11. Mockup Descriptions
-
-### 11.1 Main Application State - Initial
-```
-The application opens with an empty state showing:
-- Welcome message in center panel
-- "Get Started" guide with numbered steps
-- Prominent "Add Files" or "Add Folder" buttons
-- Sample workflow animation
-```
-
-### 11.2 Main Application State - Processing
-```
-During scanning:
-- File panel shows selected files/folders
-- Center panel displays real-time results as found
-- Progress bar in status bar
-- Non-blocking UI allows result preview
-- Cancel button always accessible
-```
-
-### 11.3 Main Application State - Results
-```
-After scanning:
-- Groups displayed hierarchically
-- Color coding for similarity levels
-- Preview panel shows selected group
-- Action toolbar becomes active
-- Statistics summary in status bar
-```
-
-## 12. User Testing Scenarios
-
-### 12.1 First-Time User
-1. Can user find how to add files?
-2. Is the scan process intuitive?
-3. Are results understandable?
-4. Can user safely delete duplicates?
-
-### 12.2 Power User
-1. Can shortcuts speed up workflow?
-2. Are batch operations efficient?
-3. Is configuration accessible?
-4. Can complex filters be applied?
-
-### 12.3 Accessibility User
-1. Is keyboard navigation complete?
-2. Are screen readers supported?
-3. Is contrast sufficient?
-4. Are targets large enough?
-## 13. Settings/Profile Manager
-
-Status: Planned
-
-Purpose
-- Provide a first-launch and every-launch modal manager to create, copy, edit, delete, search, and select an active settings profile before proceeding to the main application UI.
-- Guarantee that the application runs with a valid, explicitly chosen active profile, reducing ambiguity and preventing misconfigured scans.
-
-Startup Modal Behavior
-- The Settings/Profile Manager is shown as a blocking modal on application startup before creating the main window.
-- The application continues only after a valid active profile is created/selected and saved.
-- If the dialog is canceled while no active profile exists (fresh install, zero profiles), the application exits immediately.
-- If the dialog is canceled but an active profile exists, policy is to still exit to enforce explicit confirmation each run (canonical decision; see [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:1)).
-
-References
-- Application bootstrap: [img_app/img_app/app.py](img_app/img_app/app.py:1)
-- Configuration manager: [src/pk_py_lib/core/configuration.py](src/pk_py_lib/core/configuration.py:1)
-- Profile switching: [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399)
-- Proposed profile API: [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
-- Proposed profile core: [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1)
-- Proposed GUI dialog: [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1)
-- App integration widget: [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
-
-13.1 User Flows
-
-A) Zero Profiles (first launch)
-1) Show modal Settings/Profile Manager.
-2) Display empty-state on List pane with CTA Create Profile.
-3) Launch inline create form on Detail pane (name required). Validation: unique, 1–64 chars, allowed: letters, numbers, spaces, hyphen, underscore.
-4) On Save:
-   - Persist profile
-   - Set as Active
-   - Optionally Set as Default
-5) Continue button becomes enabled. User clicks Continue to proceed to main app.
-
-B) Existing Profiles, none Active (meta.active_profile_id missing)
-1) Show modal with profiles listed, none Active indicated.
-2) Require selection or creation; Continue disabled until a valid Active is set.
-3) User can:
-   - Select a profile and press Set Active → Continue enabled
-   - Create new or Copy existing → edit fields → Save → Set Active → Continue
-4) Press Continue to proceed.
-
-C) Existing Active Profile
-1) Show modal with the currently Active profile pre-selected and Continue enabled.
-2) User may:
-   - Press Continue immediately to proceed
-   - Manage profiles: edit, copy, delete (subject to constraints)
-   - Change Active to a different profile, then Continue
-
-D) Edit Profile
-- Edit fields in Detail pane with live validation.
-- Save applies changes; unsaved changes prompt on navigation away or dialog close.
-
-E) Delete Profile
-- Require confirmation.
-- Disallow deleting Active profile; require switching Active first.
-- Disallow deleting the last remaining profile; require creating a replacement first.
-
-F) Copy Profile
-- Copy creates New Profile with fields cloned; prompts for unique name; focuses Detail pane for edits.
-
-13.2 Layout and Interaction
-
-Two-pane list/detail layout with global toolbar:
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│ Settings Profiles                                                     [X]    │
-├───────────────┬──────────────────────────────────────────────────────────────┤
-│ Profiles      │ Details                                                      │
-│ ───────────── │ ──────────────────────────────────────────────────────────── │
-│ [🔎 Search]   │ Profile Info                                                 │
-│ ┌───────────┐ │ Name: [__________________________] *                        │
-│ │★ Default  │ │ Description: [______________________________]               │
-│ │● Active   │ │                                                             │
-│ │  Default  │ │ Options                                                     │
-│ │           │ │ ☐ Set as default    ⦿ Set active                            │
-│ │  Travel   │ │                                                             │
-│ │  Studio   │ │ Algorithm Defaults                                          │
-│ │  Archive  │ │ [ phash ☑ ] [ histogram ☑ ] [ feature ☐ ]                   │
-│ └───────────┘ │ Threshold: [═══════|═══] 85%                                │
-│ [New][Copy]   │                                                             │
-│ [Delete]      │ Paths                                                       │
-│               │ Pool mode: [ Single ▼ ]   ☐ Inverse (dual only)             │
-│               │ Pool 1 include dirs: [ .. ] [+] [−]                         │
-│               │ Excludes: [ .. ]                                            │
-│               │                                                             │
-│               │ [Validate Paths] [Preview Effective] [Test Hash Settings]    │
-│               │                                                             │
-│               │ [Cancel] [Apply] [Continue ▶]                                │
-├───────────────┴──────────────────────────────────────────────────────────────┤
-│ Status: Ready                                                                │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-Left List Pane
-- Search/filter updates list dynamically (case-insensitive substring on name and description).
-- Badges:
-  - ★ indicates Default profile (is_default=1)
-  - ● indicates Active profile (matches meta.active_profile_id)
-- Actions:
-  - New: opens a blank Detail form (or template chooser if extended later)
-  - Copy: clones selected into Detail form with editable name
-  - Delete: deletes selected profile (confirmation), disabled for Active or only remaining profile
-
-Right Detail Pane
-- Editable fields with live validation and inline errors.
-- Options:
-  - Set active: marks this as the Active profile (writes meta.active_profile_id and [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399))
-  - Set as default: toggles profiles.is_default (exclusive)
-- Validation utilities:
-  - Validate Paths: checks existence/access and counts files (non-blocking UX with progress)
-  - Preview Effective: shows effective include/exclude results with a cap (100 items)
-  - Test Hash Settings: runs quick test against sample files
-- Buttons:
-  - Cancel: aborts and exits app (startup policy)
-  - Apply: saves changes but stays in dialog
-  - Continue: enabled only when there is a valid Active profile
-
-13.3 UI States and Rules
-
-Button/Control States
-- Continue enabled when: Active profile exists and all required fields in the currently edited profile (if it is Active) are valid.
-- Delete disabled when:
-  - The selected profile is Active; or
-  - Only one profile exists.
-- Set active disabled when current edits are invalid; enabled once validation passes.
-- Set as default toggles exclusivity; changes are persisted on Apply/Continue.
-- Apply disabled if no changes; enabled when dirty.
-
-Validation Rules
-- Name: required; unique (case-insensitive); 1–64 chars; allowed [A–Z a–z 0–9 _ - and space].
-- Threshold: 0–100 UI percent maps to 0.0–1.0 internal (see [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:148) and [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1)).
-- Paths: paths must exist and be readable; Save and Run are blocked until invalid paths are corrected (validator-enforced).
-- Default/Active:
-  - Exactly one Default profile can exist (is_default=1).
-  - Exactly one Active profile at a time, stored under meta.active_profile_id (see decisions).
-  - Converting Default does not implicitly change Active; user must explicitly Set active.
-
-Non-destructive Behaviors
-- Edits are local until Apply/Continue.
-- Delete uses confirmation; cannot delete Active nor last profile.
-- Copy produces a distinct profile; original unmodified.
-
-13.4 Event and State Flows
-
-Startup flow (modal first)
 ```mermaid
 flowchart TD
-  A[App launch] --> B[Initialize DatabaseManager]
-  B --> C[Initialize ConfigurationManager]
-  C --> D[Show Settings/Profile Manager modal]
-  D --> E{User action}
-  E -->|Create profile| F[Persist profile; set Active]
-  E -->|Select profile| G[Set Active]
-  E -->|Edit profile| H[Validate then Apply]
-  E -->|Cancel| X[Exit application]
-  F --> I[Continue enabled]
-  G --> I
-  H --> D
-  I --> J[Close modal]
-  J --> K[Create MainWindow and proceed]
+    subgraph Dialog[Settings Manager Dialog]
+        direction TB
+        
+        subgraph LeftPane[Left Pane - Profiles List]
+            Search[Search Box]
+            ProfilesList[Profiles List View]
+            Toolbar[Toolbar: Create, Rename, Duplicate, Delete, Set Active]
+        end
+
+        subgraph RightPane[Right Pane - Structured Editor]
+            direction TB
+            
+            subgraph Metadata[Profile Metadata]
+                Name[Name Input]
+                Description[Description Text Area]
+            end
+
+            subgraph Pools[Pools Configuration]
+                direction TB
+                
+                subgraph PoolA[Pool A (Required)]
+                    PoolAPath[Path Input + Browse Button]
+                    PoolAOptions[Options: Recurse, Follow Symlinks, Include Hidden]
+                end
+
+                subgraph PoolB[Pool B (Optional)]
+                    PoolBPath[Path Input + Browse Button]
+                    PoolBOptions[Options: Recurse, Follow Symlinks, Include Hidden]
+                end
+            end
+
+            subgraph ModeCriteria[Mode & Criteria]
+                direction TB
+                
+                Mode[Mode Dropdown: duplicates/similarity]
+                
+                subgraph Criteria[Criteria]
+                    Algorithm[Algorithm Dropdown: pHash/blake3]
+                    Degree[Similarity Degree Slider 0-100%]
+                end
+            end
+
+            subgraph Scope[Scope]
+                direction TB
+                ScopeKind[Kind Dropdown: single_pool/two_pool]
+                Direction[Direction Dropdown: A_TO_B, B_TO_A, etc.]
+            end
+
+            subgraph Output[Output]
+                OutputMode[Mode Dropdown: report_only]
+            end
+
+            Validation[Validation Status Label]
+        end
+
+        subgraph Footer[Footer Buttons]
+            Buttons[OK, Apply, Cancel]
+        end
+    end
+
+    LeftPane --> RightPane
+    Metadata --> Pools
+    Pools --> ModeCriteria
+    ModeCriteria --> Scope
+    Scope --> Output
+    Output --> Validation
+    RightPane --> Footer
 ```
 
-Top-level interactions
-```mermaid
-stateDiagram-v2
-  [*] --> Idle
-  Idle --> Editing : Select or New or Copy
-  Editing --> Validating : Apply or Continue
-  Validating --> Idle : Success
-  Validating --> Editing : Errors shown
-  Idle --> Exiting : Cancel
-```
+### GUI Component Details
 
-13.5 Rationale
+#### 1. Profile Metadata Section
+- **Name Input**: Text field with validation (1-64 chars, alphanumeric + spaces/hyphens/underscores)
+- **Description Text Area**: Multi-line optional description
 
-- Enforcing an explicit Active profile reduces configuration drift and enables deterministic processing.
-- Separation of Default vs Active:
-  - Default is a preference for future runs.
-  - Active is the current session’s explicitly chosen profile.
-- Modal-first design ensures dependent subsystems (cache size, hashing policy, UI defaults) can be initialized according to the chosen profile before the main window initializes. See bootstrap notes in [img_app/img_app/app.py](img_app/img_app/app.py:60) and DB init via [DatabaseManager.initialize()](src/pk_py_lib/core/database.py:405).
+#### 2. Pools Configuration
+- **Pool A** (Required):
+  - Path input field with browse button (opens directory selector)
+  - Checkboxes: Recurse subdirectories (default: checked), Follow symbolic links, Include hidden files
+- **Pool B** (Optional, enabled for two-pool operations):
+  - Same controls as Pool A
+  - Enabled/disabled based on scope selection
 
-13.6 Accessibility and Keyboarding
+#### 3. Mode & Criteria Section
+- **Mode Dropdown**: "duplicates" or "similarity"
+- **Criteria** (context-sensitive):
+  - **Algorithm Dropdown**: "pHash" or "blake3" (auto-set to "blake3" for duplicates mode)
+  - **Similarity Degree**: Slider (0-100%) with percentage display (disabled for duplicates mode)
 
-- Full keyboard access:
-  - Tab order from List to Detail fields to action buttons.
-  - List selection with Arrow keys; Enter focuses Detail name field.
-  - Shortcuts: Alt+N New, Alt+C Copy, Alt+D Delete, Alt+A Apply, Alt+K Continue, Esc Cancel.
-- Screen reader labels on all form inputs and buttons; meaningful ARIA-like descriptions.
+#### 4. Scope Section
+- **Kind Dropdown**: "single_pool" or "two_pool"
+- **Direction Dropdown** (enabled only for two_pool):
+  - "A_TO_B": Find items in B that match A
+  - "B_TO_A": Find items in A that match B  
+  - "A_WITHOUT_IN_B": Items in A with no match in B
+  - "B_WITHOUT_IN_A": Items in B with no match in A
 
-13.7 Next Steps
-- Implement reusable dialog widget [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1) with the two-pane layout and behaviors described.
-- Implement library core [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1) to encapsulate profile CRUD, validation, meta.active_profile_id, and default handling.
-- Implement API adapter [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1) with methods documented in API specs.
-- Integrate dialog at startup in [img_app/img_app/app.py](img_app/img_app/app.py:60) prior to creating the main window.
-- Add tests using pytest-qt for dialog behaviors (zero profiles, active selection, delete constraints).
-<!-- Settings Manager UI finalization -->
+#### 5. Output Section
+- **Mode Dropdown**: "report_only" (only option in v1)
 
-## 13A. Settings/Profile Manager — Finalized UI, States, and Acceptance Criteria
+#### 6. Validation & Feedback
+- Real-time validation status display
+- Color-coded messages (green for valid, red for errors)
+- **All text elements must be selectable and copyable** (error messages, labels, etc.)
+- Conditional enablement of controls based on selections
 
-Status: Approved
+### UI Behavior Rules
 
-Path update and scope
-- Supersedes earlier references to `src/pk_py_lib/gui/settings/profile_manager.py`.
-- Canonical reusable dialog path is now:
-  - [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1)
-  - Controller, models, validators co-located under `src/pk_py_lib/gui/settings_manager/` (see technical architecture addendum 11A).
-- The dialog consumes the library API [SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69) and never touches the DB directly.
+#### Conditional Enablement
+1. **Pool B Controls**: Enabled only when scope.kind = "two_pool"
+2. **Direction Dropdown**: Enabled only when both Pool A and Pool B have valid paths
+3. **Degree Slider**: Enabled only for similarity mode
+4. **Algorithm Dropdown**: Locked to "blake3" for duplicates mode
 
-UI states
-- Empty state (no profiles)
-  - List pane shows guidance; primary CTA “Create profile”
-  - Detail pane shows inline create form; name validation immediate via [SettingsProfilesAPI.validate_name()](src/pk_py_lib/api/settings_profiles.py:295)
-- List state (>=1 profile)
-  - List pane with search/filter; badges:
-    - ★ Default (is_default=1)
-    - ● Active (matches meta.active_profile_id)
-  - Toolbar: New, Copy, Delete
-- Edit state (detail form)
-  - Fields bound to JSON payload in `settings_profiles.data`
-  - Inline validation; Apply persists via [SettingsProfilesAPI.update()](src/pk_py_lib/api/settings_profiles.py:191)
-  - Set Active and Set Default actions wired to [SettingsProfilesAPI.set_active()](src/pk_py_lib/api/settings_profiles.py:260) and [SettingsProfilesAPI.set_default()](src/pk_py_lib/api/settings_profiles.py:276)
+#### Validation Rules
+1. **Pool A Path**: Must be specified and valid
+2. **Pool B Path**: Required only for two-pool scope, must be valid if specified
+3. **Name**: Must be unique and meet pattern requirements
+4. **Mode-specific validation**: 
+   - Duplicates mode: No degree allowed
+   - Similarity mode: Degree required (0-100)
 
-Startup modal contract
-- Runs as a blocking modal before main window creation (see integration helper under [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1))
-- Continue is enabled only when a valid Active profile exists; Cancel exits app per policy (see decisions)
+#### Path Selection
+- Browse buttons open directory selector dialog
+- Paths are validated for existence and readability
+- Recent paths may be suggested based on history
 
-Key interactions (library API-backed)
-- Create profile: [SettingsProfilesAPI.create()](src/pk_py_lib/api/settings_profiles.py:172)
-- Copy profile: [SettingsProfilesAPI.copy()](src/pk_py_lib/api/settings_profiles.py:230)
-- Update profile: [SettingsProfilesAPI.update()](src/pk_py_lib/api/settings_profiles.py:191)
-- Delete profile: [SettingsProfilesAPI.delete()](src/pk_py_lib/api/settings_profiles.py:214) — disabled when Active or last remaining
-- Set Active: [SettingsProfilesAPI.set_active()](src/pk_py_lib/api/settings_profiles.py:260)
-- Set Default: [SettingsProfilesAPI.set_default()](src/pk_py_lib/api/settings_profiles.py:276)
-- List and highlight Active: [SettingsProfilesAPI.list_profiles()](src/pk_py_lib/api/settings_profiles.py:109)
-- Name validation: [SettingsProfilesAPI.validate_name()](src/pk_py_lib/api/settings_profiles.py:295)
+### Integration with Application
 
-UX details
-- Search/filter is case-insensitive substring on name (and optional description if present in payload)
-- Name entry uses immediate validation with inline error text; Save/Apply disabled when invalid
-- Dangerous actions (Delete) require confirmation with explicit invariant hints
-- Non-blocking “Validate Paths” and “Preview Effective” hooks are optional for MVP; when present, they must not block core CRUD flows
+#### Settings Manager Dialog
+- Left pane: Profiles list with search and management actions
+- Right pane: Structured editor as described above
+- Footer: OK (apply & close), Apply (apply without closing), Cancel
 
-Keyboard and accessibility
-- Shortcuts: Alt+N (New), Alt+C (Copy), Alt+D (Delete), Alt+A (Apply), Alt+K (Continue), Esc (Cancel)
-- Focus order: List → Detail → Actions
-- Screen reader: accessible names for fields and badges; announce validation errors
+#### Data Flow
+1. Profile loaded from database into editor
+2. User makes changes in structured form
+3. Real-time validation provides feedback
+4. On apply/ok, data is validated and saved
+5. Structured data is stored in JSON format in database
 
-Acceptance criteria (UI)
-- First launch (no profiles): Create → Save with valid name → Continue becomes enabled
-- Existing profiles but no active: Selecting a profile and hitting Set Active enables Continue
-- Existing active profile: Continue enabled on open; CRUD operations available; Delete disabled if selected is Active or when only one profile exists
-- Name rules enforced: ^[A-Za-z0-9 _-]{1,64}$; collisions surface INVALID_CONFIG via API; UI shows inline error
-- Set Default reflects exclusivity immediately in list badges
-- Continue closes the dialog only when a valid Active profile exists
-- Cancel exits the app regardless of prior active (policy)
+### GUI Text Selectability Requirement
 
-References
-- Core invariants: [SettingsProfilesManager.delete_profile()](src/pk_py_lib/core/settings_profiles.py:439), [SettingsProfilesManager.set_default_profile()](src/pk_py_lib/core/settings_profiles.py:574)
-- Active persistence: [SettingsProfilesManager.set_active_profile()](src/pk_py_lib/core/settings_profiles.py:541) writes meta.active_profile_id and triggers on_active_change
-- Startup integration: [img_app/img_app/app.py](img_app/img_app/app.py:60) and helper [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
+**All text displayed in the GUI must be selectable and copyable by the user.** This includes:
 
-## 13B. Settings Profiles v1 (Option A) — Panels, Widgets, States, and Preview
+- Error and warning messages
+- Validation status text
+- Path displays and labels
+- Any informational text in dialogs
+- Dropdown menu text items
 
-Scope
-- This section specifies the UI for Option A (two pools with duplicates/similarity, report-only), driven by a centralized validator and normalized view.
-- Cross-references: data model [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md), API shapes [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md), architecture [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md), errors [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md), decision §18 in [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
+Implementation guidelines:
+- Use `QLabel` with `setTextInteractionFlags(Qt.TextSelectableByMouse)` for labels
+- Ensure text in message boxes and dialogs is selectable
+- Text fields should naturally support selection
+- Avoid non-selectable text elements for user-facing information
 
-### 13B.A Overview and alignment
-- Option A: Two pools (A/B); Modes: Duplicates (BLAKE3 fixed, no degree) vs Similarity (pHash with Degree UI 0–100 normalized to [0.0..1.0]); report-only outputs.
-- Settings Profiles: Configurations are captured as a typed profile payload; a centralized validator fills Balanced defaults and produces a normalized view consumed by the GUI and the engine.
-- Dependency: Schema, tokens, and Balanced defaults from [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md) are authoritative; this UI maps those into concrete panels, widgets, progressive enable/disable rules, and the resolved configuration preview.
-13B.0 Balanced Defaults — Initial UI state mapping
-- Pools Panel defaults (per pool)
-  - Recurse: checked
-  - Max depth: 0 (0 = unlimited)
-  - Follow symlinks: unchecked
-  - Include hidden: unchecked
-  - Include patterns: prefilled with **/*
-  - Exclude patterns: empty
-  - File types: tokens preselected [.jpg .jpeg .png .webp .tiff .bmp .gif .heic .heif]
-- Mode & Criteria defaults
-  - Duplicates: algorithm fixed to BLAKE3 (read-only label)
-  - Similarity: algorithm dropdown default pHash; Degree default 90 (UI 0–100)
-- Scope/Direction defaults
-  - Scope default: Two Pools
-  - Direction default: A→B, auto-selected when both pools validate; other directions off initially
-- Patterns and case (UX note)
-- Patterns are glob (gitignore-style) and evaluated relative to each pool root
-- Case handling is OS-aware: case-insensitive on Windows; case-sensitive on POSIX
-- Extension filter matching is case-insensitive on all operating systems
-- Hidden excluded via toggle; not via user patterns
-- Path validation (UX note)
-- Save/Run buttons remain disabled while any required pool path is missing or unreadable
+### Migration from Key-Value to Structured
 
-### 13B.SA Set A initial-state defaults overlay (Option A)
+The new GUI replaces the key-value editor with a structured form that:
+- Provides appropriate controls for each setting type (dropdowns, checkboxes, sliders)
+- Ensures setting compatibility through UI constraints
+- Offers better user experience with visual grouping and labels
+- Maintains backward compatibility through data migration
+- **Ensures all text content is selectable and copyable**
 
-Authoritative initial UI defaults (encode verbatim)
-- Initial mode = "duplicates"
-- Pool A inputs enabled (empty by default)
-- Pool B inputs enabled from the start; Direction radios remain disabled until both Pool A and Pool B validate
-- Single-pool clustering default = unchecked
-- Save/Run disabled until Pool A path is valid and profile passes validation
-- When both pools validate and scope.kind="two_pool", Direction radios enable with A_TO_B preselected
-
-Capabilities consumed from validator (see [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1))
-- capabilities.can_run
-- capabilities.can_enable_direction_controls
-- capabilities.can_enable_degree_controls
-- capabilities.required_pools
-- capabilities.can_save
-
-13B.1 Layout and Sections
-- Pools Panel
-  - Pool A (always present)
-  - Pool B (visible when Scope set to two-pool)
-- Mode & Criteria Panel
-  - Mode: Duplicates vs Similarity
-  - Criteria: Algorithm and Degree (as applicable)
-- Scope/Direction Panel
-  - Single-pool clustering (within A)
-  - Two-pool directions: A→B, B→A, A without matches in B, B without matches in A
-- Validation & Summary Panel
-  - Inline, non-blocking hints
-  - Resolved configuration preview (normalized view)
-  - Error/Warning list
-
-13B.2 Widget Mapping (controls)
-- Pools Panel (per Pool)
-  - Root path: [Browse…] file/folder chooser + read-only path field
-  - Recurse: checkbox (default checked)
-  - Max depth: numeric (integer ≥ 0; 0 = unlimited)
-  - Follow symlinks: checkbox (default unchecked)
-  - Include hidden: checkbox (default unchecked)
-  - Include patterns: multiline text area (semicolon or newline separated; default **/*; relative to root)
-  - Exclude patterns: multiline text area
-  - File-type filters: tokens input, preselected [.jpg .jpeg .png .webp .tiff .bmp .gif .heic .heif]
-  - Optional constraints:
-    - Size: min/max bytes (integers; allow empty)
-    - Date: min/max ISO date-time
-- Mode & Criteria Panel
-  - Mode selector: radio buttons
-    - ● Duplicates (exact; fixed algorithm BLAKE3; no degree)
-    - ○ Similarity (pHash with Degree)
-  - Algorithm selector:
-    - Duplicates: read-only label "BLAKE3 (fixed)"
-    - Similarity: dropdown (present but fixed to "pHash" in v1; future-proofing)
-  - Degree input (Similarity only):
-    - Numeric input 0–100 (integer)
-    - Slider 0–100, synchronized with numeric input
-    - Default: 90
-    - Help text: "UI degree 0–100 is normalized to [0.0..1.0] internally"
-    - Package A specifics:
-      - Degree formula (64-bit pHash): degree_ui = round(100 * (1 - d/64)) where d is the Hamming distance
-      - Match rule: a match requires degree_ui ≥ threshold_ui
-      - Normalization to model: degree_normalized = threshold_ui / 100.0 (see [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md))
-- Scope/Direction Panel
-  - Scope switch: radio buttons
-    - ● Single Pool (cluster within A)
-    - ○ Two Pools (compare A and B)
-  - Direction (Two Pools only; visible when both pools valid):
-    - A→B (default selection when enabled)
-    - B→A
-    - A without matches in B
-    - B without matches in A
-- Validation & Summary Panel
-  - Inline hints under fields (red text for errors, amber for warnings)
-  - Save/Run buttons disabled until validator returns is_valid = true
-  - Resolved configuration preview (read-only JSON-like view)
-  - Button: [Validate] triggers a full pass and updates hints (non-blocking)
-  - Button: [Preview Effective Paths] launches the preview dialog (cap 100 items per pool)
-
-13B.3 Progressive enable/disable logic (validator-driven)
-- The validator is the single source of truth (see [src/pk_py_lib/gui/settings_manager/validators.py](src/pk_py_lib/gui/settings_manager/validators.py:1)); GUI listens to changes, evaluates, normalizes, and updates states.
-- General rules
-  - Save/Run disabled when is_valid = false (any error)
-  - Direction controls enabled only when:
-    - Scope = Two Pools AND Pool A valid AND Pool B valid
-  - Degree controls enabled only when Mode = Similarity
-  - Algorithm control is read-only or preselected per mode (BLAKE3 for duplicates, pHash for similarity)
-- Examples by scenario
-  - Single-pool duplicates (A only):
-    - Enabled: A path fields, Include/Exclude, Recurse, Max depth, Filters
-    - Disabled/Hidden: B controls, Direction controls, Degree controls
-    - Save/Run: enabled when A is valid
-  - Single-pool similarity (A only):
-    - Enabled: A path fields + Degree controls
-    - Disabled/Hidden: B controls, Direction controls
-  - Two-pool duplicates:
-    - Enabled: A + B path fields, Direction controls
-    - Disabled/Hidden: Degree controls
-  - Two-pool similarity:
-    - Enabled: A + B path fields, Direction controls, Degree controls
-
-13B.4 Validation UX and messaging
-- Inline hints appear below the specific control:
-  - Missing path: "This path does not exist or is inaccessible"
-  - Pattern compile error: "One or more patterns are invalid"
-  - Degree out of range: "Degree must be between 0 and 100"
-  - Duplicates with degree present: "Degree is not allowed in Duplicates mode"
-- Summary pane lists:
-  - Errors (block Save/Run)
-  - Warnings (do not block, but still show amber)
-- Save and Run remain disabled until no errors remain. Warnings leave them enabled.
-- The UI preserves all user input as typed (never clears fields on error).
-- See error semantics and UI mappings in [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md).
-
-13B.5 State and flow diagrams (ASCII)
-
-Single-pool flows
-```
-┌───────────────┐      ┌───────────────┐
-│  Pool A valid │ ───▶ │  Mode: Dupes  │ ───▶ Cluster within A (no Degree)
-└───────────────┘      └───────────────┘
-          │
-          ▼
-     ┌───────────────┐
-     │ Mode: Similar │ ───▶ Cluster within A at Degree (UI 0–100 → internal 0..1)
-     └───────────────┘
-```
-
-Two-pool flows
-```
-        ┌───────────────┐
-        │ A & B valid   │
-        └──────┬────────┘
-               ▼
-     ┌─────────────────────┐
-     │  Direction choice   │
-     ├─────────┬───────────┤
-     │ A→B     │ B→A       │  (matches)
-     ├─────────┼───────────┤
-     │ A∖B     │ B∖A       │  (without matches)
-     └─────────┴───────────┘
-         │            │
-         ▼            ▼
-  Mode: Duplicates  Mode: Similarity (+ Degree)
-```
-
-### 13B.5a Scenario diagrams (initial → valid → enablement → Save/Run)
-
-Single-pool duplicates (A only)
-```
-Initial: Mode=duplicates; Scope=single_pool; A path empty; Save/Run disabled
-→ User selects A.root_path
-→ Validator: A invalid? show hint; else A valid
-→ Controls: Direction hidden; Degree hidden
-→ Save/Run: enabled when A valid
-```
-
-Single-pool similarity (A only)
-```
-Initial: Mode=similarity; Scope=single_pool; Degree=90; Save/Run disabled
-→ User selects A.root_path
-→ Validator: A valid
-→ Controls: Degree enabled; Direction hidden
-→ Save/Run: enabled when A valid
-```
-
-Two-pool duplicates (A and B)
-```
-Initial: Mode=duplicates; Scope=two_pool; Direction controls disabled; Save/Run disabled
-→ User selects A.root_path (valid) and B.root_path (valid)
-→ Validator: A valid AND B valid
-→ Controls: Direction controls enabled; default A→B selected
-→ Save/Run: enabled
-```
-
-Two-pool similarity with direction toggles (A and B)
-```
-Initial: Mode=similarity; Scope=two_pool; Degree=90; Direction controls disabled; Save/Run disabled
-→ User selects A.root_path (valid) and B.root_path (valid)
-→ Controls: Degree enabled; Direction enabled with A→B selected
-→ Save/Run: enabled
-```
-
-13B.6 Resolved configuration preview (normalized view)
-- Purpose: Show exactly what will be sent to the engine/API, with normalized fields.
-- Content example (read-only view):
-```
-{
-  "mode": "similarity",
-  "criteria": {
-    "algorithm": "pHash",
-    "degree_ui": 90,
-    "degree_normalized": 0.90,
-    "phash": { "hash_size": 8 }
-  },
-  "scope": { "kind": "two_pool", "direction": "A_TO_B" },
-  "output": { "mode": "report_only" },
-  "pools": {
-    "A": { "root_path": "D:/Reference", "recurse": true, "include": ["**/*.jpg"] },
-    "B": { "root_path": "F:/Target", "recurse": true, "include": ["**/*.jpg"] }
-  }
-}
-```
-- For Duplicates, algorithm is "blake3" and degree_normalized is omitted.
-- Preview includes (exact fields and formatting):
-  - mode: "duplicates" or "similarity"
-  - criteria: algorithm; degree_ui (integer 0–100 in UI units); degree_normalized (0.0–1.0, two decimals shown in UI preview); phash.hash_size when algorithm is pHash
-  - scope: kind; direction token when kind="two_pool" (A_TO_B by default when enabled)
-  - output: mode
-  - pools: A and B objects with all defaults applied and omitted inputs filled (recurse=true; max_depth=0; include_hidden=false; follow_symlinks=false; include=["**/*"]; exclude=[]; type_filters=[".jpg",".jpeg",".png",".webp",".tiff",".bmp",".gif",".heic",".heif"])
-  - capabilities: can_run; can_enable_direction_controls; can_enable_degree_controls; required_pools
-  - visibility flags: e.g., show_degree=true only in Similarity mode
-- The preview renders the validator-normalized view and capability flags returned by the validator; see [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md) and [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md).
-
-13B.7 Validation matrix (concise; UI enablement)
-- Single-pool × Duplicates
-  - Required: Pool A valid
-  - Degree: disabled; Algorithm: BLAKE3 (fixed)
-  - Direction: hidden
-- Single-pool × Similarity
-  - Required: Pool A valid; Degree 0–100 required
-  - Direction: hidden
-- Two-pool × Duplicates
-  - Required: Pools A and B valid; Direction required
-  - Degree: disabled; Algorithm: BLAKE3 (fixed)
-- Two-pool × Similarity
-  - Required: Pools A and B valid; Degree 0–100 required; Direction required
-
-13B.8 Wiring to the centralized validator
-- The dialog/controller emits a "draft profile" JSON (UI shape) and receives a ValidationReport with:
-  - is_valid: bool
-  - errors: [{path, message, code}]
-  - warnings: [{path, message, code}]
-  - normalized: profile-normalized view (degree_normalized computed; defaults applied)
-- Source of truth:
-  - Validator API (design reference) [src/pk_py_lib/gui/settings_manager/validators.py](src/pk_py_lib/gui/settings_manager/validators.py:1)
-  - Degree helpers (design reference) [src/pk_py_lib/core/utils/thresholds.py](src/pk_py_lib/core/utils/thresholds.py:1)
-- GUI enables/disables controls and buttons based on is_valid, and renders "normalized" into the Resolved configuration preview.
-
-13B.9 Acceptance criteria (UI for Option A)
-- Controls render as specified for Pools, Mode & Criteria, Scope/Direction.
-- Degree input appears only in Similarity mode and enforces 0–100.
-- Direction radios appear only when two pools are valid; single-pool shows "cluster within A".
-- Inline validation hints appear immediately; Save/Run disabled until valid.
-- Resolved configuration preview shows normalized Degree and fixed algorithms per Mode.
-- Report-only output is clearly labeled; no destructive controls appear in Option A.
-
-### 13B.10 Cross-references and terminology
-- Terms used consistently: Pool A, Pool B, Mode, Degree, Direction, single_pool_clustering
-- Canonical defaults and schema are defined in [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md); UI enable/disable follows validator behaviors in [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md).
-- Error and validation behaviors: [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md).
-- API capabilities consumed by this UI: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md).
-- Canonical decision reference: [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md).
+### Cross-References
+- Data Model: [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md)
+- API Specifications: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)
+- Technical Architecture: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
