@@ -253,3 +253,149 @@ class SettingsManagerController:
 
         # 4) Return latest
         return OpResult.from_api(self.api.get_profile(profile_id))
+
+    # -------------------------------------------------------------------------
+    # Structured (JSON) profile helpers for the GUI (Option A)
+    # -------------------------------------------------------------------------
+    def create_structured_profile(self, profile_json: Dict[str, Any], make_active: bool = False) -> OpResult[Dict[str, Any]]:
+        """
+        Create a new JSON-format (structured) profile.
+
+        Behavior:
+        - Passes name/description at top-level to the API
+        - Sends json_data=profile_json
+        - After create success, aligns json_data['id'] with the DB id by issuing a follow-up update
+        - Sanitizes json_data to ensure schema-required types (e.g., description is a string) and fills generated fields
+        """
+        try:
+            # Defensive copy and sanitization
+            payload = dict(profile_json or {})
+
+            # Ensure name/description are strings (no None)
+            name = str((payload.get("name") or "")).strip()
+            desc = payload.get("description")
+            desc = "" if desc is None else str(desc)
+
+            payload["name"] = name
+            payload["description"] = desc
+
+            # Add generated fields required by schema if missing
+            from uuid import uuid4
+            from datetime import datetime, timezone
+
+            now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            if not payload.get("id"):
+                payload["id"] = str(uuid4())
+            payload.setdefault("created_at", now)
+            payload.setdefault("updated_at", now)
+            payload.setdefault("profile_version", "1.0.0")
+            payload.setdefault("schema_version", "1.0")
+
+            # Initial create
+            resp = self.api.create(name=name, description=desc, make_active=make_active, json_data=payload)
+            if not resp.success or not resp.data:
+                return OpResult.from_api(resp)
+
+            created = resp.data
+            new_id = created.get("id")
+            if not new_id:
+                return OpResult(success=False, message="Create returned no id", code=ErrorCodes.UNKNOWN_ERROR.value)
+
+            # Align json_data.id with DB id if needed
+            try:
+                if payload.get("id") != new_id:
+                    payload["id"] = new_id
+                    # Refresh updated_at for alignment update
+                    payload["updated_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                    upd = self.api.update(profile_id=new_id, name=name, description=desc, json_data=payload)
+                    if not upd.success:
+                        # Non-fatal; return the created profile
+                        return OpResult.from_api(resp)
+                    return OpResult.from_api(upd)
+            except Exception:
+                # Non-fatal alignment failure
+                return OpResult.from_api(resp)
+            return OpResult.from_api(resp)
+        except Exception as e:
+            return OpResult(success=False, message=str(e), code=ErrorCodes.UNKNOWN_ERROR.value)
+
+    def update_structured_profile(self, profile_id: str, profile_json: Dict[str, Any]) -> OpResult[Dict[str, Any]]:
+        """
+        Update an existing JSON-format (structured) profile.
+
+        Behavior:
+        - Extracts name and description from profile_json and passes via API
+        - Ensures json_data['id'] == profile_id for schema consistency
+        - Sanitizes json_data to avoid None for string fields and fill required generated fields if absent
+        """
+        try:
+            # Read current to preserve created_at and defaults where appropriate
+            existing = self.api.get_profile(profile_id)
+            if not existing.success or not existing.data:
+                return OpResult.from_api(existing)
+
+            current = existing.data
+            cur_json = dict(current.get("json_data") or {})
+
+            # Build payload and sanitize
+            payload = dict(profile_json or {})
+            name = str((payload.get("name") or current.get("name", ""))).strip()
+            desc = payload.get("description", current.get("description", ""))
+            desc = "" if desc is None else str(desc)
+
+            payload["id"] = profile_id
+            payload["name"] = name
+            payload["description"] = desc
+
+            # Preserve or set generated fields
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            # Keep created_at if present; otherwise fallback to cur_json or current
+            payload.setdefault("created_at", cur_json.get("created_at") or current.get("created_at") or now)
+            # updated_at reflects this update
+            payload["updated_at"] = now
+            payload.setdefault("profile_version", cur_json.get("profile_version") or "1.0.0")
+            payload.setdefault("schema_version", cur_json.get("schema_version") or "1.0")
+
+            resp = self.api.update(profile_id=profile_id, name=name, description=desc, json_data=payload)
+            return OpResult.from_api(resp)
+        except Exception as e:
+            return OpResult(success=False, message=str(e), code=ErrorCodes.UNKNOWN_ERROR.value)
+
+    def duplicate_structured_profile(
+        self,
+        source_profile_id: str,
+        new_name: str,
+        description: Optional[str] = None,
+        make_active: bool = False
+    ) -> OpResult[Dict[str, Any]]:
+        """
+        Duplicate a profile in JSON format when possible.
+
+        Strategy:
+        - If source is JSON format: fetch it, copy its json_data, override name/description,
+          clear/replace embedded id, create new via API, then align json_data.id with DB id.
+        - Else (legacy): fall back to API.duplicate, then rename per new_name.
+        """
+        try:
+            src = self.api.get_profile(source_profile_id)
+            if not src.success or not src.data:
+                return OpResult.from_api(src)
+
+            src_data = src.data
+            if src_data.get("format") == "json" and "json_data" in src_data:
+                # Structured duplicate
+                payload = dict(src_data.get("json_data") or {})
+                payload["name"] = new_name
+                payload["description"] = description or ""
+                # Remove or reset id so the create path generates a new one
+                payload.pop("id", None)
+
+                created = self.create_structured_profile(payload, make_active=make_active)
+                return created
+            else:
+                # Legacy duplicate fallback
+                dup = self.api.duplicate(source_profile_id=source_profile_id, new_name=new_name, description=description, make_active=make_active)
+                return OpResult.from_api(dup)
+        except Exception as e:
+            return OpResult(success=False, message=str(e), code=ErrorCodes.UNKNOWN_ERROR.value)

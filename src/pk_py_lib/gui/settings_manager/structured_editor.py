@@ -309,7 +309,7 @@ class StructuredProfileEditorWidget(QWidget):
         """Update current_profile dict from UI values."""
         profile = {
             "name": self.inp_name.text().strip(),
-            "description": self.inp_description.toPlainText().strip() or None,
+            "description": self.inp_description.toPlainText().strip(),
             "pools": {
                 "A": {
                     "root_path": self.inp_pool_a_path.text().strip(),
@@ -350,18 +350,87 @@ class StructuredProfileEditorWidget(QWidget):
 
         self._current_profile = profile
 
+    def _get_complete_profile(self, for_validation: bool = False) -> Dict[str, Any]:
+        """
+        Get the current profile with all required generated fields added.
+        
+        Parameters
+        ----------
+        for_validation : bool
+            If True, normalize the profile to fill in defaults for validation
+            If False, return the profile with only generated fields added
+            
+        Returns
+        -------
+        Dict[str, Any]
+            Complete profile ready for validation or saving
+        """
+        profile = self._current_profile.copy()
+        
+        # Add generated fields that are required by schema but not user-editable
+        if not self._original_profile:  # New profile
+            from uuid import uuid4
+            from datetime import datetime, timezone
+            
+            profile.setdefault("id", str(uuid4()))
+            now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            profile.setdefault("created_at", now)
+            profile.setdefault("updated_at", now)
+        else:  # Existing profile
+            profile.setdefault("id", self._original_profile.get("id"))
+            profile.setdefault("created_at", self._original_profile.get("created_at"))
+            profile.setdefault("updated_at", self._original_profile.get("updated_at"))
+        
+        profile.setdefault("profile_version", "1.0.0")
+        profile.setdefault("schema_version", "1.0")
+        
+        if for_validation:
+            # Use normalization to fill in all other defaults for validation
+            try:
+                return normalize_settings(profile)
+            except Exception as e:
+                raise ValueError(f"Normalization error: {e}")
+        
+        return profile
+
     def _validate_profile(self) -> None:
         """Validate the current profile and update validation status."""
-        if not self._current_profile or "name" not in self._current_profile:
+        if not self._current_profile:
             self.lbl_validation.setText("Profile incomplete")
             return
+            
+        # Check required user-editable fields before schema validation
+        name = self._current_profile.get("name", "").strip()
+        if not name:
+            self.lbl_validation.setText("Profile incomplete: name is required")
+            return
+            
+        pool_a = self._current_profile.get("pools", {}).get("A", {})
+        pool_a_path = pool_a.get("root_path", "").strip()
+        if not pool_a_path:
+            self.lbl_validation.setText("Profile incomplete: Pool A path is required")
+            return
+            
+        # For two-pool scope, check Pool B path
+        scope = self._current_profile.get("scope", {})
+        if scope.get("kind") == "two_pool":
+            pool_b = self._current_profile.get("pools", {}).get("B", {})
+            if pool_b is None:
+                self.lbl_validation.setText("Profile incomplete: Pool B configuration is required for two-pool scope")
+                return
+            pool_b_path = pool_b.get("root_path", "").strip()
+            if not pool_b_path:
+                self.lbl_validation.setText("Profile incomplete: Pool B path is required for two-pool scope")
+                return
 
-        # Add required fields for validation
-        validation_profile = self._current_profile.copy()
-        validation_profile.setdefault("id", "temp-validation-id")
-        validation_profile.setdefault("created_at", "2025-01-01T00:00:00Z")
-        validation_profile.setdefault("updated_at", "2025-01-01T00:00:00Z")
-
+        # Get complete profile with generated fields for validation
+        try:
+            validation_profile = self._get_complete_profile(for_validation=True)
+        except Exception as e:
+            self.lbl_validation.setText(str(e))
+            return
+        
+        # Validate the complete profile
         is_valid, errors = validate_settings_schema(validation_profile)
         if is_valid:
             self.lbl_validation.setText("✓ Valid configuration")
@@ -421,7 +490,7 @@ class StructuredProfileEditorWidget(QWidget):
 
         # Populate UI
         self.inp_name.setText(profile.get("name", ""))
-        self.inp_description.setPlainText(profile.get("description", ""))
+        self.inp_description.setPlainText(profile.get("description", "") or "")
 
         # Pool A
         pools = profile.get("pools", {})
@@ -469,15 +538,46 @@ class StructuredProfileEditorWidget(QWidget):
 
     def gather_changes(self) -> Dict[str, Any]:
         """Return the current profile data for saving."""
-        return self._current_profile.copy()
-
+        # Include generated/schema-required fields so downstream API has a complete payload
+        return self._get_complete_profile(for_validation=False)
     def get_validation_status(self) -> Tuple[bool, list]:
-        """Return validation status and errors."""
-        validation_profile = self._current_profile.copy()
-        validation_profile.setdefault("id", "temp-validation-id")
-        validation_profile.setdefault("created_at", "2025-01-01T00:00:00Z")
-        validation_profile.setdefault("updated_at", "2025-01-01T00:00:00Z")
-        
+        """
+        Return schema validation status and errors for the current form state.
+
+        This applies early UI gating for required user-provided fields before
+        running schema validation on a complete, normalized profile (with
+        generated fields included).
+
+        Gating mirrors _validate_profile():
+        - name must be non-empty
+        - Pool A root_path must be non-empty
+        - If scope.kind == 'two_pool', Pool B root_path must be non-empty
+        """
+        # Early gating
+        if not self._current_profile:
+            return False, ["Profile incomplete"]
+        name = self._current_profile.get("name", "").strip()
+        if not name:
+            return False, ["Profile incomplete: name is required"]
+
+        pool_a = self._current_profile.get("pools", {}).get("A", {})
+        pool_a_path = (pool_a or {}).get("root_path", "").strip()
+        if not pool_a_path:
+            return False, ["Profile incomplete: Pool A path is required"]
+
+        scope = self._current_profile.get("scope", {})
+        if scope.get("kind") == "two_pool":
+            pool_b = self._current_profile.get("pools", {}).get("B", {})
+            pool_b_path = (pool_b or {}).get("root_path", "").strip()
+            if not pool_b_path:
+                return False, ["Profile incomplete: Pool B path is required for two-pool scope"]
+
+        # Build complete, normalized profile for schema validation
+        try:
+            validation_profile = self._get_complete_profile(for_validation=True)
+        except Exception as e:
+            return False, [str(e)]
+
         return validate_settings_schema(validation_profile)
 
 

@@ -56,6 +56,7 @@ from .structured_editor import StructuredProfileEditorWidget
 from .controller import SettingsManagerController
 from ...api import ErrorCodes
 from ..utils.messages import show_selectable_error, show_selectable_info
+from ...core.settings_schema import create_default_profile
 
 
 class _NamePromptDialog(QDialog):
@@ -283,7 +284,46 @@ class StructuredSettingsManagerDialog(QDialog):
         if not resp.success or not resp.data:
             self._show_error("Failed to load profile", resp.message, resp.code)
             return
-        self.editor.load_profile(resp.data)
+        # Extract JSON profile payload when available; otherwise synthesize a defaults-based JSON
+        p = resp.data
+        data: Dict[str, Any]
+        try:
+            if p.get("format") == "json" and isinstance(p.get("json_data"), dict):
+                data = dict(p.get("json_data") or {})
+                # Align identifiers and timestamps with DB metadata
+                data["id"] = p.get("id") or data.get("id")
+                # Ensure name/description present and typed as strings
+                data["name"] = p.get("name") or data.get("name") or ""
+                desc = p.get("description") if p.get("description") is not None else data.get("description", "")
+                data["description"] = "" if desc is None else str(desc)
+                # Preserve created/updated from DB if not present in json
+                if "created_at" not in data and p.get("created_at"):
+                    data["created_at"] = p["created_at"]
+                if "updated_at" not in data and p.get("updated_at"):
+                    data["updated_at"] = p["updated_at"]
+            else:
+                # Legacy profile or missing json_data — build a default JSON payload mapped to DB metadata
+                data = create_default_profile(p.get("name", ""), p.get("description") or "")
+                # Align to DB identifiers and timestamps for consistency
+                if p.get("id"):
+                    data["id"] = p["id"]
+                if p.get("created_at"):
+                    data["created_at"] = p["created_at"]
+                if p.get("updated_at"):
+                    data["updated_at"] = p["updated_at"]
+        except Exception as e:
+            # Fallback to minimal payload if something goes wrong; keep UI operable
+            data = {
+                "id": p.get("id", ""),
+                "name": p.get("name", ""),
+                "description": p.get("description") or "",
+                "pools": {"A": {"root_path": ""}},
+                "mode": "duplicates",
+                "criteria": {"algorithm": "blake3"},
+                "scope": {"kind": "single_pool"},
+                "output": {"mode": "report_only"},
+            }
+        self.editor.load_profile(data)
 
     # --------------------------------------------------------------- Events ----
     def _on_search_changed(self, text: str) -> None:
@@ -336,30 +376,8 @@ class StructuredSettingsManagerDialog(QDialog):
             if not v.success:
                 dlg.set_error(v.message or "Invalid name")
                 continue
-            # Create a default structured profile
-            default_profile = {
-                "name": name,
-                "description": None,
-                "pools": {
-                    "A": {
-                        "root_path": "",
-                        "recurse": True,
-                        "follow_symlinks": False,
-                        "include_hidden": False
-                    }
-                },
-                "mode": "duplicates",
-                "criteria": {
-                    "algorithm": "blake3"
-                },
-                "scope": {
-                    "kind": "single_pool"
-                },
-                "output": {
-                    "mode": "report_only"
-                }
-            }
-            c = self.controller.create_structured_profile(default_profile, make_active=False)
+            # Create a placeholder profile without json_data; user will fill details in editor
+            c = self.controller.create_profile(name=name, description="", make_active=False)
             if c.success and c.data:
                 self._refresh_profiles(select_active=False, preserve_selection=False)
                 # Select newly created by id
