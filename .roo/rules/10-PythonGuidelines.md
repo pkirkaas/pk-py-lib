@@ -3,6 +3,7 @@
 - It uses the latest version of all python packages/libraries
 - It uses PDM to implement localized environments per project
 - It uses .venv to implement virtual environments 
+- All python packages & libraries installed for this application should be installed by pdm in the .venv, not globally with pip
 
 @pyproject.toml 
 
