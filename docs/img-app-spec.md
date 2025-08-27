@@ -17,7 +17,7 @@
 
 Scope
 - Profiles define:
-  - Pools: A (required) and B (required only for two-pool scope), each with root_path, include/exclude patterns, recurse, max_depth, type filters, optional size/date constraints.
+  - Pools: A (required) and B (required only for two-pool scope), each with paths array (directories or files), include/exclude patterns, recurse, max_depth, type filters, optional size/date constraints.
   - Mode: "duplicates" (exact) or "similarity".
   - Criteria:
     - Duplicates: fixed algorithm "blake3" (no degree/threshold).
@@ -58,11 +58,11 @@ Canonical decision (authoritative): see [docs/roo/canonical-decisions.md](docs/r
 
 User story: Single-pool duplicates (within A)
 - Preconditions
-  - Pool A root_path exists and is readable
+  - Pool A has at least one valid path (directory or file) that exists and is readable
   - Scope.kind = single_pool
   - Mode = duplicates (algorithm fixed BLAKE3)
 - Trigger
-  - User sets Pool A path and clicks Run
+  - User sets Pool A paths and clicks Run
 - Main flow
   - Validator normalizes profile with Balanced defaults and confirms is_valid=true; capability flags allow can_run=true
   - Engine clusters files within Pool A by BLAKE3 equality; returns report-only results
@@ -73,11 +73,11 @@ User story: Single-pool duplicates (within A)
 
 User story: Single-pool similarity (within A, degree threshold)
 - Preconditions
-  - Pool A root_path exists and is readable
+  - Pool A has at least one valid path (directory or file) that exists and is readable
   - Scope.kind = single_pool
   - Mode = similarity; Degree UI in [0..100] (default 90)
 - Trigger
-  - User sets Pool A path and degree threshold and clicks Run
+  - User sets Pool A paths and degree threshold and clicks Run
 - Main flow
   - Validator applies defaults, computes degree_normalized=degree_ui/100, and confirms is_valid=true; can_run=true
   - Engine groups similar images within Pool A where similarity ≥ degree_normalized
@@ -87,7 +87,7 @@ User story: Single-pool similarity (within A, degree threshold)
 
 User story: Two-pool duplicates (A→B matches)
 - Preconditions
-  - Pools A and B root_path exist and are readable
+  - Pools A and B have at least one valid path (directory or file) that exists and is readable
   - Scope.kind = two_pool; Direction A_TO_B (default when enabled)
   - Mode = duplicates (algorithm fixed BLAKE3)
 - Trigger
@@ -101,7 +101,7 @@ User story: Two-pool duplicates (A→B matches)
 
 User story: Two-pool similarity (A→B matches; “A without matches in B”)
 - Preconditions
-  - Pools A and B root_path exist and are readable
+  - Pools A and B have at least one valid path (directory or file) that exists and is readable
   - Scope.kind = two_pool; Direction either A_TO_B (matches) or A_WITHOUT_IN_B (non-matches)
   - Mode = similarity; Degree UI in [0..100] (default 90)
 - Trigger
@@ -139,8 +139,8 @@ Checklist (cross-referenced)
 ### 5A.3 Feature details
 
 Pools
-- A and B pools each require a valid root_path
-- Include/Exclude semantics: gitignore-like glob patterns evaluated relative to each pool’s root_path; multiline input maps to string arrays
+- A and B pools each require at least one valid path (directory or file)
+- Include/Exclude semantics: gitignore-like glob patterns evaluated relative to each path in the pool; multiline input maps to string arrays
 - Traversal defaults: recurse=true; max_depth=0 means unlimited; include_hidden=false; follow_symlinks=false
 - File-type defaults: images only — jpg, jpeg, png, webp, tiff, bmp, gif, heic, heif (case-insensitive matching)
 
@@ -157,7 +157,7 @@ Direction & scope
 ### 5A.4 Non-functional requirements (v1)
 
 - Execution is report-only; no file mutations
-- Safety and gating: Save/Run blocked when required pool paths are missing or unreadable; direction gated until both pools validate
+- Safety and gating: Save/Run blocked when required pool paths are missing or unreadable; direction gated until both pools have valid paths
 - OS-aware matching: pattern case is OS-aware (Windows insensitive; POSIX sensitive); extension filter matching is case-insensitive on all OS
 - Correctness over performance; performance optimizations are out of scope for v1
 - Logging and diagnostics (namespace and expectations) follow [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
@@ -173,8 +173,8 @@ Direction & scope
 ### 5A.6 Glossary and references
 
 Glossary (canonical terms)
-- Pool A: primary/reference pool; always required
-- Pool B: secondary/target pool; required for two-pool scope
+- Pool A: primary/reference pool; always requires at least one valid path
+- Pool B: secondary/target pool; requires at least one valid path for two-pool scope
 - Mode: duplicates (BLAKE3 identity) or similarity (pHash threshold)
 - Degree (UI vs normalized): Degree UI is 0–100; normalized degree is degree_ui/100 ∈ [0.0..1.0]
 - Direction: A_TO_B, B_TO_A, A_WITHOUT_IN_B, B_WITHOUT_IN_A (two-pool only)
@@ -323,10 +323,10 @@ End of synchronized specification for legacy docs branch.
 Authoritative initial UI defaults (encode verbatim)
 - Initial mode: "duplicates"
 - Pool A inputs enabled (empty by default)
-- Pool B inputs enabled from the start; Direction radios remain disabled until both Pool A and Pool B validate
+- Pool B inputs enabled from the start; Direction radios remain disabled until both Pool A and Pool B have valid paths
 - single_pool_clustering: unchecked by default
-- Save/Run disabled until Pool A path is valid and the profile passes validation
-- When both pools validate and scope.kind="two_pool", Direction radios enable with A_TO_B preselected
+- Save/Run disabled until Pool A has valid paths and the profile passes validation
+- When both pools have valid paths and scope.kind="two_pool", Direction radios enable with A_TO_B preselected
 
 Capabilities consumed (validator → GUI)
 - capabilities.can_run
@@ -346,7 +346,7 @@ Cross-references
 - Error cases tied to capabilities (direction gated; run blocked without both pools valid): [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md:1564)
 
 Acceptance overlay (verifiable)
-- Direction radios disabled until both pools validate; when enabled the default selection is A_TO_B
+- Direction radios disabled until both pools have valid paths; when enabled the default selection is A_TO_B
 - Degree controls disabled in duplicates; enabled in similarity (UI 0–100 → internal [0.0..1.0])
-- Save enabled when Pool A valid and profile structurally valid; Run enabled only when all required_pools are valid
+- Save enabled when Pool A has valid paths and profile structurally valid; Run enabled only when all required_pools have valid paths
 - Normalized preview shows algorithm "pHash", degree_ui (with degree_normalized), and scope.direction as per capability state

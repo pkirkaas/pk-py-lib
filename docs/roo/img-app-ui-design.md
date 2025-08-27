@@ -84,7 +84,8 @@ flowchart TD
 
 #### 2. Pools Configuration
 - **Pool A** (Required):
-  - Path input field with browse button (opens directory selector)
+  - Multiple path input field with browse button (opens directory/file selector)
+  - Paths can be directories or individual files
   - Checkboxes: Recurse subdirectories (default: checked), Follow symbolic links, Include hidden files
 - **Pool B** (Optional, enabled for two-pool operations):
   - Same controls as Pool A
@@ -122,15 +123,16 @@ flowchart TD
 4. **Algorithm Dropdown**: Locked to "blake3" for duplicates mode
 
 #### Validation Rules
-1. **Pool A Path**: Must be specified and valid
-2. **Pool B Path**: Required only for two-pool scope, must be valid if specified
+1. **Pool A Paths**: Must have at least one valid path specified
+2. **Pool B Paths**: Required only for two-pool scope, must have valid paths if specified
 3. **Name**: Must be unique and meet pattern requirements
-4. **Mode-specific validation**: 
+4. **Mode-specific validation**:
    - Duplicates mode: No degree allowed
    - Similarity mode: Degree required (0-100)
 
 #### Path Selection
-- Browse buttons open directory selector dialog
+- Browse buttons open directory/file selector dialog (supports multiple selection)
+- Paths can be directories or individual files
 - Paths are validated for existence and readability
 - Recent paths may be suggested based on history
 

@@ -105,7 +105,11 @@ SETTINGS_PROFILE_SCHEMA = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "root_path": {"type": "string", "minLength": 1},
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1
+                },
                 "recurse": {"type": "boolean", "default": True},
                 "max_depth": {"type": "integer", "minimum": 0, "default": 0},
                 "include": {
@@ -142,7 +146,7 @@ SETTINGS_PROFILE_SCHEMA = {
                     }
                 }
             },
-            "required": ["root_path"]
+            "required": ["paths"]
         }
     },
 
@@ -271,22 +275,24 @@ def _validate_custom_rules(profile_data: Dict[str, Any]) -> List[str]:
     """
     errors = []
     
-    # Validate path existence
+    # Validate path existence for multiple paths
     pools = profile_data.get("pools", {})
     pool_a = pools.get("A", {})
     pool_b = pools.get("B", {})
     
-    # Check Pool A path
-    if "root_path" in pool_a:
-        path_a = Path(pool_a["root_path"])
-        if not path_a.exists() or not path_a.is_dir():
-            errors.append(f"Pool A path does not exist or is not a directory: {pool_a['root_path']}")
+    # Check Pool A paths
+    if "paths" in pool_a:
+        for i, path_str in enumerate(pool_a["paths"]):
+            path = Path(path_str)
+            if not path.exists():
+                errors.append(f"Pool A path does not exist: {path_str}")
     
-    # Check Pool B path if present
-    if "root_path" in pool_b:
-        path_b = Path(pool_b["root_path"])
-        if not path_b.exists() or not path_b.is_dir():
-            errors.append(f"Pool B path does not exist or is not a directory: {pool_b['root_path']}")
+    # Check Pool B paths if present
+    if "paths" in pool_b:
+        for i, path_str in enumerate(pool_b["paths"]):
+            path = Path(path_str)
+            if not path.exists():
+                errors.append(f"Pool B path does not exist: {path_str}")
     
     # Validate scope-direction compatibility
     scope = profile_data.get("scope", {})
@@ -404,7 +410,7 @@ def create_default_profile(name: str, description: Optional[str] = None) -> Dict
         "updated_at": now,
         "pools": {
             "A": {
-                "root_path": "",  # Must be set by user
+                "paths": [],  # Must be set by user
                 "recurse": True,
                 "max_depth": 0,
                 "include": ["**/*"],
@@ -456,27 +462,31 @@ def is_valid_for_save(profile_data: Dict[str, Any]) -> Tuple[bool, List[str]]:
     pools = profile_data.get("pools", {})
     pool_a = pools.get("A", {})
     
-    # Pool A must have a valid path for saving
-    if not pool_a.get("root_path"):
-        errors.append("Pool A must have a root path configured")
+    # Pool A must have at least one valid path for saving
+    if not pool_a.get("paths") or len(pool_a["paths"]) == 0:
+        errors.append("Pool A must have at least one path configured")
         return False, errors
     
-    path_a = Path(pool_a["root_path"])
-    if not path_a.exists() or not path_a.is_dir():
-        errors.append(f"Pool A path does not exist or is not a directory: {pool_a['root_path']}")
-        return False, errors
+    # Validate each path in Pool A
+    for i, path_str in enumerate(pool_a["paths"]):
+        path = Path(path_str)
+        if not path.exists():
+            errors.append(f"Pool A path does not exist: {path_str}")
+            return False, errors
     
     # For two-pool mode, Pool B must also be valid
     if profile_data.get("scope", {}).get("kind") == "two_pool":
         pool_b = pools.get("B", {})
-        if not pool_b.get("root_path"):
-            errors.append("Pool B must have a root path configured for two-pool mode")
+        if not pool_b.get("paths") or len(pool_b["paths"]) == 0:
+            errors.append("Pool B must have at least one path configured for two-pool mode")
             return False, errors
         
-        path_b = Path(pool_b["root_path"])
-        if not path_b.exists() or not path_b.is_dir():
-            errors.append(f"Pool B path does not exist or is not a directory: {pool_b['root_path']}")
-            return False, errors
+        # Validate each path in Pool B
+        for i, path_str in enumerate(pool_b["paths"]):
+            path = Path(path_str)
+            if not path.exists():
+                errors.append(f"Pool B path does not exist: {path_str}")
+                return False, errors
     
     return True, errors
 

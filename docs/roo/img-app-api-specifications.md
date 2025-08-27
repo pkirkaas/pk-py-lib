@@ -1575,8 +1575,8 @@ POST /profiles/validate
     "id": "11111111-2222-3333-4444-555555555555",
     "name": "A→B similar (defaults)",
     "pools": {
-      "A": { "root_path": "D:/Reference" },
-      "B": { "root_path": "F:/Target" }
+      "A": { "paths": ["D:/Reference"] },
+      "B": { "paths": ["F:/Target"] }
     },
     "mode": "similarity",
     "criteria": {},
@@ -1599,9 +1599,9 @@ Response (excerpt):
       "scope": { "kind": "two_pool", "direction": "A_TO_B" },
       "output": { "mode": "report_only" },
       "pools": {
-        "A": { "root_path": "D:/Reference", "recurse": true, "max_depth": 0, "include": ["**/*"], "exclude": [], "follow_symlinks": false, "include_hidden": false,
+        "A": { "paths": ["D:/Reference"], "recurse": true, "max_depth": 0, "include": ["**/*"], "exclude": [], "follow_symlinks": false, "include_hidden": false,
                "type_filters": [".jpg",".jpeg",".png",".webp",".tiff",".bmp",".gif",".heic",".heif"] },
-        "B": { "root_path": "F:/Target",   "recurse": true, "max_depth": 0, "include": ["**/*"], "exclude": [], "follow_symlinks": false, "include_hidden": false,
+        "B": { "paths": ["F:/Target"],   "recurse": true, "max_depth": 0, "include": ["**/*"], "exclude": [], "follow_symlinks": false, "include_hidden": false,
                "type_filters": [".jpg",".jpeg",".png",".webp",".tiff",".bmp",".gif",".heic",".heif"] }
       }
     }
@@ -1700,8 +1700,8 @@ Response
       "scope": { "kind": "two_pool", "direction": "A_TO_B" },
       "output": { "mode": "report_only" },
       "pools": {
-        "A": { "root_path": "D:/Reference", "recurse": true, "include": ["**/*.jpg"], "exclude": [] },
-        "B": { "root_path": "F:/Target", "recurse": true, "include": ["**/*.jpg"], "exclude": [] }
+        "A": { "paths": ["D:/Reference"], "recurse": true, "include": ["**/*.jpg"], "exclude": [] },
+        "B": { "paths": ["F:/Target"], "recurse": true, "include": ["**/*.jpg"], "exclude": [] }
       }
     }
   },
@@ -1922,8 +1922,8 @@ POST /profiles/validate
     "id": "9b0d3f12-0d0a-4a3b-8e0f-4c1d2e3f4a5b",
     "name": "A→B similar (90%)",
     "pools": {
-      "A": { "root_path": "D:/Reference", "recurse": true, "include": ["**/*.jpg"] },
-      "B": { "root_path": "F:/Target", "recurse": true, "include": ["**/*.jpg"] }
+      "A": { "paths": ["D:/Reference"], "recurse": true, "include": ["**/*.jpg"] },
+      "B": { "paths": ["F:/Target"], "recurse": true, "include": ["**/*.jpg"] }
     },
     "mode": "similarity",
     "criteria": { "algorithm": "pHash", "degree_ui": 90 },
@@ -2009,7 +2009,7 @@ Response (excerpt):
       "output": { "mode": "report_only" },
       "pools": {
         "A": {
-          "root_path": "D:/Reference",
+          "paths": ["D:/Reference"],
           "recurse": true,
           "max_depth": 0,
           "include": ["**/*"],
@@ -2033,8 +2033,8 @@ POST /profiles/validate
     "id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
     "name": "A↔B similarity (90%)",
     "pools": {
-      "A": { "root_path": "D:/Reference" },
-      "B": { "root_path": "F:/Target" }
+      "A": { "paths": ["D:/Reference"] },
+      "B": { "paths": ["F:/Target"] }
     },
     "mode": "similarity",
     "criteria": { "algorithm": "pHash", "degree_ui": 90 },
@@ -2069,9 +2069,9 @@ Response (excerpt):
       "scope": { "kind": "two_pool", "direction": "A_TO_B" },
       "output": { "mode": "report_only" },
       "pools": {
-        "A": { "root_path": "D:/Reference", "recurse": true, "max_depth": 0, "include": ["**/*"], "exclude": [], "follow_symlinks": false, "include_hidden": false,
+        "A": { "paths": ["D:/Reference"], "recurse": true, "max_depth": 0, "include": ["**/*"], "exclude": [], "follow_symlinks": false, "include_hidden": false,
                "type_filters": [".jpg",".jpeg",".png",".webp",".tiff",".bmp",".gif",".heic",".heif"] },
-        "B": { "root_path": "F:/Target",   "recurse": true, "max_depth": 0, "include": ["**/*"], "exclude": [], "follow_symlinks": false, "include_hidden": false,
+        "B": { "paths": ["F:/Target"],   "recurse": true, "max_depth": 0, "include": ["**/*"], "exclude": [], "follow_symlinks": false, "include_hidden": false,
                "type_filters": [".jpg",".jpeg",".png",".webp",".tiff",".bmp",".gif",".heic",".heif"] }
       }
     }

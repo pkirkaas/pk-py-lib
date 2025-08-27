@@ -41,6 +41,7 @@ try:
         QMessageBox,
         QSizePolicy,
         QDialog,
+        QDialogButtonBox,
     )
     PYSIDE_AVAILABLE = True
 except Exception:  # pragma: no cover
@@ -61,7 +62,7 @@ from ...core.settings_schema import (
     is_valid_for_run,
     create_default_profile,
 )
-from ..file_selector.widgets import DirectorySelectorWidget
+from ..file_selector.widgets import DirectorySelectorWidget, MultiPathSelectorWidget, PathFilterSpec
 
 
 class StructuredProfileEditorWidget(QWidget):
@@ -130,12 +131,13 @@ class StructuredProfileEditorWidget(QWidget):
         pool_a_group.setLayout(pool_a_layout)
 
         pool_a_path_layout = QHBoxLayout()
-        self.inp_pool_a_path = QLineEdit()
-        self.inp_pool_a_path.setPlaceholderText("Select directory for Pool A")
-        pool_a_path_layout.addWidget(self.inp_pool_a_path)
+        self.inp_pool_a_paths = QPlainTextEdit()
+        self.inp_pool_a_paths.setPlaceholderText("Enter paths for Pool A (one per line)\nOr use Browse to add directories/files")
+        self.inp_pool_a_paths.setMaximumHeight(80)
+        pool_a_path_layout.addWidget(self.inp_pool_a_paths)
         self.btn_pool_a_select = QPushButton("Browse...")
         pool_a_path_layout.addWidget(self.btn_pool_a_select)
-        pool_a_layout.addRow("Root Path:", pool_a_path_layout)
+        pool_a_layout.addRow("Paths:", pool_a_path_layout)
 
         self.chk_pool_a_recurse = QCheckBox("Recurse subdirectories")
         self.chk_pool_a_recurse.setChecked(True)
@@ -155,12 +157,13 @@ class StructuredProfileEditorWidget(QWidget):
         pool_b_group.setLayout(pool_b_layout)
 
         pool_b_path_layout = QHBoxLayout()
-        self.inp_pool_b_path = QLineEdit()
-        self.inp_pool_b_path.setPlaceholderText("Select directory for Pool B")
-        pool_b_path_layout.addWidget(self.inp_pool_b_path)
+        self.inp_pool_b_paths = QPlainTextEdit()
+        self.inp_pool_b_paths.setPlaceholderText("Enter paths for Pool B (one per line)\nOr use Browse to add directories/files")
+        self.inp_pool_b_paths.setMaximumHeight(80)
+        pool_b_path_layout.addWidget(self.inp_pool_b_paths)
         self.btn_pool_b_select = QPushButton("Browse...")
         pool_b_path_layout.addWidget(self.btn_pool_b_select)
-        pool_b_layout.addRow("Root Path:", pool_b_path_layout)
+        pool_b_layout.addRow("Paths:", pool_b_path_layout)
 
         self.chk_pool_b_recurse = QCheckBox("Recurse subdirectories")
         self.chk_pool_b_recurse.setChecked(True)
@@ -248,14 +251,14 @@ class StructuredProfileEditorWidget(QWidget):
         self.inp_description.textChanged.connect(self._on_change)
 
         # Pool A
-        self.inp_pool_a_path.textChanged.connect(self._on_change)
+        self.inp_pool_a_paths.textChanged.connect(self._on_change)
         self.btn_pool_a_select.clicked.connect(lambda: self._select_path("pool_a"))
         self.chk_pool_a_recurse.stateChanged.connect(self._on_change)
         self.chk_pool_a_follow_symlinks.stateChanged.connect(self._on_change)
         self.chk_pool_a_include_hidden.stateChanged.connect(self._on_change)
 
         # Pool B
-        self.inp_pool_b_path.textChanged.connect(self._on_change)
+        self.inp_pool_b_paths.textChanged.connect(self._on_change)
         self.btn_pool_b_select.clicked.connect(lambda: self._select_path("pool_b"))
         self.chk_pool_b_recurse.stateChanged.connect(self._on_change)
         self.chk_pool_b_follow_symlinks.stateChanged.connect(self._on_change)
@@ -274,15 +277,8 @@ class StructuredProfileEditorWidget(QWidget):
         self.cmb_output_mode.currentTextChanged.connect(self._on_change)
 
     def _select_path(self, pool: str) -> None:
-        """Open path selector dialog for the specified pool."""
-        selector = DirectorySelectorWidget(self)
-        if selector.exec() == QDialog.Accepted:
-            selected_path = selector.get_selected_path()
-            if selected_path:
-                if pool == "pool_a":
-                    self.inp_pool_a_path.setText(selected_path)
-                else:
-                    self.inp_pool_b_path.setText(selected_path)
+        """Open multi-path editor dialog for the specified pool."""
+        self._edit_paths(pool)
 
     def _on_mode_changed(self, mode: str) -> None:
         """Handle mode change with conditional UI updates."""
@@ -312,7 +308,7 @@ class StructuredProfileEditorWidget(QWidget):
             "description": self.inp_description.toPlainText().strip(),
             "pools": {
                 "A": {
-                    "root_path": self.inp_pool_a_path.text().strip(),
+                    "paths": [path.strip() for path in self.inp_pool_a_paths.toPlainText().splitlines() if path.strip()],
                     "recurse": self.chk_pool_a_recurse.isChecked(),
                     "follow_symlinks": self.chk_pool_a_follow_symlinks.isChecked(),
                     "include_hidden": self.chk_pool_a_include_hidden.isChecked(),
@@ -330,11 +326,11 @@ class StructuredProfileEditorWidget(QWidget):
             }
         }
 
-        # Add Pool B if path is specified and scope is two_pool
-        pool_b_path = self.inp_pool_b_path.text().strip()
-        if pool_b_path and self.cmb_scope_kind.currentText() == "two_pool":
+        # Add Pool B if paths are specified and scope is two_pool
+        pool_b_paths = [path.strip() for path in self.inp_pool_b_paths.toPlainText().splitlines() if path.strip()]
+        if pool_b_paths and self.cmb_scope_kind.currentText() == "two_pool":
             profile["pools"]["B"] = {
-                "root_path": pool_b_path,
+                "paths": pool_b_paths,
                 "recurse": self.chk_pool_b_recurse.isChecked(),
                 "follow_symlinks": self.chk_pool_b_follow_symlinks.isChecked(),
                 "include_hidden": self.chk_pool_b_include_hidden.isChecked(),
@@ -406,21 +402,21 @@ class StructuredProfileEditorWidget(QWidget):
             return
             
         pool_a = self._current_profile.get("pools", {}).get("A", {})
-        pool_a_path = pool_a.get("root_path", "").strip()
-        if not pool_a_path:
-            self.lbl_validation.setText("Profile incomplete: Pool A path is required")
+        pool_a_paths = pool_a.get("paths", [])
+        if not pool_a_paths:
+            self.lbl_validation.setText("Profile incomplete: Pool A must have at least one path")
             return
             
-        # For two-pool scope, check Pool B path
+        # For two-pool scope, check Pool B paths
         scope = self._current_profile.get("scope", {})
         if scope.get("kind") == "two_pool":
             pool_b = self._current_profile.get("pools", {}).get("B", {})
             if pool_b is None:
                 self.lbl_validation.setText("Profile incomplete: Pool B configuration is required for two-pool scope")
                 return
-            pool_b_path = pool_b.get("root_path", "").strip()
-            if not pool_b_path:
-                self.lbl_validation.setText("Profile incomplete: Pool B path is required for two-pool scope")
+            pool_b_paths = pool_b.get("paths", [])
+            if not pool_b_paths:
+                self.lbl_validation.setText("Profile incomplete: Pool B must have at least one path for two-pool scope")
                 return
 
         # Get complete profile with generated fields for validation
@@ -458,7 +454,7 @@ class StructuredProfileEditorWidget(QWidget):
 
         # Enable/disable Pool B based on scope
         is_two_pool = scope_kind == "two_pool"
-        self.inp_pool_b_path.setEnabled(is_two_pool)
+        self.inp_pool_b_paths.setEnabled(is_two_pool)
         self.btn_pool_b_select.setEnabled(is_two_pool)
         self.chk_pool_b_recurse.setEnabled(is_two_pool)
         self.chk_pool_b_follow_symlinks.setEnabled(is_two_pool)
@@ -495,7 +491,8 @@ class StructuredProfileEditorWidget(QWidget):
         # Pool A
         pools = profile.get("pools", {})
         pool_a = pools.get("A", {})
-        self.inp_pool_a_path.setText(pool_a.get("root_path", ""))
+        paths_a = pool_a.get("paths", [])
+        self.inp_pool_a_paths.setPlainText("\n".join(paths_a))
         self.chk_pool_a_recurse.setChecked(pool_a.get("recurse", True))
         self.chk_pool_a_follow_symlinks.setChecked(pool_a.get("follow_symlinks", False))
         self.chk_pool_a_include_hidden.setChecked(pool_a.get("include_hidden", False))
@@ -503,7 +500,8 @@ class StructuredProfileEditorWidget(QWidget):
         # Pool B
         pool_b = pools.get("B", {})
         if pool_b:
-            self.inp_pool_b_path.setText(pool_b.get("root_path", ""))
+            paths_b = pool_b.get("paths", [])
+            self.inp_pool_b_paths.setPlainText("\n".join(paths_b))
             self.chk_pool_b_recurse.setChecked(pool_b.get("recurse", True))
             self.chk_pool_b_follow_symlinks.setChecked(pool_b.get("follow_symlinks", False))
             self.chk_pool_b_include_hidden.setChecked(pool_b.get("include_hidden", False))
@@ -561,16 +559,16 @@ class StructuredProfileEditorWidget(QWidget):
             return False, ["Profile incomplete: name is required"]
 
         pool_a = self._current_profile.get("pools", {}).get("A", {})
-        pool_a_path = (pool_a or {}).get("root_path", "").strip()
-        if not pool_a_path:
-            return False, ["Profile incomplete: Pool A path is required"]
+        pool_a_paths = (pool_a or {}).get("paths", [])
+        if not pool_a_paths:
+            return False, ["Profile incomplete: Pool A must have at least one path"]
 
         scope = self._current_profile.get("scope", {})
         if scope.get("kind") == "two_pool":
             pool_b = self._current_profile.get("pools", {}).get("B", {})
-            pool_b_path = (pool_b or {}).get("root_path", "").strip()
-            if not pool_b_path:
-                return False, ["Profile incomplete: Pool B path is required for two-pool scope"]
+            pool_b_paths = (pool_b or {}).get("paths", [])
+            if not pool_b_paths:
+                return False, ["Profile incomplete: Pool B must have at least one path for two-pool scope"]
 
         # Build complete, normalized profile for schema validation
         try:
@@ -579,6 +577,55 @@ class StructuredProfileEditorWidget(QWidget):
             return False, [str(e)]
 
         return validate_settings_schema(validation_profile)
+
+
+    def _edit_paths(self, pool: str) -> None:
+        """Open multi-path editor dialog for the specified pool."""
+        # Get current paths from the text edit
+        if pool == "pool_a":
+            current_text = self.inp_pool_a_paths.toPlainText()
+        else:
+            current_text = self.inp_pool_b_paths.toPlainText()
+        
+        current_paths = [line.strip() for line in current_text.splitlines() if line.strip()]
+        
+        # Create filter spec that allows both files and directories
+        filter_spec = PathFilterSpec(
+            allow_dirs=True,
+            allow_files=True,
+            include_hidden=False,
+        )
+        
+        # Create dialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Edit {pool.replace('_', ' ').title()} Paths")
+        layout = QVBoxLayout(dlg)
+        
+        # Create multi-path selector widget
+        widget = MultiPathSelectorWidget(
+            parent=dlg,
+            title="Paths",
+            start_dir=None,
+            filter_spec=filter_spec,
+        )
+        widget.set_paths(current_paths)
+        layout.addWidget(widget)
+        
+        # Dialog buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dlg)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        
+        if dlg.exec() == QDialog.Accepted:
+            new_paths = widget.get_paths()
+            new_text = "\n".join(str(p) for p in new_paths)
+            if pool == "pool_a":
+                self.inp_pool_a_paths.setPlainText(new_text)
+            else:
+                self.inp_pool_b_paths.setPlainText(new_text)
+
+
 
 
 __all__ = ["StructuredProfileEditorWidget"]

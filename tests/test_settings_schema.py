@@ -72,7 +72,7 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/test"
+                    "paths": ["/tmp/test"]
                 }
             },
             "mode": "duplicates",
@@ -106,7 +106,7 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/test"
+                    "paths": ["/tmp/test"]
                 }
             },
             "mode": "similarity",
@@ -141,10 +141,10 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/test1"
+                    "paths": ["/tmp/test1"]
                 },
                 "B": {
-                    "root_path": "/tmp/test2"
+                    "paths": ["/tmp/test2"]
                 }
             },
             "mode": "similarity",
@@ -177,7 +177,7 @@ class TestSettingsSchema:
             "name": "Test Profile",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/test"
+                    "paths": ["/tmp/test"]
                 }
             }
         }
@@ -205,7 +205,7 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/test"
+                    "paths": ["/tmp/test"]
                 }
             },
             "mode": "invalid_mode",
@@ -240,7 +240,7 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/test"
+                    "paths": ["/tmp/test"]
                 }
             },
             "mode": "duplicates",
@@ -277,7 +277,7 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/test"
+                    "paths": ["/tmp/test"]
                 }
             },
             "mode": "similarity",
@@ -313,7 +313,7 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/test"
+                    "paths": ["/tmp/test"]
                 }
             },
             "mode": "similarity",
@@ -344,7 +344,7 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/test"
+                    "paths": ["/tmp/test"]
                 }
             },
             "mode": "duplicates",
@@ -379,10 +379,10 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/test1"
+                    "paths": ["/tmp/test1"]
                 },
                 "B": {
-                    "root_path": "/tmp/test2"
+                    "paths": ["/tmp/test2"]
                 }
             },
             "mode": "similarity",
@@ -421,7 +421,7 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/test"
+                    "paths": ["/tmp/test"]
                 }
             },
             "mode": "duplicates",
@@ -454,7 +454,7 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/nonexistent"
+                    "paths": ["/tmp/nonexistent"]
                 }
             },
             "mode": "duplicates",
@@ -482,7 +482,7 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/test"
+                    "paths": ["/tmp/test"]
                 }
             },
             "mode": "duplicates",
@@ -516,7 +516,7 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": ""
+                    "paths": [""]
                 }
             },
             "mode": "duplicates",
@@ -544,7 +544,7 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/test"
+                    "paths": ["/tmp/test"]
                 }
             },
             "mode": "duplicates",
@@ -578,7 +578,7 @@ class TestSettingsSchema:
             "updated_at": "2025-01-01T00:00:00Z",
             "pools": {
                 "A": {
-                    "root_path": "/tmp/nonexistent"
+                    "paths": ["/tmp/nonexistent"]
                 }
             },
             "mode": "duplicates",

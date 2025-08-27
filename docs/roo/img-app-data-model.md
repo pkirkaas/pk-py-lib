@@ -54,7 +54,7 @@ Note: This fragment shows defaults and types. See the full schema in this file f
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
       "minItems": 1,
-      "description": "Absolute or relative directories to scan. Must exist and be readable."
+      "description": "Absolute or relative paths to scan (directories or files). Must exist and be readable."
     },
     "traversal": {
       "type": "object",
@@ -130,7 +130,7 @@ Examples
 1) Minimal config using Balanced defaults (only required paths; everything else omitted → defaults applied)
 ```json
 {
-  "paths": ["./photos", "/mnt/media/Pictures"]
+  "paths": ["./photos", "/mnt/media/Pictures", "/path/to/specific/image.jpg"]
 }
 ```
 
@@ -138,7 +138,7 @@ Examples
 ```json
 {
   "preset": "Balanced",
-  "paths": ["./photos", "/mnt/media/Pictures"],
+  "paths": ["./photos", "/mnt/media/Pictures", "/path/to/specific/image.jpg"],
   "traversal": {
     "recursive": true,
     "maxDepth": 0
@@ -313,8 +313,8 @@ class ScanSession:
     
     # Configuration
     scan_type: str                  # 'single_set' or 'dual_set'
-    source_paths: List[Path]        # Source directories/files
-    reference_paths: Optional[List[Path]]  # Reference set for dual
+    source_paths: List[Path]        # Source paths (directories or files)
+    reference_paths: Optional[List[Path]]  # Reference paths for dual (directories or files)
     
     # Algorithm Configuration
     algorithms: List[str]           # Selected algorithms
@@ -387,11 +387,13 @@ class Profile:
 @dataclass
 class PathConfig:
     """Path configuration for a pool."""
-    include_dirs: List[Path]        # Directories to scan
-    exclude_dirs: List[Path]        # Directories to skip
+    paths: List[Path]               # Paths to scan (directories or files)
     include_globs: List[str]        # File patterns to include (e.g., "*.jpg")
     exclude_globs: List[str]        # File patterns to exclude
     follow_symlinks: bool           # Follow symbolic links
+    include_hidden: bool            # Include hidden files
+    recurse: bool                   # Recurse subdirectories
+    max_depth: int                  # Maximum recursion depth (0 = unlimited)
 ```
 
 ### 2.6 App Settings Model
@@ -1108,8 +1110,8 @@ A0) Minimal two-pool similarity (omits fields that have defaults)
   "id": "11111111-2222-3333-4444-555555555555",
   "name": "A→B similar (defaults)",
   "pools": {
-    "A": { "root_path": "D:/Reference" },
-    "B": { "root_path": "F:/Target" }
+    "A": { "paths": ["D:/Reference"] },
+    "B": { "paths": ["F:/Target"] }
   },
   "mode": "similarity",
   "criteria": {},
@@ -1134,7 +1136,7 @@ Z) Fully explicit Balanced defaults (two-pool similarity)
   "updated_at": "2025-08-19T00:00:00Z",
   "pools": {
     "A": {
-      "root_path": "D:/Reference",
+      "paths": ["D:/Reference"],
       "recurse": true,
       "max_depth": 0,
       "include": ["**/*"],
@@ -1144,7 +1146,7 @@ Z) Fully explicit Balanced defaults (two-pool similarity)
       "type_filters": [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]
     },
     "B": {
-      "root_path": "F:/Target",
+      "paths": ["F:/Target"],
       "recurse": true,
       "max_depth": 0,
       "include": ["**/*"],
@@ -1197,14 +1199,14 @@ Required identity fields
 Pools (A/B)
 - Two logical pools; Pool A always required; Pool B required only for two-pool scope.
 - Pool fields (per pool):
-  - root_path: string (absolute path to directory or file collection root)
-  - include: string[] (glob patterns; default ["**/*"]; relative to root_path)
+  - paths: string[] (absolute paths to directories or files; at least one required)
+  - include: string[] (glob patterns; default ["**/*"]; relative to each path)
   - exclude: string[] (glob patterns; default [])
   - recurse: boolean (default true)
   - max_depth: integer (0 = unlimited recursion [default]; 1 = only direct children; N ≥ 1 = depth limit)
   - follow_symlinks: boolean (default false)
   - include_hidden: boolean (default false; hidden items excluded when false)
-  - type_filters: string[] (file extensions/media types; default ["jpg", "jpeg", "png", "webp", "tiff", "bmp", "gif", "heic", "heif"])
+  - type_filters: string[] (file extensions/media types; default ["jpg", "jpeg", "png", "webp", "tiff", "bmp", "gif", ".heic", ".heif"])
   - size_constraints: { min_bytes?: int>=0, max_bytes?: int>=0 }
   - date_constraints: { min_date?: ISO8601, max_date?: ISO8601 }
 
@@ -1270,7 +1272,7 @@ Mode-specific
   - criteria.degree_ui MUST be present and within [0..100]
 
 Paths and patterns
-- root_path MUST exist and be accessible at validation time (validator checks)
+- paths MUST exist and be accessible at validation time (validator checks)
 - include/exclude patterns MUST compile (validator checks)
 - type_filters members MUST be non-empty strings; recommended to start with "." extensions
 - size_constraints: when both provided, min_bytes ≤ max_bytes
@@ -1372,7 +1374,12 @@ Validator enablement contract (for GUI)
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "root_path": { "type": "string", "minLength": 1 },
+        "paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "description": "Paths to scan (directories or files). Must exist and be readable."
+        },
         "recurse": { "type": "boolean", "default": true },
         "max_depth": { "type": "integer", "minimum": 0, "default": 0 },
         "include": {
@@ -1409,7 +1416,7 @@ Validator enablement contract (for GUI)
           }
         }
       },
-      "required": ["root_path"]
+      "required": ["paths"]
     }
   },
 
@@ -1469,7 +1476,7 @@ M1) Minimal single-pool duplicates (omit defaults; rely on default filling)
 {
   "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
   "name": "A only — duplicates",
-  "pools": { "A": { "root_path": "C:/Photos" } },
+  "pools": { "A": { "paths": ["C:/Photos"] } },
   "mode": "duplicates",
   "criteria": { "algorithm": "blake3" },
   "scope": { "kind": "single_pool" },
@@ -1482,7 +1489,7 @@ M2) Minimal single-pool similarity (omit defaults; include only fields that diff
 {
   "id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
   "name": "A only — similar (90%)",
-  "pools": { "A": { "root_path": "C:/Photos" } },
+  "pools": { "A": { "paths": ["C:/Photos"] } },
   "mode": "similarity",
   "criteria": { "degree_ui": 90 },
   "scope": { "kind": "single_pool" },
@@ -1501,7 +1508,7 @@ A) Single-pool duplicates (cluster within A)
   "updated_at": "2025-08-19T00:00:00Z",
   "pools": {
     "A": {
-      "root_path": "C:/Photos",
+      "paths": ["C:/Photos"],
       "recurse": true,
       "max_depth": 0,
       "include": ["**/*.jpg", "**/*.png"],
@@ -1527,7 +1534,7 @@ B) Single-pool similarity (cluster within A)
   "updated_at": "2025-08-19T00:00:00Z",
   "pools": {
     "A": {
-      "root_path": "D:/Archive",
+      "paths": ["D:/Archive"],
       "recurse": true,
       "include": ["**/*.jpg", "**/*.jpeg", "**/*.png"]
     }
@@ -1549,8 +1556,8 @@ C) Two-pool duplicates (A→B)
   "created_at": "2025-08-19T00:00:00Z",
   "updated_at": "2025-08-19T00:00:00Z",
   "pools": {
-    "A": { "root_path": "C:/Masters", "recurse": true, "include": ["**/*"] },
-    "B": { "root_path": "E:/WorkingSet", "recurse": true, "include": ["**/*"] }
+    "A": { "paths": ["C:/Masters"], "recurse": true, "include": ["**/*"] },
+    "B": { "paths": ["E:/WorkingSet"], "recurse": true, "include": ["**/*"] }
   },
   "mode": "duplicates",
   "criteria": { "algorithm": "blake3" },
@@ -1569,8 +1576,8 @@ D) Two-pool similarity (A→B) and “A without matches in B”
   "created_at": "2025-08-19T00:00:00Z",
   "updated_at": "2025-08-19T00:00:00Z",
   "pools": {
-    "A": { "root_path": "D:/Reference", "recurse": true, "include": ["**/*.jpg"] },
-    "B": { "root_path": "F:/Target", "recurse": true, "include": ["**/*.jpg"] }
+    "A": { "paths": ["D:/Reference"], "recurse": true, "include": ["**/*.jpg"] },
+    "B": { "paths": ["F:/Target"], "recurse": true, "include": ["**/*.jpg"] }
   },
   "mode": "similarity",
   "criteria": { "algorithm": "pHash", "degree_ui": 90 },
@@ -1624,8 +1631,8 @@ E) Two-pool similarity (A without matches in B)
   "created_at": "2025-08-19T00:00:00Z",
   "updated_at": "2025-08-19T00:00:00Z",
   "pools": {
-    "A": { "root_path": "D:/Reference", "recurse": true, "include": ["**/*.jpg", "**/*.png"] },
-    "B": { "root_path": "F:/Target", "recurse": true, "include": ["**/*.jpg", "**/*.png"] }
+    "A": { "paths": ["D:/Reference"], "recurse": true, "include": ["**/*.jpg", "**/*.png"] },
+    "B": { "paths": ["F:/Target"], "recurse": true, "include": ["**/*.jpg", "**/*.png"] }
   },
   "mode": "similarity",
   "criteria": { "algorithm": "pHash", "degree_ui": 90, "phash": { "hash_size": 8 } },
