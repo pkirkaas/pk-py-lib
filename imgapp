@@ -1,0 +1,4 @@
+#!/cygdrive/q/Common/Software-Dev/Pythons/pk-py-lib/.venv/Scripts/python.exe
+import sys
+import subprocess
+subprocess.check_call([sys.executable, '-m', 'img_app'])
