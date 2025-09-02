@@ -139,15 +139,8 @@ class StructuredProfileEditorWidget(QWidget):
         pool_a_path_layout.addWidget(self.btn_pool_a_select)
         pool_a_layout.addRow("Paths:", pool_a_path_layout)
 
-        self.chk_pool_a_recurse = QCheckBox("Recurse subdirectories")
-        self.chk_pool_a_recurse.setChecked(True)
-        pool_a_layout.addRow("", self.chk_pool_a_recurse)
 
-        self.chk_pool_a_follow_symlinks = QCheckBox("Follow symbolic links")
-        pool_a_layout.addRow("", self.chk_pool_a_follow_symlinks)
 
-        self.chk_pool_a_include_hidden = QCheckBox("Include hidden files")
-        pool_a_layout.addRow("", self.chk_pool_a_include_hidden)
 
         pools_layout.addWidget(pool_a_group)
 
@@ -165,15 +158,8 @@ class StructuredProfileEditorWidget(QWidget):
         pool_b_path_layout.addWidget(self.btn_pool_b_select)
         pool_b_layout.addRow("Paths:", pool_b_path_layout)
 
-        self.chk_pool_b_recurse = QCheckBox("Recurse subdirectories")
-        self.chk_pool_b_recurse.setChecked(True)
-        pool_b_layout.addRow("", self.chk_pool_b_recurse)
 
-        self.chk_pool_b_follow_symlinks = QCheckBox("Follow symbolic links")
-        pool_b_layout.addRow("", self.chk_pool_b_follow_symlinks)
 
-        self.chk_pool_b_include_hidden = QCheckBox("Include hidden files")
-        pool_b_layout.addRow("", self.chk_pool_b_include_hidden)
 
         pools_layout.addWidget(pool_b_group)
         layout.addWidget(pools_group)
@@ -253,16 +239,10 @@ class StructuredProfileEditorWidget(QWidget):
         # Pool A
         self.inp_pool_a_paths.textChanged.connect(self._on_change)
         self.btn_pool_a_select.clicked.connect(lambda: self._select_path("pool_a"))
-        self.chk_pool_a_recurse.stateChanged.connect(self._on_change)
-        self.chk_pool_a_follow_symlinks.stateChanged.connect(self._on_change)
-        self.chk_pool_a_include_hidden.stateChanged.connect(self._on_change)
 
         # Pool B
         self.inp_pool_b_paths.textChanged.connect(self._on_change)
         self.btn_pool_b_select.clicked.connect(lambda: self._select_path("pool_b"))
-        self.chk_pool_b_recurse.stateChanged.connect(self._on_change)
-        self.chk_pool_b_follow_symlinks.stateChanged.connect(self._on_change)
-        self.chk_pool_b_include_hidden.stateChanged.connect(self._on_change)
 
         # Mode and criteria
         self.cmb_mode.currentTextChanged.connect(self._on_mode_changed)
@@ -309,9 +289,9 @@ class StructuredProfileEditorWidget(QWidget):
             "pools": {
                 "A": {
                     "paths": [path.strip() for path in self.inp_pool_a_paths.toPlainText().splitlines() if path.strip()],
-                    "recurse": self.chk_pool_a_recurse.isChecked(),
-                    "follow_symlinks": self.chk_pool_a_follow_symlinks.isChecked(),
-                    "include_hidden": self.chk_pool_a_include_hidden.isChecked(),
+                    "recurse": True,
+                    "follow_symlinks": True,
+                    "include_hidden": True,
                 }
             },
             "mode": self.cmb_mode.currentText(),
@@ -331,9 +311,9 @@ class StructuredProfileEditorWidget(QWidget):
         if pool_b_paths and self.cmb_scope_kind.currentText() == "two_pool":
             profile["pools"]["B"] = {
                 "paths": pool_b_paths,
-                "recurse": self.chk_pool_b_recurse.isChecked(),
-                "follow_symlinks": self.chk_pool_b_follow_symlinks.isChecked(),
-                "include_hidden": self.chk_pool_b_include_hidden.isChecked(),
+                "recurse": True,
+                "follow_symlinks": True,
+                "include_hidden": True,
             }
 
         # For similarity mode, add degree_ui
@@ -456,9 +436,6 @@ class StructuredProfileEditorWidget(QWidget):
         is_two_pool = scope_kind == "two_pool"
         self.inp_pool_b_paths.setEnabled(is_two_pool)
         self.btn_pool_b_select.setEnabled(is_two_pool)
-        self.chk_pool_b_recurse.setEnabled(is_two_pool)
-        self.chk_pool_b_follow_symlinks.setEnabled(is_two_pool)
-        self.chk_pool_b_include_hidden.setEnabled(is_two_pool)
 
         # Enable/disable direction based on scope
         self.cmb_scope_direction.setEnabled(is_two_pool)
@@ -493,18 +470,12 @@ class StructuredProfileEditorWidget(QWidget):
         pool_a = pools.get("A", {})
         paths_a = pool_a.get("paths", [])
         self.inp_pool_a_paths.setPlainText("\n".join(paths_a))
-        self.chk_pool_a_recurse.setChecked(pool_a.get("recurse", True))
-        self.chk_pool_a_follow_symlinks.setChecked(pool_a.get("follow_symlinks", False))
-        self.chk_pool_a_include_hidden.setChecked(pool_a.get("include_hidden", False))
 
         # Pool B
         pool_b = pools.get("B", {})
         if pool_b:
             paths_b = pool_b.get("paths", [])
             self.inp_pool_b_paths.setPlainText("\n".join(paths_b))
-            self.chk_pool_b_recurse.setChecked(pool_b.get("recurse", True))
-            self.chk_pool_b_follow_symlinks.setChecked(pool_b.get("follow_symlinks", False))
-            self.chk_pool_b_include_hidden.setChecked(pool_b.get("include_hidden", False))
 
         # Mode and criteria
         self.cmb_mode.setCurrentText(profile.get("mode", "duplicates"))

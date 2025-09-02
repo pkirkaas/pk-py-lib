@@ -159,63 +159,9 @@ class SettingsManagerDialog(QDialog):
         splitter.setOrientation(Qt.Horizontal)
         main.addWidget(splitter, 1)
 
-        # Left: search + list + toolbar
-        left = QWidget(self)
-        left_layout = QVBoxLayout(left)
-
-        search_row = QHBoxLayout()
-        self.inp_search = QLineEdit()
-        self.inp_search.setPlaceholderText("Search profiles…")
-        self.inp_search.textChanged.connect(self._on_search_changed)
-        search_row.addWidget(QLabel("Search:"))
-        search_row.addWidget(self.inp_search, 1)
-        left_layout.addLayout(search_row)
-
-        self.list = QListView(self)
-        self.list.setModel(self._filter)
-        # Robust SingleSelection across bindings (Qt5/Qt6)
-        try:
-            sel_enum = getattr(QAbstractItemView, "SelectionMode", None)
-            single_sel = sel_enum.SingleSelection if sel_enum is not None else QAbstractItemView.SingleSelection
-        except Exception:
-            single_sel = QAbstractItemView.SingleSelection
-        self.list.setSelectionMode(single_sel)
-        self.list.setAlternatingRowColors(True)
-        self.list.selectionModel().selectionChanged.connect(self._on_list_selection_changed)  # type: ignore[attr-defined]
-        left_layout.addWidget(self.list, 1)
-
-        # Actions toolbar
-        bar = QToolBar(left)
-        bar.setMovable(False)
-        bar.setIconSize(QSize(16, 16))
-        left_layout.addWidget(bar)
-
-        # Actions
-        self.act_create = QAction("Create", self)
-        self.act_create.setShortcut(QKeySequence("Ctrl+N"))
-        self.act_create.triggered.connect(self._on_create)
-
-        self.act_rename = QAction("Rename", self)
-        self.act_rename.setShortcut(QKeySequence("F2"))
-        self.act_rename.triggered.connect(self._on_rename)
-
-        self.act_duplicate = QAction("Duplicate", self)
-        self.act_duplicate.setShortcut(QKeySequence("Ctrl+D"))
-        self.act_duplicate.triggered.connect(self._on_duplicate)
-
-        self.act_delete = QAction("Delete", self)
-        self.act_delete.setShortcut(QKeySequence("Delete"))
-        self.act_delete.triggered.connect(self._on_delete)
-
-        self.act_set_active = QAction("Set Active", self)
-        self.act_set_active.setShortcut(QKeySequence("Ctrl+Return"))
-        self.act_set_active.triggered.connect(self._on_set_active)
-
-        for act in (self.act_create, self.act_rename, self.act_duplicate, self.act_delete, self.act_set_active):
-            bar.addAction(act)
-
-        left.setLayout(left_layout)
-        splitter.addWidget(left)
+        self.profile_dropdown = QComboBox(self)
+        self.profile_dropdown.currentIndexChanged.connect(self._on_profile_selected)
+        main.addWidget(self.profile_dropdown, 0)
 
         # Right: editor
         self.editor = SettingsProfileEditorWidget(api=self.controller.api, parent=self)
@@ -258,6 +204,14 @@ class SettingsManagerDialog(QDialog):
             return
 
         self._profiles_model.set_profiles(resp.data)
+        self.profile_dropdown.clear()
+        for row in range(self._profiles_model.rowCount()):
+            profile = self._profiles_model.profile_at(row)
+            self.profile_dropdown.addItem(profile.name, profile.id)
+        if self._current_profile_id:
+            idx = self.profile_dropdown.findData(self._current_profile_id)
+            if idx >= 0:
+                self.profile_dropdown.setCurrentIndex(idx.row())
         # Determine selection target
         target_id: Optional[str] = None
         if select_active:
@@ -273,7 +227,7 @@ class SettingsManagerDialog(QDialog):
                 src_idx = self._profiles_model.index(row, 0)  # type: ignore[attr-defined]
                 idx = self._filter.mapFromSource(src_idx)
                 if idx.isValid():
-                    self.list.setCurrentIndex(idx)
+                    self.list.setCurrentIndex(idx.row())
                     self._current_profile_id = target_id
                     self._load_profile(target_id)
                     self._update_action_states()
@@ -282,7 +236,7 @@ class SettingsManagerDialog(QDialog):
         # If no selection found, select first if present
         if self._profiles_model.rowCount() > 0:
             idx = self._filter.index(0, 0)  # type: ignore[attr-defined]
-            self.list.setCurrentIndex(idx)
+            self.list.setCurrentIndex(idx.row())
             pid = self._profiles_model.profile_at(0).id  # type: ignore[union-attr]
             self._current_profile_id = pid
             self._load_profile(pid)
@@ -527,7 +481,7 @@ class SettingsManagerDialog(QDialog):
             sidx = self._profiles_model.index(row, 0)  # type: ignore[attr-defined]
             vidx = self._filter.mapFromSource(sidx)
             if vidx.isValid():
-                self.list.setCurrentIndex(vidx)
+                self.list.setCurrentIndex(vidx.row())
                 self._current_profile_id = profile_id
                 self._load_profile(profile_id)
 
@@ -546,7 +500,7 @@ class SettingsManagerDialog(QDialog):
         # DialogButtonBox apply is wired via clicked signal; no direct enable toggle here.
 
     def _show_error(self, title: str, message: Optional[str], code: Optional[str]) -> None:
-        msg = message or "An unexpected error occurred."
+        msg = str(message) if message is not None else "An unexpected error occurred."
         if code:
             msg += f"\n\nCode: {code}"
         show_selectable_error(self, title, msg)
@@ -587,7 +541,12 @@ class SettingsManagerDialog(QDialog):
             return not self.editor.is_dirty()
         if result == "discard":
             return True
-        return False
+    def _on_profile_selected(self, index: int) -> None:
+        if index < 0:
+            return
+        profile_id = self.profile_dropdown.itemData(index)
+        if profile_id is not None:
+            self._load_profile(profile_id)
 
 
 def settings_manager_dialog(parent: Optional[QWidget] = None, modal: bool = True) -> Optional[Dict[str, Any]]:

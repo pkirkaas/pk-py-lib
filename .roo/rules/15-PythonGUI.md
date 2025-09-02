@@ -9,6 +9,11 @@ There will also be a src/cli subfolder containing all the CLI code/functionality
 
 There will also be a src/gui subfolder with all the GUI application & widget code.
 
+## Selectable Text in ALL Dialogs
+All dialog/message/error/GUI pop ups with message/error texts should be selectable/copyable by the mouse/GUI. 
+
+It is VERY important to be able to copy/paste error dialog text messages for debugging/diagnostics
+
 ## GUI widget/component rules
 All the GUI components should be as modular as possible, as configurable as possible, as reusable as possible.
 

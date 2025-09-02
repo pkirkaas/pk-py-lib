@@ -367,8 +367,8 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
         pool_b.setdefault("max_depth", 0)
         pool_b.setdefault("include", ["**/*"])
         pool_b.setdefault("exclude", [])
-        pool_b.setdefault("follow_symlinks", False)
-        pool_b.setdefault("include_hidden", False)
+        pool_b.setdefault("follow_symlinks", True)
+        pool_b.setdefault("include_hidden", True)
         pool_b.setdefault("type_filters", [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"])
     
     # Ensure output exists

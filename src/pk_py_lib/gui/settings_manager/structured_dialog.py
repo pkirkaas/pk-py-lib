@@ -32,6 +32,7 @@ try:
         QAbstractItemView,
         QLabel,
         QPushButton,
+        QComboBox,  # Added missing import for QComboBox
         QDialogButtonBox,
         QMessageBox,
         QToolBar,
@@ -141,74 +142,16 @@ class StructuredSettingsManagerDialog(QDialog):
     def _build_ui(self) -> None:
         main = QVBoxLayout(self)
 
-        splitter = QSplitter(self)
-        splitter.setOrientation(Qt.Horizontal)
-        main.addWidget(splitter, 1)
-
-        # Left: search + list + toolbar
-        left = QWidget(self)
-        left_layout = QVBoxLayout(left)
-
-        search_row = QHBoxLayout()
-        self.inp_search = QLineEdit()
-        self.inp_search.setPlaceholderText("Search profiles…")
-        self.inp_search.textChanged.connect(self._on_search_changed)
-        search_row.addWidget(QLabel("Search:"))
-        search_row.addWidget(self.inp_search, 1)
-        left_layout.addLayout(search_row)
-
-        self.list = QListView(self)
-        self.list.setModel(self._filter)
-        # Robust SingleSelection across bindings (Qt5/Qt6)
-        try:
-            sel_enum = getattr(QAbstractItemView, "SelectionMode", None)
-            single_sel = sel_enum.SingleSelection if sel_enum is not None else QAbstractItemView.SingleSelection
-        except Exception:
-            single_sel = QAbstractItemView.SingleSelection
-        self.list.setSelectionMode(single_sel)
-        self.list.setAlternatingRowColors(True)
-        self.list.selectionModel().selectionChanged.connect(self._on_list_selection_changed)  # type: ignore[attr-defined]
-        left_layout.addWidget(self.list, 1)
-
-        # Actions toolbar
-        bar = QToolBar(left)
-        bar.setMovable(False)
-        bar.setIconSize(QSize(16, 16))
-        left_layout.addWidget(bar)
-
-        # Actions
-        self.act_create = QAction("Create", self)
-        self.act_create.setShortcut(QKeySequence("Ctrl+N"))
-        self.act_create.triggered.connect(self._on_create)
-
-        self.act_rename = QAction("Rename", self)
-        self.act_rename.setShortcut(QKeySequence("F2"))
-        self.act_rename.triggered.connect(self._on_rename)
-
-        self.act_duplicate = QAction("Duplicate", self)
-        self.act_duplicate.setShortcut(QKeySequence("Ctrl+D"))
-        self.act_duplicate.triggered.connect(self._on_duplicate)
-
-        self.act_delete = QAction("Delete", self)
-        self.act_delete.setShortcut(QKeySequence("Delete"))
-        self.act_delete.triggered.connect(self._on_delete)
-
-        self.act_set_active = QAction("Set Active", self)
-        self.act_set_active.setShortcut(QKeySequence("Ctrl+Return"))
-        self.act_set_active.triggered.connect(self._on_set_active)
-
-        for act in (self.act_create, self.act_rename, self.act_duplicate, self.act_delete, self.act_set_active):
-            bar.addAction(act)
-
-        left.setLayout(left_layout)
-        splitter.addWidget(left)
+        # Dropdown for profile selection
+        self.profile_dropdown = QComboBox(self)
+        self.profile_dropdown.currentIndexChanged.connect(self._on_profile_selected)
+        main.addWidget(self.profile_dropdown, 0)
 
         # Right: structured editor
         self.editor = StructuredProfileEditorWidget(api=self.controller.api, parent=self)
         if hasattr(self.editor, "dirtyChanged"):
-            self.editor.dirtyChanged.connect(self._on_dirty_changed)  # type: ignore[attr-defined]
-        splitter.addWidget(self.editor)
-        splitter.setStretchFactor(1, 1)
+            self.editor.dirtyChanged.connect(self._on_dirty_changed)
+        main.addWidget(self.editor, 1)
 
         # Footer buttons
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Apply | QDialogButtonBox.Cancel, parent=self)
@@ -244,6 +187,10 @@ class StructuredSettingsManagerDialog(QDialog):
             return
 
         self._profiles_model.set_profiles(resp.data)
+        self.profile_dropdown.clear()
+        for i in range(self._profiles_model.rowCount()):
+            profile = self._profiles_model.profile_at(i)
+            self.profile_dropdown.addItem(profile.name, profile.id)
         # Determine selection target
         target_id: Optional[str] = None
         if select_active:
@@ -259,7 +206,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 src_idx = self._profiles_model.index(row, 0)  # type: ignore[attr-defined]
                 idx = self._filter.mapFromSource(src_idx)
                 if idx.isValid():
-                    self.list.setCurrentIndex(idx)
+                    self.profile_dropdown.setCurrentIndex(idx.row())
                     self._current_profile_id = target_id
                     self._load_profile(target_id)
                     self._update_action_states()
@@ -268,7 +215,7 @@ class StructuredSettingsManagerDialog(QDialog):
         # If no selection found, select first if present
         if self._profiles_model.rowCount() > 0:
             idx = self._filter.index(0, 0)  # type: ignore[attr-defined]
-            self.list.setCurrentIndex(idx)
+            self.list.setCurrentIndex(idx.row())
             pid = self._profiles_model.profile_at(0).id  # type: ignore[union-attr]
             self._current_profile_id = pid
             self._load_profile(pid)
@@ -337,7 +284,7 @@ class StructuredSettingsManagerDialog(QDialog):
 
     def _on_list_selection_changed(self) -> None:
         # Handle dirty prompt before switching
-        new_idx = self.list.currentIndex()
+        new_idx = self.profile_dropdown.currentIndex()
         if not new_idx.isValid():
             return
         src_idx = self._filter.mapToSource(new_idx)
@@ -361,6 +308,15 @@ class StructuredSettingsManagerDialog(QDialog):
         self._update_action_states()
 
     # -------------------------------------------------------------- Actions ----
+    def _on_profile_selected(self, index: int) -> None:
+        if index < 0:
+            return
+        profile_id = self.profile_dropdown.itemData(index)
+        if profile_id != self._current_profile_id:
+            self._current_profile_id = profile_id
+            self._load_profile(profile_id)
+            self._update_action_states()
+
     def _on_create(self) -> None:
         dlg = _NamePromptDialog("Create Profile", "Name:", parent=self)
         # Suggest "New Profile" or increment until unique
@@ -546,7 +502,7 @@ class StructuredSettingsManagerDialog(QDialog):
 
     # -------------------------------------------------------------- Helpers ----
     def _current_row(self) -> int:
-        idx = self.list.currentIndex()
+        idx = self.profile_dropdown.currentIndex()
         if not idx.isValid():
             return -1
         src = self._filter.mapToSource(idx)
@@ -558,7 +514,7 @@ class StructuredSettingsManagerDialog(QDialog):
             sidx = self._profiles_model.index(row, 0)  # type: ignore[attr-defined]
             vidx = self._filter.mapFromSource(sidx)
             if vidx.isValid():
-                self.list.setCurrentIndex(vidx)
+                self.profile_dropdown.setCurrentIndex(vidx.row())
                 self._current_profile_id = profile_id
                 self._load_profile(profile_id)
 
@@ -569,15 +525,11 @@ class StructuredSettingsManagerDialog(QDialog):
 
     def _update_action_states(self) -> None:
         has_sel = self._current_profile_id is not None
-        self.act_rename.setEnabled(has_sel)
-        self.act_duplicate.setEnabled(has_sel)
-        self.act_delete.setEnabled(has_sel)
-        self.act_set_active.setEnabled(has_sel)
         # Apply enablement mirrors editor dirty state (if apply button exists)
         # DialogButtonBox apply is wired via clicked signal; no direct enable toggle here.
 
     def _show_error(self, title: str, message: Optional[str], code: Optional[str]) -> None:
-        msg = message or "An unexpected error occurred."
+        msg = str(message) if message is not None else "An unexpected error occurred."
         if code:
             msg += f"\n\nCode: {code}"
         show_selectable_error(self, title, msg)
