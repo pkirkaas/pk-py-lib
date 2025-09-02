@@ -23,6 +23,7 @@ dependencies = [
     "pillow-heif>=0.13.0",      # HEIF image support
     "jsonschema>=4.20.0",       # JSON schema validation
     "xxhash>=3.4.0",            # XXH3 fast hashing for duplicate detection
+    "platformdirs>=4.0.0",      # Platform-specific directory paths
 ]
 requires-python = "<3.14,>=3.13"
 readme = "README.md"

@@ -1,4 +1,132 @@
 #!/cygdrive/q/Common/Software-Dev/Pythons/pk-py-lib/.venv/Scripts/python.exe
+"""
+imgapp - Image Application Command Line Interface
+
+A command-line interface for the image organization application with options to
+display file locations and get help.
+"""
+
+import argparse
 import sys
-import subprocess
-subprocess.check_call([sys.executable, '-m', 'img_app'])
+from pathlib import Path
+import os
+
+# Try to import platformdirs, but handle if not installed
+try:
+    import platformdirs
+except ImportError:
+    print("Error: The 'platformdirs' package is required but not installed.", file=sys.stderr)
+    print("Please install it by running: pdm install", file=sys.stderr)
+    sys.exit(1)
+
+
+def get_application_paths():
+    """
+    Get all application data file paths including settings, databases, and logs.
+    
+    Returns:
+        dict: Dictionary containing paths to all application data files
+    """
+    # Check for environment override
+    base_dir = os.environ.get('PK_IMG_APP_HOME')
+    
+    if base_dir:
+        data_dir = Path(base_dir) / "data"
+        cache_dir = Path(base_dir) / "cache"
+        log_dir = Path(base_dir) / "logs"
+    else:
+        # Use platformdirs with Vendor "Pk" and App "Img App"
+        data_dir = Path(platformdirs.user_data_dir("Img App", "Pk"))
+        cache_dir = Path(platformdirs.user_cache_dir("Img App", "Pk"))
+        log_dir = Path(platformdirs.user_log_dir("Img App", "Pk"))
+    
+    # Ensure directories exist (for accurate path reporting)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    return {
+        # Database files
+        "settings_db": data_dir / "settings.db",
+        "sessions_db": data_dir / "sessions.db", 
+        "cache_db": cache_dir / "cache.db",
+        
+        # Backup directories
+        "backups_dir": data_dir / "backups",
+        
+        # Log files
+        "app_log": log_dir / "img_app.log",
+        "lib_log": log_dir / "pk_py_lib.log",
+        
+        # Thumbnail cache
+        "thumbnails_dir": cache_dir / "thumbnails"
+    }
+
+
+def display_locations():
+    """Display all application file locations and exit."""
+    paths = get_application_paths()
+    
+    # Print each path on its own line
+    for name, path in paths.items():
+        print(str(path.absolute()))
+    
+    sys.exit(0)
+
+
+def main():
+    """Main entry point for the imgapp command-line interface."""
+    parser = argparse.ArgumentParser(
+        description="Image organization application",
+        add_help=False  # We'll handle help manually to control formatting
+    )
+    
+    # Add options
+    parser.add_argument(
+        "-l", "--locations",
+        action="store_true",
+        help="Display paths to all local data files (settings, databases, logs) and exit"
+    )
+    parser.add_argument(
+        "-h", "--help",
+        action="store_true", 
+        help="Display this help message and exit"
+    )
+    
+    # Parse arguments
+    args, unknown = parser.parse_known_args()
+    
+    # Handle help option
+    if args.help:
+        print("""imgapp [OPTIONS]
+
+A command-line application with the following options:
+
+  -l, --locations    Display the full paths to all local data files (settings, databases, logs) and exit.
+  -h, --help         Display this help message and exit.
+
+When the `-l` or `--locations` option is used:
+*   The application outputs exclusively to the terminal.
+*   The output consists of the full, absolute path for each file, one per line.
+*   The output includes all settings files, database files, and log files.
+*   The application exits immediately after displaying the information.
+""")
+        sys.exit(0)
+    
+    # Handle locations option
+    if args.locations:
+        display_locations()
+    
+    # If no options provided, launch the main application
+    try:
+        import subprocess
+        subprocess.check_call([sys.executable, '-m', 'img_app'] + unknown)
+    except subprocess.CalledProcessError as e:
+        sys.exit(e.returncode)
+    except ImportError:
+        print("Error: img_app module not found", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
