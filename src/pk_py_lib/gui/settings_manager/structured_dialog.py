@@ -470,9 +470,11 @@ class StructuredSettingsManagerDialog(QDialog):
             else:
                 self._show_error("Apply failed", r.message, r.code)
             return
-        # Refresh editor and list
+        # Update the current item in the dropdown to reflect any name change
+        current_index = self.profile_dropdown.currentIndex()
+        if current_index >= 0:
+            self.profile_dropdown.setItemText(current_index, self.editor.inp_name.text())
         self.editor.reset_dirty()
-        self._refresh_profiles(select_active=False, preserve_selection=True)
 
     def _on_ok(self) -> None:
         if self.editor.is_dirty():

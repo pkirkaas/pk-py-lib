@@ -15,7 +15,7 @@ import math
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Callable, NamedTuple
 
-__all__ = ["FileIdentity", "compute_sha256", "get_inode_device", "make_identity", "IdentityResolver"]
+__all__ = ["FileIdentity", "compute_sha256", "compute_xxh3", "get_inode_device", "make_identity", "IdentityResolver"]
 
 
 class FileIdentity(NamedTuple):
@@ -64,6 +64,47 @@ def compute_sha256(path: Path, chunk_size: int = 65536) -> str:
         Propagates IO-related exceptions to caller.
     """
     h = hashlib.sha256()
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def compute_xxh3(path: Path, chunk_size: int = 65536) -> str:
+    """
+    Compute XXH3 hash for a file by streaming it in chunks.
+    
+    XXH3 is an extremely fast non-cryptographic hash algorithm suitable for
+    duplicate detection and file identity purposes.
+    
+    Parameters
+    ----------
+    path : Path
+        Path to the file to hash.
+    chunk_size : int
+        Read buffer size in bytes.
+        
+    Returns
+    -------
+    str
+        Hexadecimal XXH3 digest.
+        
+    Raises
+    ------
+    FileNotFoundError, PermissionError, OSError
+        Propagates IO-related exceptions to caller.
+    ImportError
+        Raised if xxhash package is not available
+    """
+    try:
+        import xxhash
+    except ImportError:
+        raise ImportError("xxhash package is required for XXH3 hashing. Install with: pdm add xxhash")
+    
+    h = xxhash.xxh3_64()
     with path.open("rb") as fh:
         while True:
             chunk = fh.read(chunk_size)

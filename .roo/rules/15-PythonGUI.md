@@ -14,6 +14,19 @@ All dialog/message/error/GUI pop ups with message/error texts should be selectab
 
 It is VERY important to be able to copy/paste error dialog text messages for debugging/diagnostics
 
+## Error/Warning Reporting/Logging
+ALL errors and warnings in the GUI should be reported in the GUI with an appropriate error dialog, or within the appropriate GUI component.  
+
+FURTHERMORE - ALL errors/warnings occurring in the GUI should be reported in MUCH greater detail to `STDERR` - the terminal or whatever designated STDERR output. 
+
+The error details to STDERR must include AT LEAST the following:
+- The full error text/description
+- The full file path of the component where the error occurred.
+- The parameters/values that caused the error
+- The call stack that led to the error.
+
+
+
 ## GUI widget/component rules
 All the GUI components should be as modular as possible, as configurable as possible, as reusable as possible.
 

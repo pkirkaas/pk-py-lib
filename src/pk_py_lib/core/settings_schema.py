@@ -56,7 +56,7 @@ SETTINGS_PROFILE_SCHEMA = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "algorithm": {"type": "string", "enum": ["blake3", "pHash"], "default": "pHash"},
+                "algorithm": {"type": "string", "enum": ["blake3", "pHash", "xxh3"], "default": "pHash"},
                 "degree_ui": {"type": "integer", "minimum": 0, "maximum": 100, "default": 90},
                 "phash": {
                     "type": "object",
@@ -157,7 +157,7 @@ SETTINGS_PROFILE_SCHEMA = {
                 "properties": {
                     "criteria": {
                         "properties": {
-                            "algorithm": {"const": "blake3"},
+                            "algorithm": {"enum": ["blake3", "xxh3"]},
                             "degree_ui": {"not": {}},
                             "phash": {"not": {}}
                         }
@@ -303,8 +303,8 @@ def _validate_custom_rules(profile_data: Dict[str, Any]) -> List[str]:
     mode = profile_data.get("mode")
     criteria = profile_data.get("criteria", {})
     
-    if mode == "duplicates" and criteria.get("algorithm") != "blake3":
-        errors.append("Duplicates mode requires algorithm 'blake3'")
+    if mode == "duplicates" and criteria.get("algorithm") not in ["blake3", "xxh3"]:
+        errors.append("Duplicates mode requires algorithm 'blake3' or 'xxh3'")
     
     if mode == "similarity" and criteria.get("algorithm") != "pHash":
         errors.append("Similarity mode requires algorithm 'pHash'")
@@ -348,7 +348,11 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     
     # Ensure criteria exist
     criteria = normalized.setdefault("criteria", {})
-    criteria.setdefault("algorithm", "pHash")
+    # For duplicates mode, default to blake3; for similarity, default to pHash
+    if normalized["mode"] == "duplicates":
+        criteria.setdefault("algorithm", "blake3")
+    else:
+        criteria.setdefault("algorithm", "pHash")
     
     if normalized["mode"] == "similarity":
         criteria.setdefault("degree_ui", 90)

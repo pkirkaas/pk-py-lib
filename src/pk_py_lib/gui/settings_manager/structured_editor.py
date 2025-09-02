@@ -99,6 +99,7 @@ class StructuredProfileEditorWidget(QWidget):
         self._dirty = False
 
         self._build_ui()
+        # Call _update_ui_state to initialize algorithm combo box correctly
         self._update_ui_state()
 
     def _build_ui(self) -> None:
@@ -179,10 +180,14 @@ class StructuredProfileEditorWidget(QWidget):
         criteria_group.setLayout(criteria_layout)
 
         self.cmb_algorithm = QComboBox()
-        self.cmb_algorithm.addItems(["pHash", "blake3"])
+        # Start with empty combo box, _update_ui_state will populate it correctly
         criteria_layout.addRow("Algorithm:", self.cmb_algorithm)
 
-        degree_layout = QHBoxLayout()
+        # Create label for "Similarity Degree:"
+        self.lbl_degree_label = QLabel("Similarity Degree:")
+        # Create a widget to contain the degree layout
+        self.degree_widget = QWidget()
+        degree_layout = QHBoxLayout(self.degree_widget)  # Set layout on widget
         self.sld_degree = QSlider(Qt.Horizontal)
         self.sld_degree.setRange(0, 100)
         self.sld_degree.setValue(90)
@@ -190,7 +195,8 @@ class StructuredProfileEditorWidget(QWidget):
         self.lbl_degree = QLabel("90%")
         self.lbl_degree.setTextInteractionFlags(Qt.TextSelectableByMouse)
         degree_layout.addWidget(self.lbl_degree)
-        criteria_layout.addRow("Similarity Degree:", degree_layout)
+        # Add row to form layout
+        criteria_layout.addRow(self.lbl_degree_label, self.degree_widget)
 
         mode_layout.addRow(criteria_group)
         layout.addWidget(mode_group)
@@ -262,13 +268,13 @@ class StructuredProfileEditorWidget(QWidget):
 
     def _on_mode_changed(self, mode: str) -> None:
         """Handle mode change with conditional UI updates."""
-        self._on_change()
-        self._update_ui_state()
+        self._update_ui_state()  # Update UI first to ensure consistent state
+        self._on_change()        # Then update profile and validate to ensure algorithm is set correctly
 
     def _on_scope_changed(self, scope_kind: str) -> None:
         """Handle scope kind change with conditional UI updates."""
-        self._on_change()
-        self._update_ui_state()
+        self._update_ui_state()  # Update UI state
+        self._on_change()        # Then update profile and validate since no signal from UI changes
 
     def _on_degree_changed(self, value: int) -> None:
         """Handle degree slider change."""
@@ -421,16 +427,53 @@ class StructuredProfileEditorWidget(QWidget):
         mode = self.cmb_mode.currentText()
         scope_kind = self.cmb_scope_kind.currentText()
 
-        # Enable/disable degree based on mode
+        # Show/hide and enable/disable degree controls based on mode
         is_similarity = mode == "similarity"
+        self.lbl_degree_label.setVisible(is_similarity)
+        self.degree_widget.setVisible(is_similarity)
         self.sld_degree.setEnabled(is_similarity)
         self.lbl_degree.setEnabled(is_similarity)
 
-        # Enable/disable algorithm based on mode
-        self.cmb_algorithm.setEnabled(True)
+        # Update algorithm options based on mode
         if mode == "duplicates":
-            self.cmb_algorithm.setCurrentText("blake3")
-            self.cmb_algorithm.setEnabled(False)
+            desired_algos = ["blake3", "xxh3"]
+        elif mode == "similarity":
+            desired_algos = ["pHash"]
+        else:
+            desired_algos = []
+        
+        # Save current algorithm before potentially changing items
+        current_algo_before = self.cmb_algorithm.currentText()
+        
+        # Get current items in the algorithm combo box
+        current_items = [self.cmb_algorithm.itemText(i) for i in range(self.cmb_algorithm.count())]
+        
+        # Only update the combo box items if they are different from desired
+        if set(current_items) != set(desired_algos):
+            self.cmb_algorithm.blockSignals(True)
+            self.cmb_algorithm.clear()
+            if desired_algos:
+                self.cmb_algorithm.addItems(desired_algos)
+                # After adding items, set current text: preserve if valid, else use first item
+                if current_algo_before in desired_algos:
+                    self.cmb_algorithm.setCurrentText(current_algo_before)
+                else:
+                    self.cmb_algorithm.setCurrentText(desired_algos[0])
+            self.cmb_algorithm.blockSignals(False)
+        
+        # Ensure current algorithm is valid for the mode (in case it was set to something invalid)
+        current_algo = self.cmb_algorithm.currentText()
+        if desired_algos and current_algo not in desired_algos:
+            self.cmb_algorithm.blockSignals(True)
+            self.cmb_algorithm.setCurrentText(desired_algos[0])
+            self.cmb_algorithm.blockSignals(False)
+            # Update _current_profile to reflect the change
+            if "criteria" not in self._current_profile:
+                self._current_profile["criteria"] = {}
+            self._current_profile["criteria"]["algorithm"] = desired_algos[0]
+        
+        # Enable/disable based on mode
+        self.cmb_algorithm.setEnabled(bool(desired_algos))
 
         # Enable/disable Pool B based on scope
         is_two_pool = scope_kind == "two_pool"
@@ -477,22 +520,57 @@ class StructuredProfileEditorWidget(QWidget):
             paths_b = pool_b.get("paths", [])
             self.inp_pool_b_paths.setPlainText("\n".join(paths_b))
 
-        # Mode and criteria
-        self.cmb_mode.setCurrentText(profile.get("mode", "duplicates"))
+        # Block signals for mode and algorithm comboboxes to prevent recursive updates during load
+        self.cmb_mode.blockSignals(True)
+        self.cmb_algorithm.blockSignals(True)
+
+        # Mode
+        mode = profile.get("mode", "duplicates")
+        self.cmb_mode.setCurrentText(mode)
+
+        # Set algorithm combo box items based on mode to ensure correct options before setting algorithm
+        if mode == "duplicates":
+            desired_algos = ["blake3", "xxh3"]
+        elif mode == "similarity":
+            desired_algos = ["pHash"]
+        else:
+            desired_algos = []
+
+        # Get current items in the algorithm combo box
+        current_items = [self.cmb_algorithm.itemText(i) for i in range(self.cmb_algorithm.count())]
+        
+        # Only update the combo box items if they are different from desired
+        if set(current_items) != set(desired_algos):
+            self.cmb_algorithm.clear()
+            if desired_algos:
+                self.cmb_algorithm.addItems(desired_algos)
+
+        # Now set criteria from profile
         criteria = profile.get("criteria", {})
-        self.cmb_algorithm.setCurrentText(criteria.get("algorithm", "pHash"))
+        # Get algorithm with mode-based default
+        if mode == "duplicates":
+            default_algo = "blake3"
+        else:
+            default_algo = "pHash"
+        algorithm = criteria.get("algorithm", default_algo)
+        self.cmb_algorithm.setCurrentText(algorithm)
         self.sld_degree.setValue(criteria.get("degree_ui", 90))
 
-        # Scope
+        # Unblock signals
+        self.cmb_algorithm.blockSignals(False)
+        self.cmb_mode.blockSignals(False)
+
+        # Update UI state for enable/disable logic (without changing algorithm items)
+        self._update_ui_state()
+
+        # Set scope and output
         scope = profile.get("scope", {})
         self.cmb_scope_kind.setCurrentText(scope.get("kind", "single_pool"))
         self.cmb_scope_direction.setCurrentText(scope.get("direction", "A_TO_B"))
 
-        # Output
         output = profile.get("output", {})
         self.cmb_output_mode.setCurrentText(output.get("mode", "report_only"))
 
-        self._update_ui_state()
         self._validate_profile()
         self._set_dirty(False)
 
