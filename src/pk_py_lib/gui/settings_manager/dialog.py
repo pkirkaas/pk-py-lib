@@ -63,7 +63,7 @@ from .models import ProfilesListModel
 from .editor_widget import SettingsProfileEditorWidget
 from .controller import SettingsManagerController
 from ...api import ErrorCodes
-from ..utils.messages import show_selectable_error, show_selectable_info
+from ..utils.messages import show_selectable_error, show_selectable_info, handle_gui_error, gui_error_handler, gui_error_context
 
 
 class _NamePromptDialog(QDialog):
@@ -500,10 +500,18 @@ class SettingsManagerDialog(QDialog):
         # DialogButtonBox apply is wired via clicked signal; no direct enable toggle here.
 
     def _show_error(self, title: str, message: Optional[str], code: Optional[str]) -> None:
+        """Show error using centralized error handler with detailed logging."""
         msg = str(message) if message is not None else "An unexpected error occurred."
         if code:
             msg += f"\n\nCode: {code}"
-        show_selectable_error(self, title, msg)
+        
+        handle_gui_error(
+            parent=self,
+            error=msg,
+            title=title,
+            component_name="SettingsManagerDialog",
+            error_code=code
+        )
 
     def _show_empty_state_hint(self) -> None:
         # If there are no profiles, hint user to Create

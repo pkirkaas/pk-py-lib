@@ -62,6 +62,9 @@ except Exception as e:  # pragma: no cover - headless environments
 # Core filesystem utilities used for validation
 from src.pk_py_lib.core.filesystem.paths import PathOperations
 
+# GUI error handling
+from ..utils.messages import handle_gui_error
+
 
 # ----------------------------- Filter Model ---------------------------------
 
@@ -662,21 +665,46 @@ class PathSelectorDialog(QDialog):
     def _accept(self) -> None:
         # Validate selection against filter rules and exist
         if not self._selected_path:
-            QMessageBox.warning(self, "No selection", "Please select a path.")
+            handle_gui_error(
+                parent=self,
+                error="Please select a path.",
+                title="No selection",
+                component_name="PathSelectorDialog"
+            )
             return
         p = self._selected_path
         if not p.exists():
-            QMessageBox.warning(self, "Invalid path", f"Path does not exist:\n{p}")
+            handle_gui_error(
+                parent=self,
+                error=f"Path does not exist:\n{p}",
+                title="Invalid path",
+                component_name="PathSelectorDialog"
+            )
             return
         if p.is_dir() and not self._filter_spec.allow_dirs:
-            QMessageBox.warning(self, "Not allowed", "Directory selection is not allowed")
+            handle_gui_error(
+                parent=self,
+                error="Directory selection is not allowed",
+                title="Not allowed",
+                component_name="PathSelectorDialog"
+            )
             return
         if p.is_file():
             if not self._filter_spec.allow_files:
-                QMessageBox.warning(self, "Not allowed", "File selection is not allowed")
+                handle_gui_error(
+                    parent=self,
+                    error="File selection is not allowed",
+                    title="Not allowed",
+                    component_name="PathSelectorDialog"
+                )
                 return
             if not self._filter_spec.allows_file_extension(p.suffix):
-                QMessageBox.warning(self, "Filtered out", f"File extension not allowed: {p.suffix}")
+                handle_gui_error(
+                    parent=self,
+                    error=f"File extension not allowed: {p.suffix}",
+                    title="Filtered out",
+                    component_name="PathSelectorDialog"
+                )
                 return
         self.accept()
 
@@ -796,7 +824,12 @@ class MultiPathSelectorWidget(QWidget):
         """
         p = Path(path).resolve()
         if not p.exists():
-            QMessageBox.warning(self, "Path Does Not Exist", f"The selected path does not exist:\n{p}")
+            handle_gui_error(
+                parent=self,
+                error=f"The selected path does not exist:\n{p}",
+                title="Path Does Not Exist",
+                component_name="MultiPathSelectorWidget"
+            )
             return
 
         existing = self._current_paths()
@@ -804,18 +837,23 @@ class MultiPathSelectorWidget(QWidget):
 
         # Duplicate
         if p in existing_norm:
-            QMessageBox.information(self, "Duplicate Path", f"The path is already in the list:\n{p}")
+            handle_gui_error(
+                parent=self,
+                error=f"The path is already in the list:\n{p}",
+                title="Duplicate Path",
+                component_name="MultiPathSelectorWidget"
+            )
             return
 
         # Check if the new path is a subpath of any existing path (violates "contained by existing")
         for ex in existing_norm:
             try:
                 p.relative_to(ex)
-                QMessageBox.warning(
-                    self,
-                    "Path Is Contained",
-                    f"The selected path is contained within an existing path:\n\n"
-                    f"Selected: {p}\nExisting: {ex}\n\nPlease choose a different path."
+                handle_gui_error(
+                    parent=self,
+                    error=f"The selected path is contained within an existing path:\n\nSelected: {p}\nExisting: {ex}\n\nPlease choose a different path.",
+                    title="Path Is Contained",
+                    component_name="MultiPathSelectorWidget"
                 )
                 return
             except ValueError:

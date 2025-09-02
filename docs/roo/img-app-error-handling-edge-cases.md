@@ -1836,3 +1836,202 @@ Save gating for Set A (A-only valid)
   - Degree controls enabled only in Similarity mode (capabilities.can_enable_degree_controls = true when mode = "similarity")
 - Reference:
   - Capabilities derivation rules (see [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1459))
+
+## 14. Comprehensive GUI Error Handling System
+
+The project now includes a comprehensive GUI error handling system implemented in [`src/pk_py_lib/gui/utils/messages.py`](src/pk_py_lib/gui/utils/messages.py). This system provides centralized error handling for all GUI operations with consistent user-facing dialogs and detailed logging.
+
+### 14.1 Overview of the Error Handling System
+
+The GUI error handling system consists of three main components:
+
+#### 14.1.1 `handle_gui_error` Function
+Centralized error handler that:
+- Shows user-friendly error dialogs with selectable text
+- Logs detailed error information to STDERR with full context
+- Captures call stack, parameters, and component information
+- Supports both string messages and exception objects
+
+**Key Features:**
+- **Selectable Text Dialogs**: All error dialogs use [`show_selectable_error`](src/pk_py_lib/gui/utils/messages.py:118) which enables text selection for easy copying
+- **Comprehensive Logging**: Detailed error information including component name, file path, line number, parameters, and full stack traces
+- **Dual Output**: User-friendly dialogs + detailed technical logging for debugging
+
+#### 14.1.2 `gui_error_handler` Decorator
+Automatic error handling decorator for GUI functions that:
+- Automatically wraps functions to catch exceptions
+- Extracts context from function arguments
+- Determines parent widget automatically (for QWidget methods)
+- Provides configurable component naming and default context
+
+#### 14.1.3 `gui_error_context` Context Manager
+Context manager for GUI operations that:
+- Catches exceptions within the context
+- Handles them using the centralized error system
+- Re-raises exceptions after handling (allows calling code to handle cleanup)
+- Provides configurable context variables
+
+### 14.2 Compliance with Project Requirements
+
+The system fully complies with the project's GUI error handling requirements:
+
+#### 14.2.1 Selectable Text in Dialogs
+- Uses [`show_selectable_error`](src/pk_py_lib/gui/utils/messages.py:118) which internally calls [`_enable_label_selection`](src/pk_py_lib/gui/utils/messages.py:31) to enable text selection on all QMessageBox labels
+- Users can copy/paste error messages for debugging
+
+#### 14.2.2 Detailed STDERR Logging
+The system logs comprehensive error details including:
+- **Full error text/description**: Complete error message
+- **File path of component**: Full path to source file where error occurred  
+- **Line number**: Exact line number where error was handled
+- **Parameters/values**: All context variables that caused the error
+- **Call stack**: Complete stack trace for exceptions
+
+**Logging Examples:**
+- With logging infrastructure available: Uses structured logging with [`get_logger("gui.error")`](src/pk_py_lib/gui/utils/messages.py:236)
+- Without logging: Falls back to detailed STDERR output with all context ([lines 258-277](src/pk_py_lib/gui/utils/messages.py:258))
+
+### 14.3 Usage Examples
+
+#### 14.3.1 Basic Usage with `handle_gui_error`
+```python
+from src.pk_py_lib.gui.utils.messages import handle_gui_error
+
+# Handle exception with context
+try:
+    risky_operation()
+except Exception as e:
+    handle_gui_error(
+        parent=self,  # QWidget parent for dialog
+        error=e,
+        title="Operation Failed",
+        component_name="MyComponent",
+        file_path="/path/to/file.jpg",
+        operation_type="image_processing"
+    )
+```
+
+#### 14.3.2 Automatic Handling with `gui_error_handler` Decorator
+```python
+from src.pk_py_lib.gui.utils.messages import gui_error_handler
+
+@gui_error_handler(component_name="FileProcessor", operation="file_processing")
+def process_file(self, file_path: str, quality: int):
+    """Automatically handles errors in this method"""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+    # Processing logic here
+```
+
+#### 14.3.3 Context-Based Handling with `gui_error_context`
+```python
+from src.pk_py_lib.gui.utils.messages import gui_error_context
+
+with gui_error_context(
+    parent=self,
+    component_name="BatchProcessing", 
+    batch_id=123,
+    file_count=len(files)
+):
+    for file in files:
+        process_file(file)  # Errors automatically handled
+```
+
+### 14.4 Integration with Existing Components
+
+#### 14.4.1 Settings Manager Integration
+The Settings Manager components already integrate with the error handling system:
+
+**Settings Manager Dialog** ([`src/pk_py_lib/gui/settings_manager/dialog.py`](src/pk_py_lib/gui/settings_manager/dialog.py:502)):
+```python
+def _show_error(self, title: str, message: Optional[str], code: Optional[str]) -> None:
+    """Show error using centralized error handler with detailed logging."""
+    msg = str(message) if message is not None else "An unexpected error occurred."
+    if code:
+        msg += f"\n\nCode: {code}"
+    
+    handle_gui_error(
+        parent=self,
+        error=msg,
+        title=title,
+        component_name="SettingsManagerDialog",
+        error_code=code
+    )
+```
+
+**Structured Settings Dialog** ([`src/pk_py_lib/gui/settings_manager/structured_dialog.py`](src/pk_py_lib/gui/settings_manager/structured_dialog.py:533)):
+```python
+def _show_error(self, title: str, message: Optional[str], code: Optional[str]) -> None:
+    """Show error using centralized error handler with detailed logging."""
+    msg = str(message) if message is not None else "An unexpected error occurred."
+    if code:
+        msg += f"\n\nCode: {code}"
+    
+    handle_gui_error(
+        parent=self,
+        error=msg,
+        title=title,
+        component_name="StructuredSettingsManagerDialog",
+        error_code=code
+    )
+```
+
+#### 14.4.2 File Selector Integration
+File selector components can be easily enhanced with error handling:
+
+```python
+from src.pk_py_lib.gui.utils.messages import gui_error_handler
+
+@gui_error_handler(component_name="FileSelector", operation="directory_selection")
+def on_directory_selected(self, directory_path: str):
+    """Handle directory selection with automatic error handling"""
+    if not os.path.isdir(directory_path):
+        raise ValueError(f"Invalid directory: {directory_path}")
+    # Process directory
+```
+
+### 14.5 Error Handling Patterns
+
+#### 14.5.1 Centralized Error Handling
+All GUI errors should be routed through [`handle_gui_error`](src/pk_py_lib/gui/utils/messages.py:175) for consistent behavior:
+- User-friendly dialogs with selectable text
+- Detailed technical logging
+- Context capture for debugging
+
+#### 14.5.2 Decorator Pattern for Methods
+Use [`gui_error_handler`](src/pk_py_lib/gui/utils/messages.py:280) for automatic error handling in GUI methods:
+- Automatically captures method arguments as context
+- Determines parent widget from `self` parameter
+- Provides clean error handling without try/except blocks
+
+#### 14.5.3 Context Manager Pattern for Operations
+Use [`gui_error_context`](src/pk_py_lib/gui/utils/messages.py:352) for error handling in operation blocks:
+- Handles errors within specific contexts
+- Allows re-raising for cleanup operations
+- Provides operation-specific context variables
+
+### 14.6 Testing and Validation
+
+The error handling system includes comprehensive tests in [`test_gui_error_handling.py`](test_gui_error_handling.py) covering:
+- String and exception error handling
+- Decorator functionality with and without parameters  
+- Context manager successful and error cases
+- Integration with existing components
+
+### 14.7 Best Practices
+
+1. **Use Centralized Handling**: Always use [`handle_gui_error`](src/pk_py_lib/gui/utils/messages.py:175) instead of direct QMessageBox calls
+2. **Provide Context**: Include relevant context variables for better debugging
+3. **Component Naming**: Use descriptive component names for better error identification
+4. **Decorator for Methods**: Use [`gui_error_handler`](src/pk_py_lib/gui/utils/messages.py:280) for GUI method error handling
+5. **Context for Operations**: Use [`gui_error_context`](src/pk_py_lib/gui/utils/messages.py:352) for operation blocks
+
+### 14.8 Error Recovery Strategy
+
+The GUI error handling system follows these recovery principles:
+1. **User Communication**: Show clear, actionable error messages
+2. **Technical Logging**: Record detailed error information for debugging
+3. **Context Preservation**: Capture all relevant context for issue resolution
+4. **Graceful Degradation**: Allow application to continue when possible
+
+This comprehensive error handling system ensures robust GUI operation with excellent user experience and detailed debugging capabilities.
