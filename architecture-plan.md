@@ -461,61 +461,63 @@ python -m img_app
 5. Add img_app plan and scaffolding per sections above
 ## Settings/Profile Manager (References)
 
-Status: Planned
+Status: Implemented (Integrated)
 
 Brief
-- The application must present a startup modal to manage and select a Settings Profile before the main window is created. Active profile semantics and validation rules are canonicalized. This section cross-references the full design and does not duplicate content.
+- The application now launches directly with settings management integrated into the main window. Profile selection and management occur within the main application interface instead of a separate modal dialog. Active profile semantics and validation rules remain canonicalized. This section cross-references the updated design and does not duplicate content.
 
 Cross-References
 - UI design and flows: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md:1) (Section "Settings/Profile Manager")
 - Technical architecture: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1) (Section "Settings Profiles Architecture")
 - API contract: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1) (Section "Settings Profiles API")
 - Error handling: [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md:1) (Section "Settings/Profile Manager Errors and Edge Cases")
-- Implementation steps: [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1) (Section "Integrating the Settings Manager at Startup")
-- Canonical decisions: [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:1) (Section "Settings Profiles and Startup Modal")
+- Implementation steps: [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1) (Section "Integrating Settings Management in Main Window")
+- Canonical decisions: [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:1) (Section "Settings Profiles and Integrated Management")
 
-Next Steps
-- Implement core manager [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1) and API adapter [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
-- Implement reusable GUI dialog [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1)
-- Add app integration helper [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1) and wire in [img_app/img_app/app.py](img_app/img_app/app.py:60)
-- Add tests: core/API unit tests and pytest-qt GUI/startup flows
-<!-- Settings Manager high-level plan addendum -->
+Implementation Status
+- Core manager and API adapter implemented: [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1), [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
+- Settings management integrated into main window: [img_app/img_app/main_window.py](img_app/img_app/main_window.py:1)
+- App bootstrap updated for direct launch: [img_app/img_app/app.py](img_app/img_app/app.py:60)
+- Tests: core/API unit tests implemented; GUI integration tested
 
-## Settings Manager — High-Level Plan and Cross-References (Final)
+## Settings Manager — Integrated Architecture and Cross-References (Updated)
 
-Status: Approved
+Status: Implemented (Integrated)
 
 Summary
-- On application launch, a blocking modal Settings/Profile Manager requires the user to create/select/edit/delete/copy settings profiles and confirm an Active profile before the main window is created.
+- The application now launches directly with settings management fully integrated into the main window interface. Users can select, create, copy, and manage profiles directly from the main application without a blocking modal dialog.
 
-Library-first implementation
-- GUI (reusable, PySide6) will live under:
-  - [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1)
-  - [src/pk_py_lib/gui/settings_manager/controller.py](src/pk_py_lib/gui/settings_manager/controller.py:1)
-  - [src/pk_py_lib/gui/settings_manager/models.py](src/pk_py_lib/gui/settings_manager/models.py:1)
-  - [src/pk_py_lib/gui/settings_manager/validators.py](src/pk_py_lib/gui/settings_manager/validators.py:1)
-- Core and API already implemented:
+Library implementation
+- Core and API implemented:
   - [SettingsProfilesManager](src/pk_py_lib/core/settings_profiles.py:95) — CRUD/copy/active/default/import/export, invariants
   - [SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69) — id-centric API returning ApiResponse and ErrorCodes
   - Active persistence via `meta.active_profile_id` managed in [DatabaseManager.initialize()](src/pk_py_lib/core/database.py:415) and core manager logic
+- GUI components available for reuse:
+  - [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1) — Standalone dialog (optional use)
+  - [src/pk_py_lib/gui/settings_manager/controller.py](src/pk_py_lib/gui/settings_manager/controller.py:1)
+  - [src/pk_py_lib/gui/settings_manager/models.py](src/pk_py_lib/gui/settings_manager/models.py:1)
+  - [src/pk_py_lib/gui/settings_manager/validators.py](src/pk_py_lib/gui/settings_manager/validators.py:1)
 
 App integration
-- Thin startup helper: [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
-- App bootstrap wiring: [img_app/img_app/app.py](img_app/img_app/app.py:60)
-- After a successful Set Active, align in-process state with [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399)
-
-Acceptance criteria (architecture-level)
-- Blocks main UI until a valid Active is present; Cancel exits app
-- All profile operations occur through the API and respect invariants (no direct DB in GUI)
+- Main window integration: [img_app/img_app/main_window.py](img_app/img_app/main_window.py:1) — Profile management UI with combobox, create/copy buttons, and progress reporting
+- App bootstrap: [img_app/img_app/app.py](img_app/img_app/app.py:60) — Direct launch with active profile loading
+- Profile operations occur through the API respecting all invariants
 - `meta.active_profile_id` is set consistently; list responses include `is_active`
 
+Acceptance criteria (updated architecture-level)
+- Application launches directly to main window with integrated settings management
+- Profile selection and management available without modal dialogs
+- All profile operations occur through the API and respect invariants (no direct DB in GUI)
+- Active profile is persisted and restored on launch
+- Progress reporting and results display integrated into main interface
+
 Cross-references
-- UI design and flows: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md:1) (Section 13A)
-- Technical architecture details: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1) (Section 11A)
-- API contract: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1) (Section 13A)
-- Errors and edge cases: [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md:1) (Section 13A)
-- Implementation steps: [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1) (Section 14A)
-- Canonical decisions: [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:1) (Section 17A)
+- UI design and flows: [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md:1) (Section "Integrated Settings Management")
+- Technical architecture details: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1) (Section "Integrated Settings Architecture")
+- API contract: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1) (Section "Settings Profiles API")
+- Errors and edge cases: [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md:1) (Section "Integrated Settings Management")
+- Implementation steps: [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1) (Section "Integrating Settings Management in Main Window")
+- Canonical decisions: [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:1) (Section "Settings Profiles and Integrated Management")
 
 ## Addendum — Package A specifics alignment (Option A, Balanced Defaults v1)
 

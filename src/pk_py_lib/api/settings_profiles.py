@@ -519,5 +519,26 @@ class SettingsProfilesAPI:
             logger.exception("create_default_json_profile failed name=%s", name)
             return ApiResponse.fail(str(e), code=_map_exception(e))
 
+    def suggest_unique_name(self, base_name: str) -> ApiResponse[str]:
+        """
+        Suggest a unique profile name based on the given base name.
+        
+        Parameters
+        ----------
+        base_name : str
+            Base name to use for suggestion
+            
+        Returns
+        -------
+        ApiResponse[str]
+            Suggested unique name
+        """
+        try:
+            suggested_name = self.manager.suggest_unique_name(base_name)
+            return ApiResponse.ok(suggested_name)
+        except Exception as e:
+            logger.exception("suggest_unique_name failed base_name=%s", base_name)
+            return ApiResponse.fail(str(e), code=_map_exception(e))
+
 
 __all__ = ["SettingsProfilesAPI"]

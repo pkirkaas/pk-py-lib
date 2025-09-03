@@ -31,14 +31,14 @@ def get_application_paths():
     base_dir = os.environ.get('PK_IMG_APP_HOME')
     
     if base_dir:
-        data_dir = Path(base_dir) / "data"
+        data_dir = Path(base_dir)
         cache_dir = Path(base_dir) / "cache"
         log_dir = Path(base_dir) / "logs"
     else:
-        # Use platformdirs with Vendor "Pk" and App "Img App"
-        data_dir = Path(platformdirs.user_data_dir("Img App", "Pk"))
-        cache_dir = Path(platformdirs.user_cache_dir("Img App", "Pk"))
-        log_dir = Path(platformdirs.user_log_dir("Img App", "Pk"))
+        # Use the same path as DatabaseManager (~/.kdc_image_organizer)
+        data_dir = Path.home() / ".kdc_image_organizer"
+        cache_dir = data_dir / "cache"
+        log_dir = data_dir / "logs"
     
     # Ensure directories exist (for accurate path reporting)
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -46,9 +46,8 @@ def get_application_paths():
     log_dir.mkdir(parents=True, exist_ok=True)
     
     return {
-        # Database files
+        # Database files (only settings.db and cache.db are currently implemented)
         "settings_db": data_dir / "settings.db",
-        "sessions_db": data_dir / "sessions.db", 
         "cache_db": cache_dir / "cache.db",
         
         # Backup directories
@@ -67,9 +66,13 @@ def display_locations():
     """Display all application file locations and exit."""
     paths = get_application_paths()
     
-    # Print each path on its own line
+    # Print each path on its own line with existence indicator
     for name, path in paths.items():
-        print(str(path.absolute()))
+        path_str = str(path.absolute())
+        if path.exists():
+            print(f"{path_str} ✓")
+        else:
+            print(f"{path_str} ✗ (does not exist)")
     
     sys.exit(0)
 

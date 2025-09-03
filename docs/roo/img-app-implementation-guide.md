@@ -1269,120 +1269,104 @@ After completing the basic implementation:
    - Complete documentation
    - Create user manual
    - Set up CI/CD pipeline
-## 14. Integrating the Settings Manager at Startup
+## 14. Integrated Settings Management in Main Window
 
-Status: Planned
+Status: Implemented
 
 Purpose
-- Enforce that the application runs with a valid, explicitly selected Active settings profile before the main window is created.
-- Provide a modal Settings/Profile Manager at startup to handle first-run (zero profiles), selection, CRUD+copy, validation, and Set Active/Default operations.
+- Provide direct access to settings profile management within the main application window.
+- Eliminate the modal startup dialog in favor of integrated UI components.
+- Default to the last active profile on launch, with automatic creation of a default profile if none exist.
+- Enable profile creation, copying, and selection without interrupting the main workflow.
 
 Scope and References
 - App bootstrap: [img_app/img_app/app.py](img_app/img_app/app.py:60)
 - Main window: [img_app/img_app/main_window.py](img_app/img_app/main_window.py:1)
 - Library configuration and DB: [src/pk_py_lib/core/configuration.py](src/pk_py_lib/core/configuration.py:1), [src/pk_py_lib/core/database.py](src/pk_py_lib/core/database.py:1)
-- Proposed APIs:
-  - Library core profiles manager: [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1)
-  - Library API adapter: [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
-  - Reusable GUI dialog: [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1)
-  - App integration helper: [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1)
+- Profile management API: [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
 
-14.1 Startup Gate: High-Level Sequence
+14.1 Startup Sequence: High-Level Flow
 
 - Initialize DatabaseManager and ConfigurationManager
-- Launch Settings/Profile Manager modal
-- Require a valid Active profile before continuing
-- If canceled with no Active profile, exit application
+- Ensure a default profile exists via API
+- Create MainWindow with integrated profile management
+- Load available profiles and select the last active profile
+- Show main UI with profile combobox and management buttons
 
 ```mermaid
 flowchart TD
   A[App start] --> B[Init DatabaseManager]
   B --> C[Init ConfigurationManager]
-  C --> D[Open Settings/Profile Manager modal]
-  D --> E{Valid Active profile set}
-  E -->|Yes| F[Close modal]
-  E -->|No (Cancel)| X[Exit app]
-  F --> G[Create MainWindow]
-  G --> H[Show main UI]
+  C --> D[Ensure default profile exists]
+  D --> E[Create MainWindow]
+  E --> F[Load profiles and select active]
+  F --> G[Show main UI with integrated profile management]
 ```
 
-14.2 Integration Steps (no code)
+14.2 Integration Steps
 
 1) Initialize core components
 - Create and initialize [DatabaseManager.initialize()](src/pk_py_lib/core/database.py:405) to ensure settings.db exists with canonical schema and meta table.
 - Construct [ConfigurationManager](src/pk_py_lib/core/configuration.py:126) with the database manager instance.
+- Use [SettingsProfilesAPI.ensure_default_profile()](src/pk_py_lib/api/settings_profiles.py:1) to guarantee at least one profile exists.
 
-2) Display the startup modal
-- Invoke the reusable dialog from [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1) as a blocking modal.
-- The dialog is responsible for:
-  - Listing profiles and showing an empty-state for zero profiles
-  - Creating/copying/editing/deleting profiles with validation
-  - Setting Active (updates meta.active_profile_id) and optionally Default (profiles.is_default)
-  - Enforcing invariants: cannot delete Active or last remaining profile
+2) Create main window with integrated profile management
+- The [MainWindow](img_app/img_app/main_window.py:49) now includes:
+  - Profile selection combobox
+  - "New Profile" and "Copy Profile" buttons
+  - "Start" button to initiate operations
+  - Progress reporting section with dynamic updates
+  - Results dialog upon completion
+- Profile management occurs directly within the main UI without modal dialogs
 
-3) Active profile contract
-- The modal must ensure that, when it closes with acceptance, there is a valid Active profile:
-  - meta.active_profile_id points to an existing profiles.id
-  - [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399) aligns the in-process active profile
-- If canceled without any Active profile defined, terminate the application early per policy.
+3) Active profile handling
+- The main window loads available profiles on initialization
+- The last active profile is automatically selected
+- Profile changes update the active profile in the database via [SettingsProfilesAPI.set_active_profile()](src/pk_py_lib/api/settings_profiles.py:260)
+- The [ConfigurationManager.switch_profile()](src/pk_py_lib/core/configuration.py:399) aligns in-process state with the selected profile
 
-4) Proceed to main window creation
-- After acceptance, read app-scoped settings (e.g., cache size) and other dependent configuration as needed, then instantiate [MainWindow](img_app/img_app/main_window.py:49).
-- Attach managers (database, configuration, cache) to the window instance as currently done in [img_app/img_app/app.py](img_app/img_app/app.py:106).
+4) Progress and results reporting
+- Operations show real-time progress with percentage completed, files processed, and ETA
+- Upon completion, a detailed results dialog summarizes the comparison outcomes
+- All reporting occurs within the main window context
 
-14.3 App-Side Helper (recommended organization)
+14.3 UI Components
 
-- Add a small integration helper in [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1) to:
-  - Accept DB/Config instances
-  - Launch the modal dialog
-  - Return a boolean indicating whether to continue (Active profile present) or exit
-- Keep application bootstrap (main) thin and declarative.
+The main window now features:
+- **Profile Toolbar**: Combobox for profile selection, "New Profile", "Copy Profile", and "Start" buttons
+- **Progress Section**: Progress bar, status labels (percentage, files processed, ETA)
+- **Results Dialog**: Modal dialog showing operation results upon completion
 
 14.4 Dependencies and Notes
 
 - GUI framework: PySide6 (already in project)
 - Database: SQLite via [DatabaseManager](src/pk_py_lib/core/database.py:1)
-- Active vs Default semantics:
-  - Active: controls current session; stored in meta.active_profile_id
-  - Default: preferred for future sessions; only one profile has is_default=1
-- Fallback strategy (rare):
-  - If SQLite initialization fails catastrophically, core may choose to write a minimal JSON fallback (profiles.json) and proceed with warnings; see architecture notes in [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:1)
+- Active profile semantics unchanged: stored in meta.active_profile_id
+- Fallback strategy: If no profiles exist, a default profile is automatically created
 
 14.5 Validation, Errors, and UX
 
-- Validation:
-  - Name: required; 1–64; [A–Z a–z 0–9 space _ -]; unique (case-insensitive)
-  - Thresholds: UI percent 0–100 maps to internal 0.0–1.0 (see thresholds helpers)
-- Errors and edge cases:
-  - Duplicate name, delete Active, delete last profile
-  - Database locked, write failures, import/export errors
-- See detailed catalog in [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md:1)
+- Validation occurs during profile operations through the existing API
+- Error handling remains consistent with existing patterns
+- UX improvements: Reduced modal interruptions, direct access to profile management
 
 14.6 Testing Guidance
 
-- Unit tests (core and API):
-  - CRUD invariants: create, unique naming, copy, set default exclusivity, delete constraints
-  - Active profile persistence in meta.active_profile_id and ConfigurationManager alignment
-- GUI tests (pytest-qt):
-  - First-run flow: zero profiles → create → set active → continue
-  - Existing Active: dialog shows; Continue proceeds without edits
-  - Cancel without Active: application exits
-- Integration tests:
-  - Startup gate prevents main window creation without Active
-  - Switching Active affects session configuration retrieval (e.g., hashing policy, cache size if profile-scoped later)
+- Unit tests: Verify profile loading, selection, and active profile persistence
+- Integration tests: Ensure full workflow from profile selection to operation completion
+- GUI tests: Verify UI component interactions and state changes
 
 14.7 Rationale
 
-- Modal-first startup ensures deterministic configuration and reduces runtime drift.
-- Clear separation between Default and Active improves UX and aligns with session vs preference semantics.
-- The reusable dialog emphasizes library-first design and reusability across apps.
+- Integrated profile management provides a smoother user experience
+- Eliminates the modal interruption at startup
+- Maintains all existing functionality while improving accessibility
+- Aligns with modern application design patterns
 
 Next Steps
-- Implement the reusable dialog in [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1) per the UI spec.
-- Implement core profile manager [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1) and API adapter [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1).
-- Add startup-gate helper in [img_app/img_app/widgets/settings_manager.py](img_app/img_app/widgets/settings_manager.py:1) and wire it in [img_app/img_app/app.py](img_app/img_app/app.py:60).
-- Add pytest-qt tests for modal flows and invariants.
-<!-- Settings Manager implementation updates -->
+- Enhance profile creation and copying functionality
+- Add advanced profile management features as needed
+- Continue refining the integrated UI based on user feedback
 
 ## 14A. Settings Manager — Library Files, App Integration, and Acceptance
 

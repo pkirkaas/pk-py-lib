@@ -414,7 +414,7 @@ def create_default_profile(name: str, description: Optional[str] = None) -> Dict
         "updated_at": now,
         "pools": {
             "A": {
-                "paths": [],  # Must be set by user
+                "paths": [str(Path.home())],  # Default to user's home directory
                 "recurse": True,
                 "max_depth": 0,
                 "include": ["**/*"],

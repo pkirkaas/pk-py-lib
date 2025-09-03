@@ -65,13 +65,12 @@ def main() -> int:
     """
     Entry point for launching the KDC Image Organizer application.
 
-    Startup sequence (modal Settings Manager enforced):
+    Startup sequence (direct launch with integrated settings management):
     1) Instantiate QApplication.
     2) Initialize/open database and run migrations via DatabaseManager.
     3) Create SettingsProfilesAPI and ensure_default_profile() to guarantee an Active profile exists.
-    4) Present the Settings Manager dialog modally (always shown on launch).
-    5) After dismissal (OK or Cancel), fetch the active profile; if missing, ensure a default and re-fetch.
-    6) Create and show MainWindow, passing the active profile.
+    4) Fetch the active profile for the main window.
+    5) Create and show MainWindow, passing the active profile and managers.
 
     Returns
     -------
@@ -80,8 +79,8 @@ def main() -> int:
 
     Notes
     -----
-    - The dialog is shown before the main window; exec() on the dialog runs a nested event loop.
-    - Robust error handling: any fatal error during DB/API/dialog startup is shown via QMessageBox, and the app exits.
+    - The application now launches directly with settings management integrated into the main window.
+    - Robust error handling: any fatal error during DB/API startup is shown via QMessageBox, and the app exits.
     """
     app = _ensure_application()
 
@@ -112,23 +111,22 @@ def main() -> int:
             )
             return 1
 
-        # 4) Present Settings Manager dialog (always on launch, modal)
-        try:
-            # Get the active profile from the dialog; exit if canceled
-            active_profile = structured_settings_manager_dialog(parent=None, modal=True)
-            if active_profile is None:
-                # User canceled the dialog, exit the application
-                return 0
-        except Exception as dlg_exc:
-            show_selectable_error(
-                None,
-                "Settings Manager Error",
-                f"Failed to open Settings Manager:\n{dlg_exc}",
-            )
-            return 1
-
-        # 5) Use the active profile returned from the dialog
-        # No need for defensive repair since dialog ensures valid active profile
+        # 4) Get the active profile for the main window
+        active_resp = api.get_active()
+        if active_resp.success and active_resp.data:
+            active_profile = active_resp.data
+        else:
+            # Fallback: get first profile if active not set
+            list_resp = api.list_profiles()
+            if list_resp.success and list_resp.data and len(list_resp.data) > 0:
+                active_profile = list_resp.data[0]
+            else:
+                show_selectable_error(
+                    None,
+                    "Startup Error",
+                    "No settings profiles available. Please create a profile to continue.",
+                )
+                return 1
 
         # Optional managers (best-effort; failures are non-fatal)
         try:
@@ -152,7 +150,7 @@ def main() -> int:
         )
         return 1
 
-    # 6) Create main window, pass active profile, and attach managers
+    # 5) Create main window, pass active profile, and attach managers
     window = MainWindow(active_profile=active_profile)
     if db_mgr is not None:
         setattr(window, "database_manager", db_mgr)
@@ -160,6 +158,9 @@ def main() -> int:
         setattr(window, "configuration_manager", config_mgr)
     if cache_mgr is not None:
         setattr(window, "cache_manager", cache_mgr)
+
+    # Load profiles now that database manager is available
+    window.load_profiles()
 
     window.show()
     return app.exec()

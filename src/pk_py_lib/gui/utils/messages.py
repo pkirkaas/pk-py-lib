@@ -39,7 +39,21 @@ def _enable_label_selection(box: "QMessageBox") -> None:
         except Exception:
             pass
 
-        # Ensure built-in labels are selectable/copyable
+        # Find ALL QLabel children and make them selectable
+        labels = box.findChildren(QLabel)
+        for lbl in labels:
+            try:
+                lbl.setTextInteractionFlags(
+                    Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard | Qt.LinksAccessibleByMouse
+                )
+                lbl.setOpenExternalLinks(True)
+                # Ensure text is in plain text format for reliable selection
+                lbl.setTextFormat(Qt.PlainText)
+            except Exception:
+                # Ignore if the binding lacks attributes on current platform
+                pass
+                
+        # Also ensure built-in labels with specific names are selectable (backward compatibility)
         for name in ("qt_msgbox_label", "qt_msgbox_informativelabel"):
             lbl = box.findChild(QLabel, name)
             if lbl is None:
@@ -49,8 +63,7 @@ def _enable_label_selection(box: "QMessageBox") -> None:
                     Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard | Qt.LinksAccessibleByMouse
                 )
                 lbl.setOpenExternalLinks(True)
-                # QLabel defaults to AutoText; leave rendering mode unchanged
-                # lbl.setTextFormat(Qt.TextFormat.AutoText)
+                lbl.setTextFormat(Qt.PlainText)
             except Exception:
                 # Ignore if the binding lacks attributes on current platform
                 pass
