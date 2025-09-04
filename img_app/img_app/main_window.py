@@ -137,7 +137,9 @@ class MainWindow(QMainWindow):
         self.profiles: List[Dict[str, Any]] = []
         self.controller = None  # Will be set when database manager is available
         self.structured_editor = None
-        
+        # Track whether we've connected structured_editor.dirtyChanged to avoid spurious disconnect warnings
+        self._editor_dirty_connected: bool = False
+         
         self._setup_window()
         self._setup_menu_bar()
         self._setup_status_bar()
@@ -657,6 +659,8 @@ class MainWindow(QMainWindow):
             try:
                 from src.pk_py_lib.gui.settings_manager.structured_editor import StructuredProfileEditorWidget
                 self.structured_editor = StructuredProfileEditorWidget(api=self.controller.api, parent=self)
+                # Reset connection tracking when editor instance changes
+                self._editor_dirty_connected = False
                 # Replace the placeholder with the actual editor
                 if self.stacked_widget.count() > 1:
                     self.stacked_widget.removeWidget(self.structured_editor_placeholder)
@@ -670,15 +674,15 @@ class MainWindow(QMainWindow):
         # Load the profile data
         resp = self.controller.get_profile(profile_id)
         if resp.success and resp.data:
-            self.structured_editor.load_profile(resp.data)
-            # Connect dirtyChanged signal to update save/cancel buttons
-            if hasattr(self.structured_editor, 'dirtyChanged'):
-                # Disconnect all existing connections from the signal safely
-                try:
-                    self.structured_editor.dirtyChanged.disconnect()
-                except RuntimeError:
-                    pass  # No connections to disconnect
-                self.structured_editor.dirtyChanged.connect(self._on_editor_dirty_changed)
+            # Extract Option A payload when profile is JSON-format; otherwise pass as-is
+            payload = resp.data.get('json_data') if isinstance(resp.data, dict) and resp.data.get('format') == 'json' and 'json_data' in resp.data else resp.data
+            self.structured_editor.load_profile(payload)
+            # Connect dirtyChanged signal to update save/cancel buttons (connect-once pattern)
+            if hasattr(self.structured_editor, 'dirtyChanged') and self.structured_editor.dirtyChanged is not None:
+                # Avoid calling disconnect() on an unconnected slot (PySide logs a RuntimeWarning)
+                if not getattr(self, "_editor_dirty_connected", False):
+                    self.structured_editor.dirtyChanged.connect(self._on_editor_dirty_changed)
+                    self._editor_dirty_connected = True
             # Switch to the editor view
             self.stacked_widget.setCurrentIndex(1)
             # Initially disable save/cancel buttons
@@ -831,6 +835,9 @@ class MainWindow(QMainWindow):
                 self._update_save_cancel_buttons(False)
                 # Reload profiles to reflect any name changes
                 self._load_profiles()
+                # Reload the current profile into the editor to ensure UI reflects saved state
+                if self.active_profile:
+                    self._load_profile_into_editor(self.active_profile['id'])
             else:
                 self.status_label.setText(f"Failed to save profile: {update_resp.message}")
         except Exception as exc:
@@ -850,7 +857,9 @@ class MainWindow(QMainWindow):
             # Reload the original profile data to discard changes
             resp = self.controller.get_profile(self.active_profile['id'])
             if resp.success and resp.data:
-                self.structured_editor.load_profile(resp.data)
+                # For JSON-format profiles, reload editor with the embedded json_data payload
+                payload = resp.data.get('json_data') if isinstance(resp.data, dict) and resp.data.get('format') == 'json' and 'json_data' in resp.data else resp.data
+                self.structured_editor.load_profile(payload)
                 self.status_label.setText("Changes discarded")
                 self._update_save_cancel_buttons(False)
             else:
