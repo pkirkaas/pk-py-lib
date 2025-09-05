@@ -194,6 +194,10 @@ class StructuredProfileEditorWidget(QWidget):
         self.inp_pool_a_paths = QPlainTextEdit()
         self.inp_pool_a_paths.setPlaceholderText("Enter paths for Pool A (one per line)\nOr use Browse to add directories/files")
         self.inp_pool_a_paths.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # Set fixed-width font for paths
+        font = self.inp_pool_a_paths.font()
+        font.setFamily("Consolas")
+        self.inp_pool_a_paths.setFont(font)
         pool_a_layout.addWidget(self.inp_pool_a_paths)
 
         pools_layout.addWidget(pool_a_group)
@@ -216,6 +220,10 @@ class StructuredProfileEditorWidget(QWidget):
         self.inp_pool_b_paths = QPlainTextEdit()
         self.inp_pool_b_paths.setPlaceholderText("Enter paths for Pool B (one per line)\nOr use Browse to add directories/files")
         self.inp_pool_b_paths.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # Set fixed-width font for paths
+        font = self.inp_pool_b_paths.font()
+        font.setFamily("Consolas")
+        self.inp_pool_b_paths.setFont(font)
         pool_b_layout.addWidget(self.inp_pool_b_paths)
 
         pools_layout.addWidget(self.pool_b_group)
