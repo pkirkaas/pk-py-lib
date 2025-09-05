@@ -105,64 +105,120 @@ class StructuredProfileEditorWidget(QWidget):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        # Metadata section
+        # Metadata section - compact single line layout
         meta_group = QGroupBox("Profile Metadata")
-        meta_layout = QFormLayout()
+        meta_group.setMaximumHeight(80)  # More compact fixed height
+        meta_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)  # Prevent vertical expansion
+        meta_layout = QHBoxLayout()
         meta_group.setLayout(meta_layout)
 
+        # Name field with label above
+        name_container = QVBoxLayout()
+        name_label = QLabel("Name:")
         self.inp_name = QLineEdit()
         self.inp_name.setPlaceholderText("Profile name (1-64 chars)")
-        meta_layout.addRow("Name:", self.inp_name)
+        name_container.addWidget(name_label)
+        name_container.addWidget(self.inp_name)
+        meta_layout.addLayout(name_container)
 
-        self.inp_description = QPlainTextEdit()
+        # Add spacing between name and description
+        meta_layout.addSpacing(20)
+
+        # Description field with label above - now single line
+        desc_container = QVBoxLayout()
+        desc_label = QLabel("Description:")
+        self.inp_description = QLineEdit()  # Changed from QPlainTextEdit to QLineEdit
         self.inp_description.setPlaceholderText("Optional description")
-        self.inp_description.setMaximumHeight(80)
-        meta_layout.addRow("Description:", self.inp_description)
+        desc_container.addWidget(desc_label)
+        desc_container.addWidget(self.inp_description)
+        meta_layout.addLayout(desc_container)
 
+        # Add stretch to push fields to the left and prevent expansion
+        meta_layout.addStretch(1)
+        
         layout.addWidget(meta_group)
 
-        # Pools section
+        # Scope section
+        scope_group = QGroupBox("Scope")
+        scope_layout = QFormLayout()
+        scope_group.setLayout(scope_layout)
+
+        # Create a horizontal layout for Scope Kind and Direction on the same line
+        self.scope_direction_layout = QHBoxLayout()
+        
+        # Scope Kind combo box with label
+        scope_kind_label = QLabel("Scope Kind:")
+        self.cmb_scope_kind = QComboBox()
+        self.cmb_scope_kind.addItems(["single_pool", "two_pool"])
+        self.cmb_scope_kind.setMaximumWidth(160)  # ~20 characters
+        self.scope_direction_layout.addWidget(scope_kind_label)
+        self.scope_direction_layout.addWidget(self.cmb_scope_kind)
+        
+        # Add stretch to separate Scope Kind and Direction
+        self.scope_direction_layout.addSpacing(20)
+        
+        # Direction combo box with label
+        self.direction_label = QLabel("Direction:")
+        self.cmb_scope_direction = QComboBox()
+        self.cmb_scope_direction.addItems(["A_TO_B", "B_TO_A", "A_WITHOUT_IN_B", "B_WITHOUT_IN_A"])
+        self.cmb_scope_direction.setMaximumWidth(160)  # ~20 characters
+        self.scope_direction_layout.addWidget(self.direction_label)
+        self.scope_direction_layout.addWidget(self.cmb_scope_direction)
+        
+        # Add the horizontal layout to the form layout
+        scope_layout.addRow(self.scope_direction_layout)
+
+        layout.addWidget(scope_group)
+
+        # Pools section - set to expand to fill available space
         pools_group = QGroupBox("Pools")
+        pools_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         pools_layout = QVBoxLayout()
         pools_group.setLayout(pools_layout)
 
         # Pool A
         pool_a_group = QGroupBox("Pool A (Required)")
-        pool_a_layout = QFormLayout()
+        pool_a_layout = QVBoxLayout()
         pool_a_group.setLayout(pool_a_layout)
 
-        pool_a_path_layout = QHBoxLayout()
+        # Top row with label and button
+        pool_a_top_layout = QHBoxLayout()
+        paths_label = QLabel("Paths:")
+        self.btn_pool_a_select = QPushButton("Browse...")
+        pool_a_top_layout.addWidget(paths_label)
+        pool_a_top_layout.addStretch(1)  # Push button to the right
+        pool_a_top_layout.addWidget(self.btn_pool_a_select)
+        pool_a_layout.addLayout(pool_a_top_layout)
+
+        # Paths text area that expands
         self.inp_pool_a_paths = QPlainTextEdit()
         self.inp_pool_a_paths.setPlaceholderText("Enter paths for Pool A (one per line)\nOr use Browse to add directories/files")
-        self.inp_pool_a_paths.setMaximumHeight(80)
-        pool_a_path_layout.addWidget(self.inp_pool_a_paths)
-        self.btn_pool_a_select = QPushButton("Browse...")
-        pool_a_path_layout.addWidget(self.btn_pool_a_select)
-        pool_a_layout.addRow("Paths:", pool_a_path_layout)
-
-
-
+        self.inp_pool_a_paths.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        pool_a_layout.addWidget(self.inp_pool_a_paths)
 
         pools_layout.addWidget(pool_a_group)
 
         # Pool B
-        pool_b_group = QGroupBox("Pool B (Optional - for two-pool operations)")
-        pool_b_layout = QFormLayout()
-        pool_b_group.setLayout(pool_b_layout)
+        self.pool_b_group = QGroupBox("Pool B (Optional - for two-pool operations)")
+        pool_b_layout = QVBoxLayout()
+        self.pool_b_group.setLayout(pool_b_layout)
 
-        pool_b_path_layout = QHBoxLayout()
+        # Top row with label and button
+        pool_b_top_layout = QHBoxLayout()
+        paths_label_b = QLabel("Paths:")
+        self.btn_pool_b_select = QPushButton("Browse...")
+        pool_b_top_layout.addWidget(paths_label_b)
+        pool_b_top_layout.addStretch(1)  # Push button to the right
+        pool_b_top_layout.addWidget(self.btn_pool_b_select)
+        pool_b_layout.addLayout(pool_b_top_layout)
+
+        # Paths text area that expands
         self.inp_pool_b_paths = QPlainTextEdit()
         self.inp_pool_b_paths.setPlaceholderText("Enter paths for Pool B (one per line)\nOr use Browse to add directories/files")
-        self.inp_pool_b_paths.setMaximumHeight(80)
-        pool_b_path_layout.addWidget(self.inp_pool_b_paths)
-        self.btn_pool_b_select = QPushButton("Browse...")
-        pool_b_path_layout.addWidget(self.btn_pool_b_select)
-        pool_b_layout.addRow("Paths:", pool_b_path_layout)
+        self.inp_pool_b_paths.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        pool_b_layout.addWidget(self.inp_pool_b_paths)
 
-
-
-
-        pools_layout.addWidget(pool_b_group)
+        pools_layout.addWidget(self.pool_b_group)
         layout.addWidget(pools_group)
 
         # Mode and criteria section
@@ -170,18 +226,35 @@ class StructuredProfileEditorWidget(QWidget):
         mode_layout = QFormLayout()
         mode_group.setLayout(mode_layout)
 
+        # Create a horizontal layout for Mode and Algorithm on the same line
+        mode_algo_layout = QHBoxLayout()
+        
+        # Mode combo box with label
+        mode_label = QLabel("Mode:")
         self.cmb_mode = QComboBox()
         self.cmb_mode.addItems(["duplicates", "similarity"])
-        mode_layout.addRow("Mode:", self.cmb_mode)
+        self.cmb_mode.setMaximumWidth(160)  # ~20 characters
+        mode_algo_layout.addWidget(mode_label)
+        mode_algo_layout.addWidget(self.cmb_mode)
+        
+        # Add stretch to separate Mode and Algorithm
+        mode_algo_layout.addSpacing(20)
+        
+        # Algorithm combo box with label
+        algo_label = QLabel("Algorithm:")
+        self.cmb_algorithm = QComboBox()
+        # Start with empty combo box, _update_ui_state will populate it correctly
+        self.cmb_algorithm.setMaximumWidth(160)  # ~20 characters
+        mode_algo_layout.addWidget(algo_label)
+        mode_algo_layout.addWidget(self.cmb_algorithm)
+        
+        # Add the horizontal layout to the form layout
+        mode_layout.addRow(mode_algo_layout)
 
-        # Criteria sub-group
+        # Criteria sub-group for degree controls (stays on its own line)
         criteria_group = QGroupBox("Criteria")
         criteria_layout = QFormLayout()
         criteria_group.setLayout(criteria_layout)
-
-        self.cmb_algorithm = QComboBox()
-        # Start with empty combo box, _update_ui_state will populate it correctly
-        criteria_layout.addRow("Algorithm:", self.cmb_algorithm)
 
         # Create label for "Similarity Degree:"
         self.lbl_degree_label = QLabel("Similarity Degree:")
@@ -201,21 +274,6 @@ class StructuredProfileEditorWidget(QWidget):
         mode_layout.addRow(criteria_group)
         layout.addWidget(mode_group)
 
-        # Scope section
-        scope_group = QGroupBox("Scope")
-        scope_layout = QFormLayout()
-        scope_group.setLayout(scope_layout)
-
-        self.cmb_scope_kind = QComboBox()
-        self.cmb_scope_kind.addItems(["single_pool", "two_pool"])
-        scope_layout.addRow("Scope Kind:", self.cmb_scope_kind)
-
-        self.cmb_scope_direction = QComboBox()
-        self.cmb_scope_direction.addItems(["A_TO_B", "B_TO_A", "A_WITHOUT_IN_B", "B_WITHOUT_IN_A"])
-        scope_layout.addRow("Direction:", self.cmb_scope_direction)
-
-        layout.addWidget(scope_group)
-
         # Output section
         output_group = QGroupBox("Output")
         output_layout = QFormLayout()
@@ -223,6 +281,7 @@ class StructuredProfileEditorWidget(QWidget):
 
         self.cmb_output_mode = QComboBox()
         self.cmb_output_mode.addItems(["report_only"])
+        self.cmb_output_mode.setMaximumWidth(160)  # ~20 characters
         output_layout.addRow("Output Mode:", self.cmb_output_mode)
 
         layout.addWidget(output_group)
@@ -291,7 +350,7 @@ class StructuredProfileEditorWidget(QWidget):
         """Update current_profile dict from UI values."""
         profile = {
             "name": self.inp_name.text().strip(),
-            "description": self.inp_description.toPlainText().strip(),
+            "description": self.inp_description.text().strip(),
             "pools": {
                 "A": {
                     "paths": [path.strip() for path in self.inp_pool_a_paths.toPlainText().splitlines() if path.strip()],
@@ -475,13 +534,20 @@ class StructuredProfileEditorWidget(QWidget):
         # Enable/disable based on mode
         self.cmb_algorithm.setEnabled(bool(desired_algos))
 
-        # Enable/disable Pool B based on scope
+        # Show/hide and enable/disable Pool B and Direction based on scope kind
         is_two_pool = scope_kind == "two_pool"
+        
+        # Pool B visibility and enablement
+        self.pool_b_group.setVisible(is_two_pool)
         self.inp_pool_b_paths.setEnabled(is_two_pool)
         self.btn_pool_b_select.setEnabled(is_two_pool)
-
-        # Enable/disable direction based on scope
+        
+        # Direction combo box visibility and enablement
+        self.cmb_scope_direction.setVisible(is_two_pool)
         self.cmb_scope_direction.setEnabled(is_two_pool)
+        
+        # Also hide the Direction label when not in two-pool mode
+        self.direction_label.setVisible(is_two_pool)
 
     def _is_dirty(self) -> bool:
         """Check if current profile differs from original."""
@@ -506,7 +572,7 @@ class StructuredProfileEditorWidget(QWidget):
 
         # Populate UI
         self.inp_name.setText(profile.get("name", ""))
-        self.inp_description.setPlainText(profile.get("description", "") or "")
+        self.inp_description.setText(profile.get("description", "") or "")
 
         # Pool A
         pools = profile.get("pools", {})
