@@ -15,7 +15,9 @@ Syntax validation: This file has been reviewed for Python syntax correctness.
 
 from __future__ import annotations
 
+import argparse
 import sys
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 from PySide6.QtWidgets import QApplication
@@ -25,6 +27,10 @@ from .main_window import MainWindow
 
 from src.pk_py_lib.api.settings_profiles import SettingsProfilesAPI
 from src.pk_py_lib.gui.settings_manager.structured_dialog import structured_settings_manager_dialog
+
+from src.pk_py_lib.core.database import DatabaseManager
+from src.pk_py_lib.core.configuration import ConfigurationManager
+from src.pk_py_lib.core.cache import CacheManager
 
 
 def _ensure_application(argv: Optional[list[str]] = None) -> QApplication:
@@ -64,24 +70,72 @@ def _ensure_application(argv: Optional[list[str]] = None) -> QApplication:
 def main() -> int:
     """
     Entry point for launching the KDC Image Organizer application.
-
+    
     Startup sequence (direct launch with integrated settings management):
     1) Instantiate QApplication.
     2) Initialize/open database and run migrations via DatabaseManager.
     3) Create SettingsProfilesAPI and ensure_default_profile() to guarantee an Active profile exists.
     4) Fetch the active profile for the main window.
     5) Create and show MainWindow, passing the active profile and managers.
-
+    
+    Supports CLI mode: `imgapp --location` to list actual local data paths used.
+    
     Returns
     -------
     int
         Qt event loop exit code; non-zero on fatal startup error.
-
+    
     Notes
     -----
     - The application now launches directly with settings management integrated into the main window.
     - Robust error handling: any fatal error during DB/API startup is shown via QMessageBox, and the app exits.
     """
+    parser = argparse.ArgumentParser(description="KDC Image Organizer")
+    parser.add_argument("--location", action="store_true", help="List all local data paths used by the application")
+    args = parser.parse_args()
+    
+    if args.location:
+        # CLI mode: initialize managers and print actual paths
+        try:
+            db_mgr = DatabaseManager()
+            db_mgr.initialize()
+            
+            config_mgr = None
+            try:
+                config_mgr = ConfigurationManager(db_mgr)
+                cache_dir = db_mgr.data_dir / "cache"
+                max_mb = int(getattr(config_mgr, "get_app_setting", lambda k: 5120)("cache_size_mb") or 5120)
+                cache_mgr = CacheManager(cache_dir, max_size_mb=max_mb)
+            except Exception:
+                cache_mgr = None
+            
+            # Collect and print actual resolved paths with existence checks
+            data_dir = db_mgr.data_dir.resolve()
+            settings_db = db_mgr.settings_db.resolve()
+            cache_db = db_mgr.cache_db.resolve()
+            sessions_db = (db_mgr.data_dir / 'sessions.db').resolve()
+            backups_dir = (db_mgr.data_dir / 'backups').resolve()
+            logs_dir = (db_mgr.data_dir / 'logs').resolve()
+            img_app_log = (logs_dir / 'img_app.log').resolve()
+            pk_py_lib_log = (logs_dir / 'pk_py_lib.log').resolve()
+            cache_dir = cache_mgr.cache_dir.resolve() if cache_mgr else (db_mgr.data_dir / 'cache').resolve()
+            thumbnails_dir = cache_mgr.thumb_base.resolve() if cache_mgr else (cache_dir / 'thumbnails').resolve()
+            
+            def status(path: Path):
+                return " ✓" if path.exists() else " ✗ (does not exist)"
+            
+            print(f"{settings_db}{status(settings_db)}")
+            print(f"{cache_db}{status(cache_db)}")
+            print(f"{backups_dir}{status(backups_dir)}")
+            print(f"{img_app_log}{status(img_app_log)}")
+            print(f"{pk_py_lib_log}{status(pk_py_lib_log)}")
+            print(f"{thumbnails_dir}{status(thumbnails_dir)}")
+            print(f"{sessions_db}{status(sessions_db)}")  # Planned, likely ✗
+            sys.exit(0)
+        except Exception as exc:
+            print(f"Error initializing managers for --location: {exc}", file=sys.stderr)
+            sys.exit(1)
+    
     app = _ensure_application()
 
     # Will be attached to the MainWindow if initialized successfully
