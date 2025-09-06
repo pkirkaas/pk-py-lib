@@ -350,3 +350,82 @@ Acceptance overlay (verifiable)
 - Degree controls disabled in duplicates; enabled in similarity (UI 0–100 → internal [0.0..1.0])
 - Save enabled when Pool A has valid paths and profile structurally valid; Run enabled only when all required_pools have valid paths
 - Normalized preview shows algorithm "pHash", degree_ui (with degree_normalized), and scope.direction as per capability state
+
+## 13. Menu bar and cache management (UI)
+
+Status: Implemented
+
+Purpose
+- Provide a standard, native menu bar with discoverable cache management operations and a selectable/copyable About dialog.
+- Ensure menu bar visibility and proper placement alongside a top-anchored profile toolbar.
+
+Code references
+- Menu bar creation: [MainWindow._setup_menu_bar()](img_app/img_app/main_window.py:283)
+- Toolbar placement (fix): [MainWindow._setup_profile_toolbar()](img_app/img_app/main_window.py:157)
+- Cache actions: [MainWindow._on_clear_cache()](img_app/img_app/main_window.py:971), [MainWindow._on_clean_cache()](img_app/img_app/main_window.py:1017)
+- About dialog: [MainWindow._show_about()](img_app/img_app/main_window.py:940), version sourcing [MainWindow._get_app_version()](img_app/img_app/main_window.py:917)
+- Message utilities and error handling: [show_selectable_info()](src/pk_py_lib/gui/utils/messages.py:149), [show_selectable_error()](src/pk_py_lib/gui/utils/messages.py:131), [gui_error_handler()](src/pk_py_lib/gui/utils/messages.py:293)
+- Database helpers and schema: [DatabaseManager.get_connection()](src/pk_py_lib/core/database.py:699), [CACHE_SCHEMA](src/pk_py_lib/core/database.py:149)
+- Managers attached during startup: [main()](img_app/img_app/app.py:70) (assigns database_manager/configuration_manager/cache_manager to window)
+
+13.1 Standard menu bar structure
+- File
+  - Open... (placeholder)
+  - Save (placeholder)
+  - Exit (placeholder)
+- Cache
+  - Clear Cache — destructive recreation of cache.db (see 13.2.1)
+  - Clean Cache — validate-and-prune stale/invalid entries in cache.db (see 13.2.2)
+- View
+  - Reset Layout (placeholder)
+- Help
+  - About... — selectable About dialog (see 13.3)
+
+13.2 Cache management operations
+13.2.1 Clear Cache
+- Handler: [MainWindow._on_clear_cache()](img_app/img_app/main_window.py:971)
+- Flow:
+  1) Prompt the user with a confirmation dialog
+  2) Delete cache.db if present
+  3) Recreate an empty cache schema using [CACHE_SCHEMA](src/pk_py_lib/core/database.py:149) via [DatabaseManager.get_connection()](src/pk_py_lib/core/database.py:699)
+  4) Notify the user using a selectable message ([show_selectable_info()](src/pk_py_lib/gui/utils/messages.py:149)); update status bar
+- Scope:
+  - Only resets the database. On-disk thumbnails under cache/thumbnails (file‑backed per canonical policy) are not deleted. They can be re-associated or regenerated lazily by future operations.
+
+13.2.2 Clean Cache
+- Handler: [MainWindow._on_clean_cache()](img_app/img_app/main_window.py:1017)
+- Behavior:
+  - Iterate image_metadata rows and compare to the filesystem:
+    - Missing file → delete row (removed_missing++)
+    - Changed file (size or modified time differ) → delete row (removed_changed++)
+  - Execute deletions in bounded chunks; rely on ON DELETE CASCADE to remove dependent rows (thumbnails metadata, image_hashes)
+  - Run VACUUM to compact the DB file
+  - Present a selectable summary dialog with counts using [show_selectable_info()](src/pk_py_lib/gui/utils/messages.py:149)
+- Scope:
+  - Cleans database metadata and size. Does not delete on‑disk thumbnails; disk reconciliation occurs via eviction/maintenance policies implemented by the cache manager.
+
+13.3 Help → About dialog
+- Handler: [MainWindow._show_about()](img_app/img_app/main_window.py:940)
+- Composition:
+  - App name from the window title (fallback if absent)
+  - Version resolved by [MainWindow._get_app_version()](img_app/img_app/main_window.py:917), preferring app [__app_version__](img_app/img_app/__init__.py:14), then library __version__, else “0.0.0‑dev”
+  - Uses [show_selectable_info()](src/pk_py_lib/gui/utils/messages.py:149) so text is selectable and copyable
+- Robustness:
+  - Graceful fallbacks to QMessageBox if the utility is unavailable; About cannot crash the app
+
+13.4 Error handling and message utilities
+- All cache actions are decorated with [gui_error_handler()](src/pk_py_lib/gui/utils/messages.py:293):
+  - Shows user‑friendly, selectable error dialogs via [show_selectable_error()](src/pk_py_lib/gui/utils/messages.py:131)
+  - Logs detailed diagnostics to STDERR including the component, file path, line number, and stack trace
+- All informational dialogs use [show_selectable_info()](src/pk_py_lib/gui/utils/messages.py:149) to ensure copy/paste for diagnostics
+
+13.5 Placement and UX notes
+- The profile toolbar is a real top toolbar attached via addToolBar in [MainWindow._setup_profile_toolbar()](img_app/img_app/main_window.py:157):
+  - Non‑movable and non‑floatable
+  - Keeps the native menu bar visible and in its standard position
+- This resolves prior issues where embedding toolbar‑like widgets in the central layout could visually obscure or displace the menu bar.
+
+13.6 Architectural alignment
+- Data locations and DB topology are canonical: cache.db resides under platformdirs user_cache_dir; thumbnails are file‑backed under cache/thumbnails. See [CACHE_SCHEMA](src/pk_py_lib/core/database.py:149).
+- Startup wires managers and attaches them to the main window before actions are used; see [main()](img_app/img_app/app.py:70).
+- Clearing and cleaning the cache database are safe, recoverable operations consistent with the broader startup integrity and recovery policies documented elsewhere in this spec.

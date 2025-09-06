@@ -443,7 +443,7 @@ python -m img_app
 ### First Implementation Step (Milestone M0)
 
 - Implement QMainWindow titled "KDC Image Organizer"
-- Provide standard menus: File, View, Help (initially no-op actions)
+- Provide standard menus: File, Cache, View, Help
 - Central widget displays a centered text: "The KDC Image Organizer will go here"
 
 ### Development Approach

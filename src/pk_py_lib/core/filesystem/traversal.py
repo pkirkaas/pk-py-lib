@@ -125,7 +125,7 @@ class DirectoryTraversal:
             if root.is_file():
                 # Handle single file
                 if DirectoryTraversal._should_include_file_compiled(
-                    root, include_极速飞艇, exclude_compiled, min_size, max_size, include_hidden
+                    root, include_compiled, exclude_compiled, min_size, max_size, include_hidden
                 ):
                     yield root
             elif root.is_dir():
@@ -142,6 +142,61 @@ class DirectoryTraversal:
             else:
                 log.warning(f"Root path is not a file or directory: {root}")
     
+    @staticmethod
+    def _should_include_file_compiled(
+        file_path: Path,
+        include_compiled: Optional[List[Pattern]],
+        exclude_compiled: Optional[List[Pattern]],
+        min_size: int,
+        max_size: Optional[int],
+        include_hidden: bool
+    ) -> bool:
+        """
+        Determine if a file should be included based on compiled include/exclude patterns,
+        size constraints, and hidden-file policy.
+
+        This helper centralizes single-file checks for both single-root-file cases and
+        recursive traversal yields.
+
+        Args:
+            file_path: Candidate file path
+            include_compiled: List of compiled regex patterns to include (matches on file name)
+            exclude_compiled: List of compiled regex patterns to exclude (matches on file name)
+            min_size: Minimum file size in bytes (inclusive)
+            max_size: Maximum file size in bytes (inclusive when provided)
+            include_hidden: Whether dot-prefixed names are allowed
+
+        Returns:
+            True when the file should be included.
+        """
+        try:
+            name = file_path.name
+            if not include_hidden and name.startswith('.'):
+                return False
+
+            if include_compiled:
+                if not any(p.match(name) for p in include_compiled):
+                    return False
+
+            if exclude_compiled:
+                if any(p.match(name) for p in exclude_compiled):
+                    return False
+
+            try:
+                fsize = file_path.stat().st_size
+            except OSError:
+                return False
+
+            if fsize < min_size:
+                return False
+            if max_size is not None and fsize > max_size:
+                return False
+
+            return True
+        except Exception:
+            # Be conservative on unexpected errors: exclude the file
+            return False
+
     @staticmethod
     def _walk_recursive(
         root: Path,

@@ -18,7 +18,7 @@ Syntax validation: This file has been reviewed for Python syntax correctness.
 from __future__ import annotations
 
 from PySide6.QtGui import QAction, QIcon
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtWidgets import (
     QMainWindow, QLabel, QWidget, QVBoxLayout, QMenuBar, QStatusBar,
     QComboBox, QPushButton, QHBoxLayout, QFrame, QProgressBar, QApplication,
@@ -26,6 +26,12 @@ from PySide6.QtWidgets import (
     QMessageBox, QToolBar, QMenu, QSizePolicy
 )
 from typing import Optional, Dict, Any, List, Tuple
+from pathlib import Path
+from src.pk_py_lib.gui.utils.messages import show_selectable_info, show_selectable_error, gui_error_handler, gui_error_context
+from src.pk_py_lib.core.database import CACHE_SCHEMA
+from src.pk_py_lib.core.filesystem.paths import PathOperations
+from src.pk_py_lib.core.filesystem.traversal import DirectoryTraversal
+from src.pk_py_lib.core.filesystem.identity import get_inode_device, compute_sha256
 
 # Import Settings Manager components
 try:
@@ -92,6 +98,382 @@ class CentralPlaceholder(QWidget):
         layout.addWidget(label)
 
 
+class ScanWorker(QThread):
+    """
+    Background worker that scans filesystem paths from a Settings Profile,
+    validates/refreshes cache entries (image_metadata, image_hashes), and reports progress.
+
+    This worker performs all I/O and SQLite work off the GUI thread to keep the UI responsive.
+    It uses a single connection created via DatabaseManager.get_connection(...) within the worker
+    thread context (each connection is bound to the creating thread per sqlite3).
+
+    Signals
+    -------
+    progress(processed: int, total: int, current_path: str, message: str)
+        Emitted frequently to update progress UI.
+    error(message: str)
+        Emitted on non-fatal per-file errors; processing continues.
+    finished(summary: dict)
+        Emitted once on completion (or early stop) with final counters.
+
+    Notes
+    -----
+    - Hash algorithm is currently fixed/parametrized to 'sha256' per MVP; future versions
+      may read this from the profile under criteria/settings.
+    - Include/Exclude pattern semantics are simplified for MVP: we honor path roots and
+      file type filters; glob patterns are not fully evaluated relative to roots yet.
+    """
+
+    progress = Signal(int, int, str, str)
+    error = Signal(str)
+    finished = Signal(dict)
+
+    def __init__(self, db_manager, profile_json: dict, algorithm: str = "sha256", parent=None):
+        """
+        Initialize worker.
+
+        Parameters
+        ----------
+        db_manager : DatabaseManager
+            Database manager providing cache_db path and connection helper.
+        profile_json : dict
+            Structured Settings Profile (Option A) JSON object.
+        algorithm : str
+            Hash algorithm token to ensure in image_hashes (default 'sha256').
+        parent : Optional[QObject]
+            Optional Qt parent object.
+        """
+        super().__init__(parent)
+        self.db_manager = db_manager
+        self.profile = profile_json or {}
+        self.algorithm = (algorithm or "sha256").lower().strip()
+        self._stop = False
+
+    def stop(self) -> None:
+        """
+        Request cooperative stop. The worker checks this flag between files.
+        """
+        self._stop = True
+
+    def _normalize_exts(self, exts) -> set[str]:
+        """
+        Normalize a list of extension tokens to a lowercase, dot-prefixed set.
+
+        Examples
+        --------
+        - "jpg" -> ".jpg"
+        - ".PNG" -> ".png"
+        """
+        s: set[str] = set()
+        try:
+            for e in exts or []:
+                e = str(e).strip()
+                if not e:
+                    continue
+                if not e.startswith("."):
+                    e = "." + e
+                s.add(e.lower())
+        except Exception:
+            pass
+        if not s:
+            # Balanced defaults per canonical decisions
+            s = {".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"}
+        return s
+
+    def _gather_files(self) -> list[Path]:
+        """
+        Gather files to process from profile pools A/B.
+    
+        Mode-based filtering:
+        - duplicates mode: include ALL files (no extension filtering)
+        - similarity mode: include ONLY image files (extension-based filtering)
+    
+        Also applies path roots, recursion depth, hidden/symlink policy.
+    
+        Returns
+        -------
+        list[Path]
+            Sorted, de-duplicated absolute file paths.
+        """
+        pools = self.profile.get("pools", {}) if isinstance(self.profile, dict) else {}
+        mode_str = str((self.profile.get("mode") if isinstance(self.profile, dict) else "duplicates") or "duplicates").strip().lower()
+        filter_images_only = (mode_str == "similarity")
+    
+        file_set: set[Path] = set()
+    
+        # Build extension whitelist only for similarity mode
+        ext_union: set[str] = set()
+        if filter_images_only:
+            for label in ("A", "B"):
+                cfg = pools.get(label) or {}
+                ext_union |= self._normalize_exts(cfg.get("type_filters"))
+            if not ext_union:
+                ext_union = self._normalize_exts(None)
+    
+        # Debug: mode and filter summary
+        try:
+            if filter_images_only:
+                print(f"[ScanWorker] Mode: {mode_str} — using image extensions: {sorted(ext_union)}")
+            else:
+                print(f"[ScanWorker] Mode: {mode_str} — including all file types (no extension filtering)")
+        except Exception:
+            pass
+    
+        for label in ("A", "B"):
+            cfg = pools.get(label)
+            if not cfg:
+                continue
+    
+            raw_paths = cfg.get("paths") or []
+            roots = [Path(p) for p in raw_paths if p]
+            # Normalize and remove contained paths for efficiency
+            roots = PathOperations.normalize_paths(roots)
+            roots = PathOperations.remove_contained_paths(roots)
+    
+            # Traversal options (Balanced defaults honored)
+            recurse = bool(cfg.get("recurse", True))
+            max_depth = cfg.get("max_depth", 0)
+            include_hidden = bool(cfg.get("include_hidden", False))
+            follow_symlinks = bool(cfg.get("follow_symlinks", False))
+    
+            # DirectoryTraversal.walk_files uses Optional[int] max_depth:
+            # - None = unlimited
+            # - N>=1 = limited depth
+            # Our schema: max_depth 0 => unlimited, recurse False => only direct children.
+            depth_param = None if (recurse and (max_depth in (None, 0))) else (1 if not recurse else int(max_depth or 0))
+    
+            # Debug: pool traversal settings
+            try:
+                print(f"[ScanWorker] Pool {label}: roots={len(roots)}, recurse={recurse}, max_depth={max_depth}, depth_param={depth_param}, follow_symlinks={follow_symlinks}, include_hidden={include_hidden}")
+                for r in roots[:5]:
+                    print(f"[ScanWorker]   root: {r}")
+                if len(roots) > 5:
+                    print(f"[ScanWorker]   ... and {len(roots)-5} more roots")
+            except Exception:
+                pass
+    
+            for root in roots:
+                try:
+                    if not root.exists():
+                        try:
+                            print(f"[ScanWorker] Pool {label}: root does not exist, skipping: {root}")
+                        except Exception:
+                            pass
+                        continue
+    
+                    before_count = len(file_set)
+    
+                    if root.is_file():
+                        # Single file root
+                        if (not filter_images_only) or (root.suffix.lower() in ext_union):
+                            try:
+                                file_set.add(root.resolve())
+                            except Exception:
+                                file_set.add(root)
+                        else:
+                            try:
+                                print(f"[ScanWorker] Skipping file (extension filtered in similarity mode): {root}")
+                            except Exception:
+                                pass
+                    else:
+                        # Directory case
+                        for p in DirectoryTraversal.walk_files(
+                            root,
+                            patterns=None,             # MVP: ignore complex include globs for now
+                            exclude_patterns=None,     # MVP: ignore exclude globs for now
+                            follow_symlinks=follow_symlinks,
+                            max_depth=depth_param,
+                            include_hidden=include_hidden,
+                        ):
+                            try:
+                                if (not filter_images_only) or (p.suffix.lower() in ext_union):
+                                    try:
+                                        file_set.add(p.resolve())
+                                    except Exception:
+                                        file_set.add(p)
+                            except Exception:
+                                continue
+    
+                    # Debug per-root delta
+                    try:
+                        delta = len(file_set) - before_count
+                        print(f"[ScanWorker] Pool {label}: +{delta} files from root {root}")
+                    except Exception:
+                        pass
+    
+                except Exception:
+                    # Conservative: skip problematic roots silently
+                    continue
+    
+        files = sorted(file_set)
+        try:
+            print(f"[ScanWorker] Gathered {len(files)} files total (post-dedup)")
+        except Exception:
+            pass
+        return files
+
+    def run(self) -> None:
+        """
+        Execute scanning and cache validation/refresh.
+
+        Workflow
+        --------
+        1) Enumerate files from profile pools (A/B) with minimal filters
+        2) Ensure cache schema exists (defensive)
+        3) For each file:
+           - Lookup image_metadata by absolute path
+           - Validate against current os.stat (size + mtime_ns/mtime)
+             - If mismatch: DELETE row (cascades thumbnails/hashes)
+           - If missing or invalidated: INSERT fresh metadata row
+           - Ensure image_hashes row exists for algorithm; compute and store if absent
+        4) Emit progress signals throughout; error signals for non-fatal per-file issues
+        5) Emit finished(summary) with counts
+        """
+        import os
+        from datetime import datetime
+
+        stats = {
+            "found": 0,
+            "processed": 0,
+            "inserted": 0,
+            "invalidated": 0,
+            "hashes_computed": 0,
+            "errors": 0,
+        }
+
+        try:
+            files = self._gather_files()
+            total = len(files)
+            stats["found"] = total
+
+            # Ensure cache DB exists and has schema (defensive)
+            cache_path = self.db_manager.cache_db
+            with self.db_manager.get_connection(cache_path) as conn:
+                try:
+                    conn.executescript(CACHE_SCHEMA)
+                except Exception:
+                    # Non-fatal if already present
+                    pass
+
+            # Process files within a single transaction scope for simplicity
+            with self.db_manager.get_connection(cache_path) as conn:
+                for idx, path in enumerate(files, start=1):
+                    if self._stop:
+                        break
+
+                    current_path = path.as_posix()
+                    # Inform start of work on this item
+                    self.progress.emit(stats["processed"], total, current_path, "Processing")
+
+                    try:
+                        st = os.stat(path)
+                        size_now = int(st.st_size)
+                        mtime_ns_now = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
+                        mtime_s_now = int(st.st_mtime)
+                        file_name = path.name
+                        inode, device, _, _ = get_inode_device(path)
+
+                        # Get existing metadata row
+                        cur = conn.execute(
+                            "SELECT id, file_size, mtime_ns, file_modified FROM image_metadata WHERE file_path = ?",
+                            (current_path,),
+                        )
+                        row = cur.fetchone()
+
+                        def _to_int_or_none(val):
+                            try:
+                                return int(val)
+                            except Exception:
+                                return None
+
+                        image_id = None
+                        if row:
+                            image_id = int(row["id"])
+                            size_db = _to_int_or_none(row["file_size"])
+                            mtime_ns_db = _to_int_or_none(row["mtime_ns"])
+                            if mtime_ns_db is None:
+                                # Fallback: compare seconds if ns absent
+                                mtime_s_db = _to_int_or_none(row["file_modified"])
+                                mtime_match = (mtime_s_db is not None) and (abs(mtime_s_now - mtime_s_db) <= 1)
+                            else:
+                                mtime_match = (mtime_ns_now == mtime_ns_db)
+                            size_match = (size_db == size_now)
+
+                            if not (size_match and mtime_match):
+                                # Invalidate: cascades remove dependent rows
+                                conn.execute("DELETE FROM image_metadata WHERE id = ?", (image_id,))
+                                stats["invalidated"] += 1
+                                image_id = None
+
+                        if image_id is None:
+                            # Create fresh metadata record
+                            conn.execute(
+                                """
+                                INSERT INTO image_metadata (
+                                    file_path, file_name, file_size, file_modified, file_created,
+                                    file_hash_sha256, partial_hash_sha256, file_inode, file_device,
+                                    hash_computed_at, width, height, format, color_mode, bit_depth,
+                                    exif_data, camera_make, camera_model, lens_model, date_taken,
+                                    gps_latitude, gps_longitude, last_scanned, scan_version, is_valid, mtime_ns
+                                ) VALUES (
+                                    ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL,
+                                    NULL, NULL, NULL, NULL, NULL,
+                                    NULL, NULL, NULL, NULL, NULL,
+                                    NULL, NULL, CURRENT_TIMESTAMP, NULL, 1, ?
+                                )
+                                """,
+                                (
+                                    current_path,
+                                    file_name,
+                                    size_now,
+                                    mtime_s_now,
+                                    int(getattr(st, "st_ctime", mtime_s_now)),
+                                    int(inode) if inode is not None else None,
+                                    int(device) if device is not None else None,
+                                    mtime_ns_now,
+                                ),
+                            )
+                            image_id = int(
+                                conn.execute(
+                                    "SELECT id FROM image_metadata WHERE file_path = ?",
+                                    (current_path,),
+                                ).fetchone()["id"]
+                            )
+                            stats["inserted"] += 1
+
+                        # Ensure desired hash exists
+                        algo = self.algorithm
+                        have_hash = conn.execute(
+                            "SELECT id FROM image_hashes WHERE image_id = ? AND algorithm = ?",
+                            (image_id, algo),
+                        ).fetchone()
+
+                        if not have_hash:
+                            sha = compute_sha256(path)
+                            conn.execute(
+                                "INSERT INTO image_hashes (image_id, algorithm, hash_value, hash_size) VALUES (?, ?, ?, NULL)",
+                                (image_id, algo, sha),
+                            )
+                            conn.execute(
+                                "UPDATE image_metadata SET file_hash_sha256 = ?, hash_computed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                                (sha, image_id),
+                            )
+                            stats["hashes_computed"] += 1
+
+                        stats["processed"] += 1
+                        # Report after finishing this item
+                        self.progress.emit(stats["processed"], total, current_path, "Processed")
+
+                    except Exception as e:
+                        stats["errors"] += 1
+                        self.error.emit(f"{current_path}: {e}")
+
+        except Exception as e:
+            # Top-level fatal error
+            self.error.emit(str(e))
+
+        # Emit summary at the end (even on partial stop)
+        self.finished.emit(stats)
 class MainWindow(QMainWindow):
     """
     QMainWindow for the KDC Image Organizer.
@@ -155,53 +537,55 @@ class MainWindow(QMainWindow):
         """
         Create the profile management toolbar with combobox and buttons.
         """
-        # Create a toolbar for profile management
-        toolbar = QWidget(self)
-        toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(10, 5, 10, 5)
-        toolbar_layout.setSpacing(10)
+        # Use a real QToolBar so the menu bar remains visible
+        toolbar = QToolBar("Profiles", self)
+        toolbar.setObjectName("profilesToolbar")
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
 
         # Profile selection label
         profile_label = QLabel("Profile:", self)
-        toolbar_layout.addWidget(profile_label)
+        toolbar.addWidget(profile_label)
 
         # Profile combobox
         self.profile_combo = QComboBox(self)
         self.profile_combo.setMinimumWidth(200)
         self.profile_combo.currentIndexChanged.connect(self._on_profile_selected)
-        toolbar_layout.addWidget(self.profile_combo)
+        toolbar.addWidget(self.profile_combo)
+
+        toolbar.addSeparator()
 
         # Create profile button
         self.create_btn = QPushButton("New", self)
         self.create_btn.setToolTip("Create a new profile")
         self.create_btn.clicked.connect(self._on_create_profile)
-        toolbar_layout.addWidget(self.create_btn)
+        toolbar.addWidget(self.create_btn)
 
         # Copy profile button
         self.copy_btn = QPushButton("Copy", self)
         self.copy_btn.setToolTip("Copy the selected profile")
         self.copy_btn.clicked.connect(self._on_copy_profile)
-        toolbar_layout.addWidget(self.copy_btn)
+        toolbar.addWidget(self.copy_btn)
 
         # Rename profile button
         self.rename_btn = QPushButton("Rename", self)
         self.rename_btn.setToolTip("Rename the selected profile")
         self.rename_btn.clicked.connect(self._on_rename_profile)
-        toolbar_layout.addWidget(self.rename_btn)
+        toolbar.addWidget(self.rename_btn)
 
         # Delete profile button
         self.delete_btn = QPushButton("Delete", self)
         self.delete_btn.setToolTip("Delete the selected profile")
         self.delete_btn.clicked.connect(self._on_delete_profile)
         self.delete_btn.setStyleSheet("QPushButton { background-color: #f44336; color: white; }")
-        toolbar_layout.addWidget(self.delete_btn)
+        toolbar.addWidget(self.delete_btn)
 
         # Set active profile button
         self.set_active_btn = QPushButton("Set Active", self)
         self.set_active_btn.setToolTip("Set the selected profile as active")
         self.set_active_btn.clicked.connect(self._on_set_active_profile)
         self.set_active_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
-        toolbar_layout.addWidget(self.set_active_btn)
+        toolbar.addWidget(self.set_active_btn)
 
         # Save button (initially disabled)
         self.save_btn = QPushButton("Save", self)
@@ -209,7 +593,7 @@ class MainWindow(QMainWindow):
         self.save_btn.clicked.connect(self._on_save_profile)
         self.save_btn.setStyleSheet("QPushButton { background-color: #FF9800; color: white; }")
         self.save_btn.setEnabled(False)
-        toolbar_layout.addWidget(self.save_btn)
+        toolbar.addWidget(self.save_btn)
 
         # Cancel button (initially disabled)
         self.cancel_btn = QPushButton("Cancel", self)
@@ -217,20 +601,22 @@ class MainWindow(QMainWindow):
         self.cancel_btn.clicked.connect(self._on_cancel_changes)
         self.cancel_btn.setStyleSheet("QPushButton { background-color: #9E9E9E; color: white; }")
         self.cancel_btn.setEnabled(False)
-        toolbar_layout.addWidget(self.cancel_btn)
+        toolbar.addWidget(self.cancel_btn)
 
         # Start button
         self.start_btn = QPushButton("Start", self)
         self.start_btn.setToolTip("Start the operation with the selected profile")
         self.start_btn.clicked.connect(self._on_start)
         self.start_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
-        toolbar_layout.addWidget(self.start_btn)
+        toolbar.addWidget(self.start_btn)
 
-        # Add stretch to push buttons to the left
-        toolbar_layout.addStretch(1)
+        # Expanding spacer to push controls to the left
+        spacer = QWidget(self)
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(spacer)
 
-        # Add the toolbar to the main window
-        self.setMenuWidget(toolbar)
+        # Attach the toolbar to the main window (keeps the menu bar visible)
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
 
     def _setup_progress_section(self) -> None:
         """
@@ -252,8 +638,8 @@ class MainWindow(QMainWindow):
         # Status labels in a horizontal layout
         status_layout = QHBoxLayout()
         
-        self.status_label = QLabel("Ready", self)
-        status_layout.addWidget(self.status_label)
+        self.progress_status_label = QLabel("Ready", self)
+        status_layout.addWidget(self.progress_status_label)
         
         self.file_count_label = QLabel("Files processed: 0", self)
         status_layout.addWidget(self.file_count_label)
@@ -274,10 +660,10 @@ class MainWindow(QMainWindow):
         self.resize(1024, 720)
 
     def _setup_menu_bar(self) -> None:
-        """Create a standard application menu bar with File, View, Help."""
+        """Create a standard application menu bar with File, Cache, View, Help."""
         menubar = self.menuBar() if self.menuBar() else QMenuBar(self)
         self.setMenuBar(menubar)
-
+        
         # File menu
         file_menu = menubar.addMenu("&File")
         # Placeholder actions (no-op)
@@ -285,15 +671,29 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._make_noop_action("Save"))
         file_menu.addSeparator()
         file_menu.addAction(self._make_noop_action("Exit"))
-
+        
+        # Cache menu (new)
+        cache_menu = menubar.addMenu("&Cache")
+        clear_cache_action = QAction("Clear Cache", self)
+        clear_cache_action.setStatusTip("Delete cache.db and recreate it empty")
+        clear_cache_action.triggered.connect(self._on_clear_cache)
+        cache_menu.addAction(clear_cache_action)
+        
+        clean_cache_action = QAction("Clean Cache", self)
+        clean_cache_action.setStatusTip("Validate entries against the filesystem and remove invalid entries")
+        clean_cache_action.triggered.connect(self._on_clean_cache)
+        cache_menu.addAction(clean_cache_action)
+        
         # View menu
         view_menu = menubar.addMenu("&View")
         view_menu.addAction(self._make_noop_action("Reset Layout"))
-
+        
         # Help menu
         help_menu = menubar.addMenu("&Help")
-        help_menu.addAction(self._make_noop_action("About"))
-
+        about_action = QAction("&About...", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+        
     def _setup_status_bar(self) -> None:
         """Attach a status bar with selectable text for feedback."""
         status = self.statusBar() if self.statusBar() else QStatusBar(self)
@@ -572,16 +972,142 @@ class MainWindow(QMainWindow):
         if not self.active_profile:
             self.status_label.setText("No active profile selected")
             return
-            
+
+        db_mgr = getattr(self, "database_manager", None)
+        if db_mgr is None:
+            show_selectable_error(self, "Cache Error", "DatabaseManager is not available on the main window.")
+            return
+
         # Show progress section
+        self.progress_section.setVisible(True)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
-        self.status_label.setText("Starting operation...")
+        self.progress_status_label.setText("Starting operation...")
         self.file_count_label.setText("Files processed: 0")
         self.eta_label.setText("Estimated time: --")
-        
-        # For now, simulate progress - will implement actual operation later
-        self._simulate_operation()
+        self.start_btn.setEnabled(False)
+
+        # Resolve full profile JSON for the run
+        try:
+            if self.controller is None:
+                self.status_label.setText("Controller not available")
+                self.start_btn.setEnabled(True)
+                return
+            resp = self.controller.get_profile(self.active_profile['id'])
+            if not resp.success or not resp.data:
+                self.status_label.setText(f"Failed to load profile for run: {resp.message or 'Unknown error'}")
+                self.start_btn.setEnabled(True)
+                return
+            payload = resp.data.get('json_data') if isinstance(resp.data, dict) and resp.data.get('format') == 'json' and 'json_data' in resp.data else resp.data
+        except Exception as exc:
+            self.status_label.setText(f"Error preparing run: {exc}")
+            self.start_btn.setEnabled(True)
+            return
+
+        # Start background worker
+        import time
+        self.start_time = time.time()
+        self._scan_errors = []
+
+        self._scan_worker = ScanWorker(db_manager=db_mgr, profile_json=payload, algorithm="sha256", parent=self)
+        self._scan_worker.progress.connect(self._on_scan_progress)
+        self._scan_worker.error.connect(self._on_scan_error)
+        self._scan_worker.finished.connect(self._on_scan_finished)
+        self._scan_worker.start()
+
+    def _on_scan_progress(self, processed: int, total: int, current_path: str, message: str) -> None:
+        """
+        Update progress UI from ScanWorker signals.
+
+        Parameters
+        ----------
+        processed : int
+            Number of files processed so far.
+        total : int
+            Total files discovered for processing.
+        current_path : str
+            The path of the file currently being processed.
+        message : str
+            Short status message from the worker.
+        """
+        import time
+        percent = int((processed / total) * 100) if total > 0 else 0
+        if percent < 0:
+            percent = 0
+        if percent > 100:
+            percent = 100
+        self.progress_bar.setValue(percent)
+        self.file_count_label.setText(f"Files processed: {processed}/{total}")
+        # ETA
+        try:
+            elapsed = time.time() - getattr(self, "start_time", time.time())
+            if processed > 0 and total > 0:
+                remaining = max(total - processed, 0)
+                per_item = elapsed / max(processed, 1)
+                eta = per_item * remaining
+                self.eta_label.setText(f"Estimated time: {eta:.1f}s remaining")
+        except Exception:
+            pass
+        # Status
+        self.progress_status_label.setText(f"{message}: {current_path}")
+
+    def _on_scan_error(self, message: str) -> None:
+        """
+        Record a non-fatal error reported by the worker and reflect in status.
+        """
+        try:
+            self._scan_errors.append(message)
+        except Exception:
+            self._scan_errors = [message]
+        self.status_label.setText(f"Error: {message}")
+
+    def _on_scan_finished(self, summary: dict) -> None:
+        """
+        Finalize UI and present a selectable summary dialog when the worker finishes.
+
+        Parameters
+        ----------
+        summary : dict
+            Worker-reported counters including: found, processed, inserted, invalidated,
+            hashes_computed, errors.
+        """
+        self.progress_bar.setValue(100)
+        self.progress_status_label.setText("Operation completed")
+        self.start_btn.setEnabled(True)
+
+        found = int(summary.get("found", 0) or 0)
+        processed = int(summary.get("processed", 0) or 0)
+        inserted = int(summary.get("inserted", 0) or 0)
+        invalidated = int(summary.get("invalidated", 0) or 0)
+        hashes = int(summary.get("hashes_computed", 0) or 0)
+        errors = int(summary.get("errors", 0) or 0)
+        try:
+            additional = len(getattr(self, "_scan_errors", []))
+            if additional > errors:
+                errors = additional
+        except Exception:
+            pass
+
+        text = (
+            "File processing completed.\n\n"
+            f"Total files found: {found}\n"
+            f"Files processed: {processed}\n"
+            f"New cache rows inserted: {inserted}\n"
+            f"Invalidated (deleted) rows: {invalidated}\n"
+            f"Hashes computed: {hashes}\n"
+            f"Errors: {errors}"
+        )
+        try:
+            show_selectable_info(self, "Processing Summary", text)
+        except Exception:
+            pass
+        try:
+            self.statusBar().showMessage(
+                f"Processed {processed}/{found}; invalidated {invalidated}; inserted {inserted}; hashes {hashes}; errors {errors}",
+                10000
+            )
+        except Exception:
+            pass
 
     def _simulate_operation(self) -> None:
         """
@@ -605,7 +1131,7 @@ class MainWindow(QMainWindow):
             # Process events to update UI
             QApplication.processEvents()
             
-        self.status_label.setText("Operation completed")
+        self.progress_status_label.setText("Operation completed")
         # Show results dialog
         self._show_results_dialog()
 
@@ -891,6 +1417,233 @@ class MainWindow(QMainWindow):
         """
         self.save_btn.setEnabled(enabled)
         self.cancel_btn.setEnabled(enabled)
+
+    def _get_app_version(self) -> str:
+        """
+        Return the application version string.
+
+        Tries in order:
+        1) img_app.img_app.__app_version__ (app-specific version, if defined)
+        2) src.pk_py_lib.__version__ (library version as fallback)
+        3) "0.0.0-dev" placeholder if neither is available
+        """
+        try:
+            from img_app.img_app import __app_version__ as v  # type: ignore
+            if v:
+                return str(v)
+        except Exception:
+            pass
+        try:
+            from src.pk_py_lib import __version__ as v  # type: ignore
+            if v:
+                return str(v)
+        except Exception:
+            pass
+        return "0.0.0-dev"
+
+    def _show_about(self) -> None:
+        """
+        Show the About dialog using selectable text message utilities.
+        
+        The dialog displays:
+        - Application name (window title if available)
+        - Version information
+        - Brief description
+        
+        The text in the dialog is selectable/copyable per project requirements.
+        """
+        # Determine application name (prefer the current window title)
+        app_name = self.windowTitle() or "Image Organizer App"
+        version = self._get_app_version()
+        description = (
+            "Development image organizer built on pk-py-lib.\n"
+            "Manage, classify, and deduplicate large image collections."
+        )
+        about_text = f"{app_name}\nVersion: {version}\n\n{description}"
+        
+        # Use the selectable info dialog from pk_py_lib; fallback to QMessageBox if unavailable
+        try:
+            from src.pk_py_lib.gui.utils.messages import show_selectable_info
+            show_selectable_info(self, "About", about_text)
+        except Exception:
+            try:
+                QMessageBox.information(self, "About", about_text)
+            except Exception:
+                # If even this fails, ignore to avoid crashing on About
+                pass
+
+    @gui_error_handler(component_name="MainWindow", operation="clear_cache")
+    def _on_clear_cache(self) -> None:
+        """
+        Clear the application's cache database (cache.db).
+
+        Deletes the cache.db file if it exists, then recreates an empty schema
+        using the canonical CACHE_SCHEMA via the DatabaseManager connection.
+
+        Uses selectable message dialogs to report success or failure.
+        """
+        db_mgr = getattr(self, "database_manager", None)
+        if db_mgr is None:
+            show_selectable_error(self, "Cache Error", "DatabaseManager is not available on the main window.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Clear Cache",
+            "This will delete the cache database (cache.db) and recreate it empty.\n\nProceed?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        cache_path = db_mgr.cache_db
+        # Delete cache.db if present
+        try:
+            cache_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+        except TypeError:
+            # Fallback for Python versions lacking missing_ok
+            if cache_path.exists():
+                cache_path.unlink()
+
+        # Recreate empty schema
+        with db_mgr.get_connection(cache_path) as conn:
+            conn.executescript(CACHE_SCHEMA)
+
+        # Notify user
+        show_selectable_info(self, "Cache Cleared", f"Cache database cleared and reinitialized.\n\nPath:\n{cache_path}")
+        try:
+            self.statusBar().showMessage("Cache database cleared and reinitialized", 5000)
+        except Exception:
+            pass
+
+    @gui_error_handler(component_name="MainWindow", operation="clean_cache")
+    def _on_clean_cache(self) -> None:
+        """
+        Clean the cache database by validating image entries against the filesystem.
+
+        For each row in image_metadata:
+        - If file does not exist: delete the row (cascades remove thumbnails and hashes)
+        - If file exists but (size or mtime) differ: delete the row
+        After deletions, runs VACUUM to compact the database file and reports counts.
+        """
+        db_mgr = getattr(self, "database_manager", None)
+        if db_mgr is None:
+            show_selectable_error(self, "Cache Error", "DatabaseManager is not available on the main window.")
+            return
+
+        cache_path = db_mgr.cache_db
+
+        # Ensure cache DB exists; create empty if missing
+        if not cache_path.exists():
+            with db_mgr.get_connection(cache_path) as conn:
+                conn.executescript(CACHE_SCHEMA)
+            show_selectable_info(self, "Clean Cache", "Cache database did not exist. A new empty cache was created.")
+            return
+
+        from datetime import datetime
+
+        def _to_epoch_seconds(val) -> int | None:
+            """Best-effort string/number → epoch seconds converter."""
+            if val is None:
+                return None
+            try:
+                if isinstance(val, (int, float)):
+                    return int(val)
+                s = str(val).strip()
+                if not s:
+                    return None
+                if s.isdigit():
+                    return int(s)
+                # Try ISO formats
+                s2 = s[:-1] if s.endswith("Z") else s
+                s2 = s2.replace(" ", "T")
+                try:
+                    dt = datetime.fromisoformat(s2)
+                    return int(dt.timestamp())
+                except Exception:
+                    pass
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+                    try:
+                        dt = datetime.strptime(s, fmt)
+                        return int(dt.timestamp())
+                    except Exception:
+                        continue
+            except Exception:
+                return None
+            return None
+
+        removed_missing = 0
+        removed_changed = 0
+        checked = 0
+        to_delete: list[int] = []
+
+        # Read all entries and build deletion list
+        with db_mgr.get_connection(cache_path) as conn:
+            cur = conn.execute("SELECT id, file_path, file_size, file_modified FROM image_metadata")
+            rows = cur.fetchall()
+            checked = len(rows)
+
+            for row in rows:
+                image_id = int(row["id"])
+                p = Path(str(row["file_path"]))
+                try:
+                    if not p.exists():
+                        to_delete.append(image_id)
+                        removed_missing += 1
+                        continue
+
+                    st = p.stat()
+                    try:
+                        size_db = int(row["file_size"]) if row["file_size"] is not None else None
+                    except Exception:
+                        size_db = None
+                    mtime_db = _to_epoch_seconds(row["file_modified"])
+
+                    size_changed = (size_db is None) or (int(st.st_size) != size_db)
+                    mtime_changed = True
+                    if mtime_db is not None:
+                        mtime_changed = abs(int(st.st_mtime) - int(mtime_db)) > 1
+
+                    if size_changed or mtime_changed:
+                        to_delete.append(image_id)
+                        removed_changed += 1
+                except Exception:
+                    # Conservative: treat as invalid
+                    to_delete.append(image_id)
+                    removed_changed += 1
+
+            # Delete in chunks; cascades remove thumbnails and hashes
+            CHUNK = 500
+            for i in range(0, len(to_delete), CHUNK):
+                chunk = to_delete[i:i + CHUNK]
+                if not chunk:
+                    continue
+                placeholders = ",".join("?" for _ in chunk)
+                conn.execute(f"DELETE FROM image_metadata WHERE id IN ({placeholders})", chunk)
+            # Commit handled by context manager
+
+        # VACUUM to compact file size
+        try:
+            with db_mgr.get_connection(cache_path) as conn:
+                conn.execute("VACUUM")
+        except Exception:
+            # Non-fatal
+            pass
+
+        removed_total = removed_missing + removed_changed
+        show_selectable_info(
+            self,
+            "Clean Cache",
+            f"Checked entries: {checked}\n"
+            f"Removed entries: {removed_total}\n"
+            f"- Missing files: {removed_missing}\n"
+            f"- Changed files: {removed_changed}"
+        )
+        try:
+            self.statusBar().showMessage(f"Cache cleaned: removed {removed_total} entries", 5000)
+        except Exception:
+            pass
 
     def _make_noop_action(self, text: str) -> QAction:
         """

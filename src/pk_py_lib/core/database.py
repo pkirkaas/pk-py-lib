@@ -21,6 +21,8 @@ import logging
 import datetime
 import uuid
 import json
+import os
+from platformdirs import user_data_dir, user_cache_dir
 
 logger = logging.getLogger("pk_py_lib.core.database")
 
@@ -147,6 +149,19 @@ CREATE TABLE IF NOT EXISTS meta (
 CACHE_SCHEMA = """
 -- Cache DB schema
 
+-- Meta table for schema versioning and database metadata
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    notes TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Initialize schema version (required on database creation)
+INSERT OR IGNORE INTO meta (key, value, notes)
+VALUES ('schema_version', '1.0.0', 'Initial cache schema');
+
+-- Image metadata cache with file identity tracking
 CREATE TABLE IF NOT EXISTS image_metadata (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_path TEXT UNIQUE NOT NULL,
@@ -154,14 +169,22 @@ CREATE TABLE IF NOT EXISTS image_metadata (
     file_size INTEGER NOT NULL,
     file_modified TIMESTAMP NOT NULL,
     file_created TIMESTAMP,
-    file_hash TEXT,
-    file_inode INTEGER,
-    file_device INTEGER,
+
+    -- File identity and hashing
+    file_hash_sha256 TEXT,          -- Full SHA-256 hash (hex)
+    partial_hash_sha256 TEXT,       -- Partial SHA-256 for staged comparison
+    file_inode INTEGER,             -- Inode number (where available)
+    file_device INTEGER,            -- Device ID (where available)
+    hash_computed_at TIMESTAMP,
+
+    -- Image properties
     width INTEGER,
     height INTEGER,
     format TEXT,
     color_mode TEXT,
     bit_depth INTEGER,
+
+    -- Metadata
     exif_data JSON,
     camera_make TEXT,
     camera_model TEXT,
@@ -169,24 +192,33 @@ CREATE TABLE IF NOT EXISTS image_metadata (
     date_taken TIMESTAMP,
     gps_latitude REAL,
     gps_longitude REAL,
+
+    -- Cache management
     last_scanned TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     scan_version TEXT,
-    is_valid BOOLEAN DEFAULT TRUE
+    is_valid BOOLEAN DEFAULT TRUE,
+    mtime_ns INTEGER                -- Modification time in nanoseconds
 );
 
+-- Thumbnail metadata (file-backed storage per canonical decision)
+-- Note: Actual thumbnail files are stored under cache/thumbnails/{size}/
+-- Database only stores metadata and relative file paths
 CREATE TABLE IF NOT EXISTS thumbnails (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     image_id INTEGER NOT NULL,
     size INTEGER NOT NULL,
-    thumbnail_path TEXT NOT NULL,
+    relative_path TEXT NOT NULL,  -- Path relative to cache/thumbnails/ directory
     format TEXT DEFAULT 'JPEG',
+    quality INTEGER DEFAULT 85,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     access_count INTEGER DEFAULT 0,
     FOREIGN KEY (image_id) REFERENCES image_metadata(id) ON DELETE CASCADE,
-    UNIQUE(image_id, size)
+    UNIQUE(image_id, size),
+    CHECK (size IN (256, 512, 1024))
 );
 
+-- Image hashes for different algorithms
 CREATE TABLE IF NOT EXISTS image_hashes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     image_id INTEGER NOT NULL,
@@ -198,45 +230,7 @@ CREATE TABLE IF NOT EXISTS image_hashes (
     UNIQUE(image_id, algorithm)
 );
 
-CREATE TABLE IF NOT EXISTS scan_sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    profile_id INTEGER,
-    name TEXT,
-    scan_type TEXT NOT NULL,
-    source_paths JSON NOT NULL,
-    reference_paths JSON,
-    algorithms JSON NOT NULL,
-    threshold REAL NOT NULL,
-    algorithm_params JSON,
-    total_images INTEGER,
-    processed_images INTEGER DEFAULT 0,
-    groups_found INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'pending',
-    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    completed_at TIMESTAMP,
-    duration REAL,
-    error_message TEXT,
-    CHECK (scan_type IN ('single_set', 'dual_set')),
-    CHECK (status IN ('pending', 'running', 'completed', 'cancelled', 'error')),
-    CHECK (threshold BETWEEN 0.0 AND 1.0)
-);
-
-CREATE TABLE IF NOT EXISTS similarity_results (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id INTEGER NOT NULL,
-    group_id INTEGER NOT NULL,
-    image1_id INTEGER NOT NULL,
-    image2_id INTEGER NOT NULL,
-    overall_score REAL NOT NULL,
-    algorithm_scores JSON,
-    is_reference BOOLEAN DEFAULT FALSE,
-    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (session_id) REFERENCES scan_sessions(id) ON DELETE CASCADE,
-    FOREIGN KEY (image1_id) REFERENCES image_metadata(id),
-    FOREIGN KEY (image2_id) REFERENCES image_metadata(id),
-    CHECK (overall_score BETWEEN 0.0 AND 1.0)
-);
-
+-- Cache statistics
 CREATE TABLE IF NOT EXISTS cache_stats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     total_size_bytes INTEGER DEFAULT 0,
@@ -249,16 +243,16 @@ CREATE TABLE IF NOT EXISTS cache_stats (
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Indexes
 CREATE INDEX IF NOT EXISTS idx_metadata_path ON image_metadata(file_path);
-CREATE INDEX IF NOT EXISTS idx_metadata_hash ON image_metadata(file_hash);
+CREATE INDEX IF NOT EXISTS idx_metadata_sha256 ON image_metadata(file_hash_sha256);
+CREATE INDEX IF NOT EXISTS idx_metadata_partial ON image_metadata(partial_hash_sha256);
+CREATE INDEX IF NOT EXISTS idx_metadata_inode ON image_metadata(file_inode, file_device);
+CREATE INDEX IF NOT EXISTS idx_metadata_size ON image_metadata(file_size);
+CREATE INDEX IF NOT EXISTS idx_metadata_date ON image_metadata(date_taken);
 CREATE INDEX IF NOT EXISTS idx_thumbnails_image ON thumbnails(image_id);
 CREATE INDEX IF NOT EXISTS idx_thumbnails_accessed ON thumbnails(last_accessed);
 CREATE INDEX IF NOT EXISTS idx_hashes_image ON image_hashes(image_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_profile ON scan_sessions(profile_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_status ON scan_sessions(status);
-CREATE INDEX IF NOT EXISTS idx_results_session ON similarity_results(session_id);
-CREATE INDEX IF NOT EXISTS idx_results_group ON similarity_results(session_id, group_id);
-CREATE INDEX IF NOT EXISTS idx_results_images ON similarity_results(image1_id, image2_id);
 """
 
 
@@ -611,20 +605,49 @@ class DatabaseManager:
     - Provide a small `backup_db` helper for safe migrations.
     """
 
-    def __init__(self, data_dir: Optional[Path] = None):
+    def __init__(self, data_dir: Optional[Path] = None, cache_dir: Optional[Path] = None):
         """
         Parameters
         ----------
         data_dir : Optional[Path]
-            Base directory for application data; defaults to ~/.kdc_image_organizer.
+            Base directory for application data (settings, backups). When not provided,
+            it defaults to platformdirs.user_data_dir('Img App', 'Pk') unless PK_IMG_APP_HOME is set.
+        cache_dir : Optional[Path]
+            Base directory for cache data (cache.db, thumbnails). When not provided,
+            it defaults to platformdirs.user_cache_dir('Img App', 'Pk') unless PK_IMG_APP_HOME is set.
+
+        Behavior
+        --------
+        - If PK_IMG_APP_HOME is set and neither data_dir nor cache_dir is provided, use:
+            data_dir = $PK_IMG_APP_HOME/data
+            cache_dir = $PK_IMG_APP_HOME/cache
+        - If data_dir is provided but cache_dir is not, default cache_dir = data_dir / 'cache'
+          (useful for tests and ephemeral environments).
         """
-        if data_dir is None:
-            self.data_dir = Path.home() / ".kdc_image_organizer"
+        # Resolve locations with environment override when explicit dirs are not provided
+        if data_dir is None and cache_dir is None:
+            base = os.environ.get("PK_IMG_APP_HOME")
+            if base:
+                base_path = Path(base).expanduser().resolve()
+                self.data_dir = base_path / "data"
+                self.cache_dir = base_path / "cache"
+            else:
+                self.data_dir = Path(user_data_dir("Img App", "Pk")).expanduser().resolve()
+                self.cache_dir = Path(user_cache_dir("Img App", "Pk")).expanduser().resolve()
         else:
-            self.data_dir = Path(data_dir).expanduser().resolve()
+            if data_dir is None:
+                self.data_dir = Path(user_data_dir("Img App", "Pk")).expanduser().resolve()
+            else:
+                self.data_dir = Path(data_dir).expanduser().resolve()
+
+            if cache_dir is None:
+                # Preserve test behavior: keep cache under data_dir when an explicit data_dir is supplied
+                self.cache_dir = self.data_dir / "cache"
+            else:
+                self.cache_dir = Path(cache_dir).expanduser().resolve()
 
         self.settings_db = self.data_dir / "settings.db"
-        self.cache_db = self.data_dir / "cache.db"
+        self.cache_db = self.cache_dir / "cache.db"
         self.schema = SchemaManager()
 
     def initialize(self) -> None:
@@ -633,9 +656,10 @@ class DatabaseManager:
 
         This is idempotent and safe to call multiple times.
         """
-        logger.info("Initializing databases under %s", self.data_dir)
+        logger.info("Initializing databases under data=%s, cache=%s", self.data_dir, self.cache_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        
         # Initialize settings DB (includes meta table)
         with self.get_connection(self.settings_db) as conn:
             conn.executescript(SETTINGS_SCHEMA)

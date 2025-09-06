@@ -179,3 +179,59 @@ The new GUI replaces the key-value editor with a structured form that:
 - Data Model: [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md)
 - API Specifications: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)
 - Technical Architecture: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
+
+## Main Window Menu Bar & Cache Management (implemented)
+
+Status: Implemented
+
+Overview
+- The application provides a native menu bar with four top-level menus: File, Cache, View, Help.
+- Cache management is accessible from the Cache menu and includes non-destructive metadata operations on cache.db and a destructive “clear” flow that recreates cache.db.
+- The profile toolbar is attached as a true top toolbar, ensuring the menu bar remains visible and follows platform UX conventions.
+
+Code references
+- Menu bar creation: [MainWindow._setup_menu_bar()](img_app/img_app/main_window.py:283)
+- Toolbar placement (fix): [MainWindow._setup_profile_toolbar()](img_app/img_app/main_window.py:157)
+- Cache actions: [MainWindow._on_clear_cache()](img_app/img_app/main_window.py:971), [MainWindow._on_clean_cache()](img_app/img_app/main_window.py:1017)
+- About dialog: [MainWindow._show_about()](img_app/img_app/main_window.py:940)
+- Message utilities and error handling: [show_selectable_info()](src/pk_py_lib/gui/utils/messages.py:149), [show_selectable_error()](src/pk_py_lib/gui/utils/messages.py:131), [gui_error_handler()](src/pk_py_lib/gui/utils/messages.py:293)
+- DB helpers and schema: [DatabaseManager.get_connection()](src/pk_py_lib/core/database.py:699), [CACHE_SCHEMA](src/pk_py_lib/core/database.py:149)
+
+Menu bar structure and behavior
+- File
+  - Open... (placeholder)
+  - Save (placeholder)
+  - Exit (placeholder)
+- Cache
+  - Clear Cache
+    - Behavior: Deletes cache.db (if present) and recreates an empty schema using [CACHE_SCHEMA](src/pk_py_lib/core/database.py:149).
+    - UX: Confirmation dialog, then selectable success message; status bar feedback.
+    - Notes: Only the database file is reset; file-backed thumbnails on disk remain. They are re-associated/replicated lazily during future operations.
+    - Handler: [MainWindow._on_clear_cache()](img_app/img_app/main_window.py:971)
+  - Clean Cache
+    - Behavior: Validates image_metadata rows against the filesystem; removes rows for missing files and entries where file_size or mtime differ; runs VACUUM to compact the DB; cascades remove dependent rows (thumbnails metadata, hashes).
+    - UX: Shows a selectable summary dialog with counts of checked/removed entries; status bar feedback.
+    - Notes: This operation does not delete on-disk thumbnails; it maintains database integrity and size.
+    - Handler: [MainWindow._on_clean_cache()](img_app/img_app/main_window.py:1017)
+- View
+  - Reset Layout (placeholder)
+- Help
+  - About...
+    - Behavior: Shows application name and version with selectable text via [show_selectable_info()](src/pk_py_lib/gui/utils/messages.py:149); robust fallbacks to QMessageBox on rare failures.
+    - References: [MainWindow._show_about()](img_app/img_app/main_window.py:940), version resolution [MainWindow._get_app_version()](img_app/img_app/main_window.py:917)
+
+Placement and UX notes
+- A real top toolbar is attached via addToolBar in [MainWindow._setup_profile_toolbar()](img_app/img_app/main_window.py:157). This resolves prior issues where pseudo-toolbar widgets inside the central layout could obscure or displace the native menu bar.
+- All dialogs and message surfaces use selectable text to facilitate copy/paste for diagnostics, per project requirements.
+
+Accessibility and error handling patterns
+- All cache menu handlers are decorated with [gui_error_handler()](src/pk_py_lib/gui/utils/messages.py:293), which:
+  - Presents user-friendly, selectable dialogs ([show_selectable_error()](src/pk_py_lib/gui/utils/messages.py:131))
+  - Logs detailed diagnostics to STDERR with file path, line number, and stack trace
+- Informational results use [show_selectable_info()](src/pk_py_lib/gui/utils/messages.py:149) to ensure copyable text.
+
+Acceptance checklist (UI)
+- Menu bar shows File, Cache, View, Help.
+- Cache → Clear Cache and Cache → Clean Cache are present and functional as specified.
+- About dialog shows app name and version with selectable text.
+- Menu bar remains visible; toolbar is anchored in the top toolbar area (non-movable, non-floatable).

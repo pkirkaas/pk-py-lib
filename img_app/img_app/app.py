@@ -104,7 +104,7 @@ def main() -> int:
             config_mgr = None
             try:
                 config_mgr = ConfigurationManager(db_mgr)
-                cache_dir = db_mgr.data_dir / "cache"
+                cache_dir = db_mgr.cache_dir
                 max_mb = int(getattr(config_mgr, "get_app_setting", lambda k: 5120)("cache_size_mb") or 5120)
                 cache_mgr = CacheManager(cache_dir, max_size_mb=max_mb)
             except Exception:
@@ -119,7 +119,7 @@ def main() -> int:
             logs_dir = (db_mgr.data_dir / 'logs').resolve()
             img_app_log = (logs_dir / 'img_app.log').resolve()
             pk_py_lib_log = (logs_dir / 'pk_py_lib.log').resolve()
-            cache_dir = cache_mgr.cache_dir.resolve() if cache_mgr else (db_mgr.data_dir / 'cache').resolve()
+            cache_dir = cache_mgr.cache_dir.resolve() if cache_mgr else db_mgr.cache_dir.resolve()
             thumbnails_dir = cache_mgr.thumb_base.resolve() if cache_mgr else (cache_dir / 'thumbnails').resolve()
             
             def status(path: Path):
@@ -184,7 +184,7 @@ def main() -> int:
         # Optional managers (best-effort; failures are non-fatal)
         try:
             config_mgr = ConfigurationManager(db_mgr)
-            cache_dir = db_mgr.data_dir / "cache"
+            cache_dir = db_mgr.cache_dir
             try:
                 max_mb = int(getattr(config_mgr, "get_app_setting", lambda k: 5120)("cache_size_mb") or 5120)
             except Exception:
