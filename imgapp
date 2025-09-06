@@ -2,8 +2,10 @@
 """
 imgapp - Convenience script to launch the KDC Image Organizer.
 
-This script is a thin wrapper that passes arguments to the main application entry point.
-It ensures consistent execution whether called directly as 'imgapp' or via 'pdm run imgapp'.
+This script invokes the application entry point. All CLI arguments are preserved;
+Qt-specific flags (e.g., -platform offscreen) are consumed by the QApplication
+inside img_app.img_app.app.main(), ensuring consistent behavior whether run as
+'imgapp' or via 'pdm run imgapp'.
 """
 import sys
 from img_app.img_app.app import main

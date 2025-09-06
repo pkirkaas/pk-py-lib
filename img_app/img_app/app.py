@@ -78,7 +78,8 @@ def main() -> int:
     4) Fetch the active profile for the main window.
     5) Create and show MainWindow, passing the active profile and managers.
     
-    Supports CLI mode: `imgapp --location` to list actual local data paths used.
+    Supports CLI mode: `imgapp -l` or `imgapp --location` to list actual local data paths used.
+    Qt flags (e.g., `-platform offscreen`) are passed through to QApplication via parse_known_args().
     
     Returns
     -------
@@ -91,8 +92,8 @@ def main() -> int:
     - Robust error handling: any fatal error during DB/API startup is shown via QMessageBox, and the app exits.
     """
     parser = argparse.ArgumentParser(description="KDC Image Organizer")
-    parser.add_argument("--location", action="store_true", help="List all local data paths used by the application")
-    args = parser.parse_args()
+    parser.add_argument("-l", "--location", action="store_true", help="List all local data paths used by the application")
+    args, qt_argv = parser.parse_known_args()
     
     if args.location:
         # CLI mode: initialize managers and print actual paths
@@ -136,7 +137,8 @@ def main() -> int:
             print(f"Error initializing managers for --location: {exc}", file=sys.stderr)
             sys.exit(1)
     
-    app = _ensure_application()
+    # Pass through any remaining args (likely Qt flags) to QApplication
+    app = _ensure_application([sys.argv[0]] + qt_argv)
 
     # Will be attached to the MainWindow if initialized successfully
     db_mgr = None
@@ -145,10 +147,7 @@ def main() -> int:
     active_profile: Optional[Dict[str, Any]] = None
 
     try:
-        # Import core managers (development layout import path)
-        from src.pk_py_lib.core.database import DatabaseManager
-        from src.pk_py_lib.core.configuration import ConfigurationManager
-        from src.pk_py_lib.core.cache import CacheManager
+        # Core managers imported at module top; using them directly
 
         # 2) Initialize/open DBs and run migrations
         db_mgr = DatabaseManager()
