@@ -75,9 +75,9 @@ SETTINGS_PROFILE_SCHEMA = {
                 "kind": {"type": "string", "enum": ["single_pool", "two_pool"], "default": "two_pool"},
                 "direction": {
                     "type": "string",
-                    "enum": ["A_TO_B", "B_TO_A", "A_WITHOUT_IN_B", "B_WITHOUT_IN_A"],
-                    "default": "A_TO_B",
-                    "description": "Default A_TO_B; UI enables direction choice only when both pools validate."
+                    "enum": ["duplicates", "non_duplicates"],
+                    "default": "duplicates",
+                    "description": "Two-pool comparison: 'duplicates' lists B items that duplicate A; 'non_duplicates' lists B items not found in A."
                 },
                 "single_pool_clustering": {
                     "type": "boolean",
@@ -244,14 +244,31 @@ def validate_settings_schema(profile_data: Dict[str, Any]) -> Tuple[bool, List[s
     """
     errors = []
     
+    # Backward-compat: migrate legacy direction tokens before schema validation
+    # to support previously saved profiles. We avoid mutating the caller payload.
+    to_validate = dict(profile_data or {})
     try:
-        validate(instance=profile_data, schema=SETTINGS_PROFILE_SCHEMA)
+        scope_in = dict((to_validate.get("scope") or {}))
+        if scope_in.get("kind") == "two_pool":
+            d = scope_in.get("direction")
+            if d in ("A_TO_B", "B_TO_A"):
+                scope_in["direction"] = "duplicates"
+            elif d in ("A_WITHOUT_IN_B", "B_WITHOUT_IN_A"):
+                scope_in["direction"] = "non_duplicates"
+            # do not auto-insert direction when absent; schema requires it explicitly
+            to_validate["scope"] = scope_in
+    except Exception:
+        # If anything goes wrong, fall back to original object
+        to_validate = profile_data
+    
+    try:
+        validate(instance=to_validate, schema=SETTINGS_PROFILE_SCHEMA)
     except ValidationError as e:
         errors.append(f"Schema validation failed: {e.message}")
         return False, errors
     
     # Additional custom validation beyond JSON schema
-    custom_errors = _validate_custom_rules(profile_data)
+    custom_errors = _validate_custom_rules(to_validate)
     if custom_errors:
         errors.extend(custom_errors)
         return False, errors
@@ -364,7 +381,14 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     scope.setdefault("kind", "two_pool")
     
     if scope["kind"] == "two_pool":
-        scope.setdefault("direction", "A_TO_B")
+        # Migrate legacy direction tokens to the simplified choices
+        dir_token = scope.get("direction")
+        if dir_token in ("A_TO_B", "B_TO_A"):
+            scope["direction"] = "duplicates"
+        elif dir_token in ("A_WITHOUT_IN_B", "B_WITHOUT_IN_A"):
+            scope["direction"] = "non_duplicates"
+        # Apply default for new schema
+        scope.setdefault("direction", "duplicates")
         # Ensure Pool B exists with defaults
         pool_b = pools.setdefault("B", {})
         pool_b.setdefault("recurse", True)

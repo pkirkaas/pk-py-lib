@@ -429,3 +429,47 @@ Code references
 - Data locations and DB topology are canonical: cache.db resides under platformdirs user_cache_dir; thumbnails are file‑backed under cache/thumbnails. See [CACHE_SCHEMA](src/pk_py_lib/core/database.py:149).
 - Startup wires managers and attaches them to the main window before actions are used; see [main()](img_app/img_app/app.py:70).
 - Clearing and cleaning the cache database are safe, recoverable operations consistent with the broader startup integrity and recovery policies documented elsewhere in this spec.
+
+## Behavior Update: Start Operation Pre-Save (2025-09-07)
+
+When starting a scan from the main window, the application will now ensure any pending settings edits are persisted before the scan begins.
+
+Summary
+- If the embedded settings editor has unsaved changes (dirty), the application performs a synchronous save before starting the scan
+- If saving fails (validation or persistence error), a selectable error dialog is shown and the scan is aborted
+- The Start button is disabled during both the save and the scan to prevent duplicate actions; the status label reflects the current phase
+- The worker reads settings after a successful save to ensure it uses the correct, persisted configuration
+
+Implementation Reference
+- Main window start handler: [main_window.py](img_app/img_app/main_window.py) — see method _on_start() which now performs a dirty-check and save prior to starting the worker
+- Error/UI utilities used for selectable error dialogs and GUI-safe error handling are provided by: [messages.py](src/pk_py_lib/gui/utils/messages.py)
+
+Notes
+- This change guarantees that the filesystem scan operates with the latest saved settings from the editor
+- Save semantics follow the same validation and persistence logic as the existing save action in the toolbar; failure to save leaves the editor dirty and prevents the scan until resolved
+
+## Behavior Update: Duplicate Detection & Reporting (2025-09-07)
+
+Summary
+- Added pool membership tracking to cache database (image_metadata.pool ∈ {'A','B'}) to support single_pool and two_pool analyses.
+- Scan workflow labels each discovered file with its originating pool. For single_pool, all files are labeled 'A'.
+- After scanning, the app generates a textual duplicate report and shows it in a selectable dialog.
+
+Implementation
+- Schema:
+  - image_metadata now includes a pool column with CHECK constraint and default 'A' (created/ensured by [CACHE_SCHEMA](src/pk_py_lib/core/database.py:149)).
+  - Cache DB meta.schema_version for new DBs is set to '1.1.0'.
+- Scanning:
+  - Pool labeling performed by [ScanWorker._gather_files()](img_app/img_app/main_window.py:183) which builds a file→pool map.
+  - Insertion writes the pool value into image_metadata during metadata insert in [ScanWorker.run()](img_app/img_app/main_window.py:315).
+- Duplicate detection:
+  - Single-pool mode: clusters all files with identical hashes, irrespective of pool (in single_pool, all are 'A').
+  - Two-pool mode: for each A file, lists B files sharing the same hash; results grouped by A reference.
+  - Query logic executed after scan completes in [MainWindow._on_scan_finished()](img_app/img_app/main_window.py:1117).
+- Report:
+  - Generated as plain text with clear headings/groupings, displayed via [show_selectable_info()](src/pk_py_lib/gui/utils/messages.py:149).
+  - Includes summary statistics: number of duplicate groups and total duplicate files.
+
+Notes
+- Current implementation uses the algorithm key 'sha256' for identity in [ScanWorker.run()](img_app/img_app/main_window.py:315); Option A duplicates may later switch to blake3 per canonical decision. The reporting queries use the same algorithm label to match computed hashes.
+- Error handling follows GUI standards; the report generation is wrapped to prevent UI crashes; detailed errors use [gui_error_handler()](src/pk_py_lib/gui/utils/messages.py:293) patterns elsewhere in the window.

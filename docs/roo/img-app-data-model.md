@@ -654,6 +654,9 @@ CREATE TABLE image_metadata (
     file_size INTEGER NOT NULL,
     file_modified TIMESTAMP NOT NULL,
     file_created TIMESTAMP,
+
+    -- Pool membership (A or B) for single/two-pool analyses
+    pool TEXT NOT NULL DEFAULT 'A' CHECK (pool IN ('A','B')),
     
     -- File identity and hashing
     file_hash_sha256 TEXT,          -- Full SHA-256 hash (hex)
@@ -695,7 +698,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 -- Initialize cache database metadata
 INSERT OR IGNORE INTO meta (key, value, notes)
-VALUES ('schema_version', '1.0.0', 'Initial cache schema');
+VALUES ('schema_version', '1.1.0', 'Add pool column to image_metadata');
 
 -- Thumbnail metadata (file-backed storage per canonical decision)
 -- Note: Actual thumbnail files are stored in cache/thumbnails/ directory

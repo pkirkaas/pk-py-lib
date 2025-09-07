@@ -160,7 +160,8 @@ class StructuredProfileEditorWidget(QWidget):
         # Direction combo box with label
         self.direction_label = QLabel("Direction:")
         self.cmb_scope_direction = QComboBox()
-        self.cmb_scope_direction.addItems(["A_TO_B", "B_TO_A", "A_WITHOUT_IN_B", "B_WITHOUT_IN_A"])
+        # Simplified two choices for two-pool direction per updated schema
+        self.cmb_scope_direction.addItems(["duplicates", "non_duplicates"])
         self.cmb_scope_direction.setMaximumWidth(160)  # ~20 characters
         self.scope_direction_layout.addWidget(self.direction_label)
         self.scope_direction_layout.addWidget(self.cmb_scope_direction)
@@ -575,8 +576,23 @@ class StructuredProfileEditorWidget(QWidget):
     # Public API
     def load_profile(self, profile: Dict[str, Any]) -> None:
         """Load a profile into the editor."""
-        self._original_profile = profile.copy()
-        self._current_profile = profile.copy()
+        # Normalize legacy direction tokens so original/current match UI and avoid false dirty state
+        loaded = profile.copy()
+        try:
+            scope = (loaded.get("scope") or {})
+            if scope.get("kind") == "two_pool":
+                d = scope.get("direction")
+                if d in ("A_TO_B", "B_TO_A"):
+                    scope["direction"] = "duplicates"
+                elif d in ("A_WITHOUT_IN_B", "B_WITHOUT_IN_A"):
+                    scope["direction"] = "non_duplicates"
+                loaded["scope"] = scope
+        except Exception:
+            pass
+
+        self._original_profile = loaded.copy()
+        self._current_profile = loaded.copy()
+        profile = loaded  # continue using normalized copy for UI population
 
         # Populate UI
         self.inp_name.setText(profile.get("name", ""))
@@ -640,7 +656,13 @@ class StructuredProfileEditorWidget(QWidget):
         # Set scope and output
         scope = profile.get("scope", {})
         self.cmb_scope_kind.setCurrentText(scope.get("kind", "single_pool"))
-        self.cmb_scope_direction.setCurrentText(scope.get("direction", "A_TO_B"))
+        # Map legacy tokens to simplified choices to keep UI consistent with schema
+        _dir = scope.get("direction", "duplicates")
+        if _dir in ("A_TO_B", "B_TO_A"):
+            _dir = "duplicates"
+        elif _dir in ("A_WITHOUT_IN_B", "B_WITHOUT_IN_A"):
+            _dir = "non_duplicates"
+        self.cmb_scope_direction.setCurrentText(_dir)
 
         output = profile.get("output", {})
         self.cmb_output_mode.setCurrentText(output.get("mode", "report_only"))

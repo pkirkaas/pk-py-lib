@@ -148,6 +148,8 @@ class ScanWorker(QThread):
         self.profile = profile_json or {}
         self.algorithm = (algorithm or "sha256").lower().strip()
         self._stop = False
+        # Map from absolute file path (POSIX string) to pool label 'A' or 'B'
+        self._file_pool_map: dict[str, str] = {}
 
     def stop(self) -> None:
         """
@@ -182,25 +184,28 @@ class ScanWorker(QThread):
 
     def _gather_files(self) -> list[Path]:
         """
-        Gather files to process from profile pools A/B.
-    
-        Mode-based filtering:
+        Gather files to process from profile pools A/B and record pool membership per file.
+
+        Behavior
+        --------
         - duplicates mode: include ALL files (no extension filtering)
         - similarity mode: include ONLY image files (extension-based filtering)
-    
-        Also applies path roots, recursion depth, hidden/symlink policy.
-    
+        - Records pool label ('A' or 'B') for each discovered file in self._file_pool_map
+        - For single_pool usage (only Pool A provided), all files are labeled 'A'
+
         Returns
         -------
         list[Path]
-            Sorted, de-duplicated absolute file paths.
+            Sorted, de-duplicated absolute file paths (Path objects).
         """
         pools = self.profile.get("pools", {}) if isinstance(self.profile, dict) else {}
         mode_str = str((self.profile.get("mode") if isinstance(self.profile, dict) else "duplicates") or "duplicates").strip().lower()
         filter_images_only = (mode_str == "similarity")
-    
+
         file_set: set[Path] = set()
-    
+        # Reset and build pool map anew each run
+        self._file_pool_map = {}
+
         # Build extension whitelist only for similarity mode
         ext_union: set[str] = set()
         if filter_images_only:
@@ -209,7 +214,7 @@ class ScanWorker(QThread):
                 ext_union |= self._normalize_exts(cfg.get("type_filters"))
             if not ext_union:
                 ext_union = self._normalize_exts(None)
-    
+
         # Debug: mode and filter summary
         try:
             if filter_images_only:
@@ -218,30 +223,36 @@ class ScanWorker(QThread):
                 print(f"[ScanWorker] Mode: {mode_str} — including all file types (no extension filtering)")
         except Exception:
             pass
-    
+
+        def _posix(p: Path) -> str:
+            try:
+                return p.as_posix()
+            except Exception:
+                return str(p)
+
         for label in ("A", "B"):
             cfg = pools.get(label)
             if not cfg:
                 continue
-    
+
             raw_paths = cfg.get("paths") or []
             roots = [Path(p) for p in raw_paths if p]
             # Normalize and remove contained paths for efficiency
             roots = PathOperations.normalize_paths(roots)
             roots = PathOperations.remove_contained_paths(roots)
-    
+
             # Traversal options (Balanced defaults honored)
             recurse = bool(cfg.get("recurse", True))
             max_depth = cfg.get("max_depth", 0)
             include_hidden = bool(cfg.get("include_hidden", False))
             follow_symlinks = bool(cfg.get("follow_symlinks", False))
-    
+
             # DirectoryTraversal.walk_files uses Optional[int] max_depth:
             # - None = unlimited
             # - N>=1 = limited depth
             # Our schema: max_depth 0 => unlimited, recurse False => only direct children.
             depth_param = None if (recurse and (max_depth in (None, 0))) else (1 if not recurse else int(max_depth or 0))
-    
+
             # Debug: pool traversal settings
             try:
                 print(f"[ScanWorker] Pool {label}: roots={len(roots)}, recurse={recurse}, max_depth={max_depth}, depth_param={depth_param}, follow_symlinks={follow_symlinks}, include_hidden={include_hidden}")
@@ -251,7 +262,7 @@ class ScanWorker(QThread):
                     print(f"[ScanWorker]   ... and {len(roots)-5} more roots")
             except Exception:
                 pass
-    
+
             for root in roots:
                 try:
                     if not root.exists():
@@ -260,16 +271,21 @@ class ScanWorker(QThread):
                         except Exception:
                             pass
                         continue
-    
+
                     before_count = len(file_set)
-    
+
                     if root.is_file():
                         # Single file root
                         if (not filter_images_only) or (root.suffix.lower() in ext_union):
                             try:
-                                file_set.add(root.resolve())
+                                rp = root.resolve()
                             except Exception:
-                                file_set.add(root)
+                                rp = root
+                            file_set.add(rp)
+                            # Record pool if not already set (first-wins)
+                            k = _posix(rp)
+                            if k not in self._file_pool_map:
+                                self._file_pool_map[k] = label
                         else:
                             try:
                                 print(f"[ScanWorker] Skipping file (extension filtered in similarity mode): {root}")
@@ -288,23 +304,27 @@ class ScanWorker(QThread):
                             try:
                                 if (not filter_images_only) or (p.suffix.lower() in ext_union):
                                     try:
-                                        file_set.add(p.resolve())
+                                        rp = p.resolve()
                                     except Exception:
-                                        file_set.add(p)
+                                        rp = p
+                                    file_set.add(rp)
+                                    k = _posix(rp)
+                                    if k not in self._file_pool_map:
+                                        self._file_pool_map[k] = label
                             except Exception:
                                 continue
-    
+
                     # Debug per-root delta
                     try:
                         delta = len(file_set) - before_count
                         print(f"[ScanWorker] Pool {label}: +{delta} files from root {root}")
                     except Exception:
                         pass
-    
+
                 except Exception:
                     # Conservative: skip problematic roots silently
                     continue
-    
+
         files = sorted(file_set)
         try:
             print(f"[ScanWorker] Gathered {len(files)} files total (post-dedup)")
@@ -353,6 +373,28 @@ class ScanWorker(QThread):
                     conn.executescript(CACHE_SCHEMA)
                 except Exception:
                     # Non-fatal if already present
+                    pass
+                # Ensure 'pool' column exists for upgrades from older cache schemas
+                try:
+                    cur = conn.execute("PRAGMA table_info(image_metadata)")
+                    cols = [str(r["name"]).lower() for r in cur.fetchall()]
+                    if "pool" not in cols:
+                        conn.execute("ALTER TABLE image_metadata ADD COLUMN pool TEXT DEFAULT 'A'")
+                        conn.execute("UPDATE image_metadata SET pool = 'A' WHERE pool IS NULL")
+                        # Best-effort schema version bump for cache
+                        try:
+                            if conn.execute("SELECT 1 FROM meta WHERE key='schema_version'").fetchone():
+                                conn.execute(
+                                    "UPDATE meta SET value = '1.1.0', notes = 'Add pool column to image_metadata', updated_at = CURRENT_TIMESTAMP WHERE key='schema_version'"
+                                )
+                            else:
+                                conn.execute(
+                                    "INSERT INTO meta (key, value, notes) VALUES ('schema_version', '1.1.0', 'Add pool column to image_metadata')"
+                                )
+                        except Exception:
+                            pass
+                except Exception:
+                    # Non-fatal — schema will be recreated by Clear Cache if needed
                     pass
 
             # Process files within a single transaction scope for simplicity
@@ -407,16 +449,21 @@ class ScanWorker(QThread):
 
                         if image_id is None:
                             # Create fresh metadata record
+                            # Determine pool label for this file; default to 'A' for single-pool
+                            pool_label = self._file_pool_map.get(current_path, "A")
                             conn.execute(
                                 """
                                 INSERT INTO image_metadata (
                                     file_path, file_name, file_size, file_modified, file_created,
+                                    pool,
                                     file_hash_sha256, partial_hash_sha256, file_inode, file_device,
                                     hash_computed_at, width, height, format, color_mode, bit_depth,
                                     exif_data, camera_make, camera_model, lens_model, date_taken,
                                     gps_latitude, gps_longitude, last_scanned, scan_version, is_valid, mtime_ns
                                 ) VALUES (
-                                    ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL,
+                                    ?, ?, ?, ?, ?,
+                                    ?,
+                                    NULL, NULL, ?, ?,
                                     NULL, NULL, NULL, NULL, NULL,
                                     NULL, NULL, NULL, NULL, NULL,
                                     NULL, NULL, CURRENT_TIMESTAMP, NULL, 1, ?
@@ -428,6 +475,7 @@ class ScanWorker(QThread):
                                     size_now,
                                     mtime_s_now,
                                     int(getattr(st, "st_ctime", mtime_s_now)),
+                                    pool_label,
                                     int(inode) if inode is not None else None,
                                     int(device) if device is not None else None,
                                     mtime_ns_now,
@@ -965,9 +1013,15 @@ class MainWindow(QMainWindow):
             import logging
             logging.getLogger("img_app.main_window").exception("Error in _on_copy_profile")
 
+    @gui_error_handler(component_name="MainWindow", operation="start_scan")
     def _on_start(self) -> None:
         """
         Handle start button click to begin the operation.
+
+        Behavior update:
+        - If the embedded settings editor has unsaved changes (dirty), attempt a synchronous save before starting.
+        - On save failure, an error dialog is shown and the operation is aborted.
+        - The Start button is disabled during save and the scan, and the status label is updated accordingly.
         """
         if not self.active_profile:
             self.status_label.setText("No active profile selected")
@@ -978,7 +1032,54 @@ class MainWindow(QMainWindow):
             show_selectable_error(self, "Cache Error", "DatabaseManager is not available on the main window.")
             return
 
-        # Show progress section
+        # 1) Save pending settings if editor is dirty (supports either structured_editor or legacy editor attribute)
+        editor = getattr(self, "structured_editor", None)
+        if editor is None and hasattr(self, "editor"):
+            try:
+                editor = getattr(self, "editor")
+            except Exception:
+                editor = None
+
+        def _editor_is_dirty(ed) -> bool:
+            """Best-effort dirty check across editor variants."""
+            try:
+                if ed is None:
+                    return False
+                if hasattr(ed, "is_dirty"):
+                    return bool(ed.is_dirty())
+            except Exception:
+                pass
+            try:
+                return bool(getattr(ed, "_dirty", False))
+            except Exception:
+                return False
+
+        if _editor_is_dirty(editor):
+            # Disable Start during save and inform user
+            self.start_btn.setEnabled(False)
+            try:
+                self.status_label.setText("Saving pending settings changes...")
+            except Exception:
+                pass
+            try:
+                QApplication.processEvents()
+            except Exception:
+                pass
+
+            # Attempt synchronous save using existing handler; it validates and persists
+            self._on_save_profile()
+
+            # Re-check dirty state; failure → abort with error
+            if _editor_is_dirty(editor):
+                show_selectable_error(
+                    self,
+                    "Save Failed",
+                    "Settings changes could not be saved. Resolve the validation errors and try again."
+                )
+                self.start_btn.setEnabled(True)
+                return
+
+        # 2) Show progress section and prepare scan
         self.progress_section.setVisible(True)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
@@ -987,7 +1088,7 @@ class MainWindow(QMainWindow):
         self.eta_label.setText("Estimated time: --")
         self.start_btn.setEnabled(False)
 
-        # Resolve full profile JSON for the run
+        # 3) Resolve full profile JSON for the run (now guaranteed to include saved changes)
         try:
             if self.controller is None:
                 self.status_label.setText("Controller not available")
@@ -1004,7 +1105,7 @@ class MainWindow(QMainWindow):
             self.start_btn.setEnabled(True)
             return
 
-        # Start background worker
+        # 4) Start background worker
         import time
         self.start_time = time.time()
         self._scan_errors = []
@@ -1107,6 +1208,151 @@ class MainWindow(QMainWindow):
                 10000
             )
         except Exception:
+            pass
+
+        # Generate and display duplicate report with summary statistics
+        try:
+            db_mgr = getattr(self, "database_manager", None)
+            if db_mgr is not None:
+                # Determine two-pool mode from the active profile (presence of paths in both A and B)
+                two_pool = False
+                try:
+                    if self.controller and self.active_profile:
+                        prof = self.controller.get_profile(self.active_profile['id'])
+                        if prof.success and prof.data:
+                            payload = prof.data.get('json_data') if isinstance(prof.data, dict) and prof.data.get('format') == 'json' and 'json_data' in prof.data else prof.data
+                            pools = payload.get('pools', {}) if isinstance(payload, dict) else {}
+                            def _has_paths(cfg: dict | None) -> bool:
+                                try:
+                                    return any(bool(p) for p in (cfg or {}).get('paths', []))
+                                except Exception:
+                                    return False
+                            two_pool = _has_paths(pools.get('A')) and _has_paths(pools.get('B'))
+                except Exception:
+                    two_pool = False
+
+                from collections import defaultdict
+                # Determine direction (supports legacy tokens); default to 'duplicates'
+                direction = "duplicates"
+                try:
+                    if payload and isinstance(payload, dict):
+                        d = (payload.get('scope', {}) or {}).get('direction')
+                        if d in ("A_TO_B", "B_TO_A"):
+                            direction = "duplicates"
+                        elif d in ("A_WITHOUT_IN_B", "B_WITHOUT_IN_A"):
+                            direction = "non_duplicates"
+                        elif d in ("duplicates", "non_duplicates"):
+                            direction = str(d)
+                except Exception:
+                    # Fallback: keep default 'duplicates'
+                    pass
+                report_lines: list[str] = []
+                groups = 0
+                total_dups = 0
+                non_matches = 0
+                algo = "sha256"
+
+                with db_mgr.get_connection(db_mgr.cache_db) as conn:
+                    if two_pool:
+                        if direction == "duplicates":
+                            # For each Pool A file, list Pool B files with identical hash
+                            rows = conn.execute("""
+                                SELECT ia.file_path AS a_path, ib.file_path AS b_path
+                                FROM image_hashes ih
+                                JOIN image_metadata ia ON ia.id = ih.image_id AND ia.pool = 'A'
+                                JOIN image_hashes ihb ON ihb.algorithm = ih.algorithm AND ihb.hash_value = ih.hash_value
+                                JOIN image_metadata ib ON ib.id = ihb.image_id AND ib.pool = 'B'
+                                WHERE ih.algorithm = ? AND ih.hash_value IS NOT NULL
+                                ORDER BY ia.file_path, ib.file_path
+                            """, (algo,)).fetchall()
+                            groups_map: dict[str, list[str]] = defaultdict(list)
+                            for r in rows:
+                                a = str(r["a_path"])
+                                b = str(r["b_path"])
+                                groups_map[a].append(b)
+                            report_lines.append("Two-Pool Report — duplicates (A vs B)")
+                            for a_path, b_list in groups_map.items():
+                                if not b_list:
+                                    continue
+                                groups += 1
+                                total_dups += len(b_list)
+                                report_lines.append(f"\nA: {a_path}\nB duplicates:")
+                                for b in b_list:
+                                    report_lines.append(f"  - {b}")
+                        else:
+                            # non_duplicates: List Pool B files whose hash is NOT present in any Pool A file
+                            rows = conn.execute("""
+                                SELECT ib.file_path AS b_path
+                                FROM image_hashes hb
+                                JOIN image_metadata ib ON ib.id = hb.image_id AND ib.pool = 'B'
+                                WHERE hb.algorithm = ? AND hb.hash_value IS NOT NULL
+                                  AND NOT EXISTS (
+                                      SELECT 1
+                                      FROM image_hashes ha
+                                      JOIN image_metadata ia ON ia.id = ha.image_id AND ia.pool = 'A'
+                                      WHERE ha.algorithm = hb.algorithm
+                                        AND ha.hash_value = hb.hash_value
+                                  )
+                                ORDER BY ib.file_path
+                            """, (algo,)).fetchall()
+                            report_lines.append("Two-Pool Report — non_duplicates (B not in A)")
+                            for r in rows:
+                                b = str(r["b_path"])
+                                non_matches += 1
+                                report_lines.append(f"  - {b}")
+                    else:
+                        # Single pool: cluster all files by identical hash (any pool label)
+                        rows = conn.execute("""
+                            SELECT ih.hash_value AS hv, im.file_path AS p
+                            FROM image_hashes ih
+                            JOIN image_metadata im ON im.id = ih.image_id
+                            WHERE ih.algorithm = ? AND ih.hash_value IS NOT NULL
+                            ORDER BY hv, p
+                        """, (algo,)).fetchall()
+    
+                        current_hash: str | None = None
+                        current_files: list[str] = []
+                        report_lines.append("Duplicate Report — Single Pool")
+                        def _flush():
+                            nonlocal groups, total_dups, report_lines, current_hash, current_files
+                            if current_hash is not None and len(current_files) >= 2:
+                                groups += 1
+                                total_dups += len(current_files)
+                                report_lines.append(f"\nHash: {current_hash}")
+                                for fp in current_files:
+                                    report_lines.append(f"  - {fp}")
+                        for r in rows:
+                            hv = str(r["hv"])
+                            p = str(r["p"])
+                            if hv != current_hash:
+                                _flush()
+                                current_hash = hv
+                                current_files = [p]
+                            else:
+                                current_files.append(p)
+                        _flush()
+
+                # Build header and display appropriate report
+                if two_pool and direction == "non_duplicates":
+                    header = [f"Summary: non_matches={non_matches}", "-" * 40]
+                    report_text = "\n".join(header + report_lines)
+                    if non_matches > 0:
+                        show_selectable_info(self, "Non-duplicates Report", report_text)
+                    try:
+                        self.statusBar().showMessage(f"Non-duplicates (B not in A): {non_matches}", 10000)
+                    except Exception:
+                        pass
+                else:
+                    header = [f"Summary: groups={groups}, files={total_dups}", "-" * 40]
+                    report_text = "\n".join(header + report_lines)
+                    if groups > 0:
+                        show_selectable_info(self, "Duplicate Report", report_text)
+                    try:
+                        self.statusBar().showMessage(f"Duplicate groups: {groups}; duplicate files: {total_dups}", 10000)
+                    except Exception:
+                        pass
+        except Exception:
+            # Never allow report generation to crash the UI
             pass
 
     def _simulate_operation(self) -> None:
