@@ -1346,6 +1346,8 @@ class MainWindow(QMainWindow):
                     run_paths = list(summary.get("run_paths") or [])
                 except Exception:
                     run_paths = []
+                # Persist this run's file scope for the Duplicate Manager follow-up dialog
+                self._last_run_paths = run_paths
                 try:
                     algo = str(summary.get("algorithm") or "sha256")
                 except Exception:
@@ -1357,6 +1359,7 @@ class MainWindow(QMainWindow):
     
                 # Determine two-pool mode and direction from the profile USED for this scan
                 two_pool = False
+                is_single_pool = False
                 payload = None
                 try:
                     if self.controller:
@@ -1379,9 +1382,24 @@ class MainWindow(QMainWindow):
                                         return any(bool(p) for p in (cfg or {}).get('paths', []))
                                     except Exception:
                                         return False
-                                two_pool = _has_paths(pools.get('A')) and _has_paths(pools.get('B'))
+                                two_pool_by_paths = _has_paths(pools.get('A')) and _has_paths(pools.get('B'))
+                                # Prefer explicit run scope when available; fallback to path presence
+                                try:
+                                    scope_kind = str(((payload.get('scope') or {}).get('kind')) if isinstance(payload, dict) else "").strip().lower()
+                                except Exception:
+                                    scope_kind = ""
+                                if scope_kind == "single_pool":
+                                    two_pool = False
+                                    is_single_pool = True
+                                elif scope_kind == "two_pool":
+                                    two_pool = True
+                                    is_single_pool = False
+                                else:
+                                    two_pool = two_pool_by_paths
+                                    is_single_pool = not two_pool
                 except Exception:
                     two_pool = False
+                    is_single_pool = False
     
                 from collections import defaultdict
                 # Determine direction (supports legacy tokens); default to 'duplicates'
@@ -1546,6 +1564,17 @@ class MainWindow(QMainWindow):
                     report_text = "\n".join(header_lines + report_lines)
                     if groups > 0:
                         self._show_resizable_text_dialog("Duplicate Report", report_text)
+                        # After the textual report dialog is closed, open the Duplicate Manager (Milestone 1)
+                        try:
+                            if is_single_pool:
+                                groups_data = self._get_duplicate_groups_single_pool()
+                                if groups_data:
+                                    from img_app.img_app.widgets import DuplicateManagerDialog
+                                    dlg = DuplicateManagerDialog(groups=groups_data, parent=self)
+                                    dlg.exec()
+                        except Exception:
+                            # Defensive: never allow the follow-up dialog to crash the UI
+                            pass
                     try:
                         self.statusBar().showMessage(f"Duplicate groups: {groups}; duplicate files: {total_dups}", 10000)
                     except Exception:
@@ -1553,6 +1582,163 @@ class MainWindow(QMainWindow):
         except Exception:
             # Never allow report generation to crash the UI
             pass
+
+    def _get_duplicate_groups_single_pool(self) -> list[dict]:
+        """
+        Return duplicate groups within the current run scope for single_pool mode.
+
+        Data Source and Alignment
+        -------------------------
+        - Uses image_hashes joined with image_metadata, filtered by:
+          • pool = 'A' (single_pool semantics)
+          • algorithm = 'sha256' (matches the ScanWorker and the textual report)
+        - Re-creates and populates a connection-local temp_run_files table using
+          self._last_run_paths to scope results strictly to the most recent run.
+        - This logic is intentionally aligned with the textual “Duplicate Report”
+          that also reads from image_hashes to ensure consistency between the
+          report counts and the DuplicateManagerDialog groups.
+
+        Returns
+        -------
+        list[dict]
+            A list of group dictionaries shaped as:
+              [
+                { "hash": str, "count": int, "files": [ { "path": str, "size": int, "modified": int, "pool": str }, ... ] },
+                ...
+              ]
+
+        Filtering and Scope
+        -------------------
+        - Restricts results strictly to the files processed in the most recent scan run
+          by (re)populating a temporary table temp_run_files using the last recorded
+          run paths captured from the worker summary (_on_scan_finished()).
+        - Limits to the 'A' pool for single_pool semantics.
+        - Only groups with at least two files are returned.
+
+        Notes
+        -----
+        - Uses DatabaseManager.get_connection() to interact with the cache database.
+        - Timestamps are returned as integer epoch seconds (best-effort conversion).
+        - This helper performs no UI and raises no exceptions outward; on any error
+          it returns an empty list to keep the GUI resilient.
+        """
+        # Best-effort guard: require a database manager and a remembered run scope
+        db_mgr = getattr(self, "database_manager", None)
+        if db_mgr is None:
+            return []
+        run_paths = list(getattr(self, "_last_run_paths", []) or [])
+        if not run_paths:
+            # No remembered scope; nothing to compute
+            return []
+
+        # For single_pool milestone we constrain to Pool 'A'
+        pool_label = "A"
+        # Algorithm aligned with textual duplicates report and ScanWorker (image_hashes.algorithm)
+        algorithm = "sha256"
+        
+        # Local helper to coerce timestamps to integer epoch seconds
+        def _to_int_timestamp(val) -> int:
+            try:
+                return int(val)
+            except Exception:
+                try:
+                    # Attempt common ISO formats
+                    from datetime import datetime
+                    s = str(val or "").strip()
+                    if not s:
+                        return 0
+                    if s.endswith("Z"):
+                        s = s[:-1]
+                    s2 = s.replace(" ", "T")
+                    dt = None
+                    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+                        try:
+                            dt = datetime.strptime(s2, fmt)
+                            break
+                        except Exception:
+                            continue
+                    return int(dt.timestamp()) if dt else 0
+                except Exception:
+                    return 0
+
+        try:
+            groups: list[dict] = []
+            # Use a new connection; populate a TEMP table with this run's file set
+            with db_mgr.get_connection(db_mgr.cache_db) as conn:
+                # Populate/refresh the run-scope temp table for this connection
+                conn.execute("CREATE TEMP TABLE IF NOT EXISTS temp_run_files (file_path TEXT PRIMARY KEY)")
+                conn.execute("DELETE FROM temp_run_files")
+                conn.executemany(
+                    "INSERT OR IGNORE INTO temp_run_files(file_path) VALUES (?)",
+                    [(p,) for p in run_paths]
+                )
+
+                # Step 1 (aligned with textual report):
+                # Discover duplicate hash values using image_hashes joined with image_metadata,
+                # filtered by the current run scope (temp_run_files), Pool 'A', and algorithm.
+                dup_rows = conn.execute(
+                    """
+                    SELECT ih.hash_value AS hash
+                    FROM image_hashes ih
+                    JOIN image_metadata im ON im.id = ih.image_id
+                    JOIN temp_run_files t ON t.file_path = im.file_path
+                    WHERE ih.algorithm = ? AND ih.hash_value IS NOT NULL
+                    GROUP BY ih.hash_value
+                    HAVING COUNT(*) >= 2
+                    """,
+                    (algorithm,)
+                ).fetchall()
+                hashes = [str(r["hash"]) for r in dup_rows if r["hash"] is not None]
+
+                if not hashes:
+                    return []
+
+                # Step 2 (aligned with textual report):
+                # Fetch member files for the discovered hashes from image_hashes+image_metadata,
+                # limited to the current run scope and Pool 'A', and ordered stably by (hash, path).
+                placeholders = ",".join("?" for _ in hashes)
+                sql = f"""
+                    SELECT ih.hash_value AS hash,
+                           im.file_path,
+                           im.file_size,
+                           im.file_modified,
+                           im.pool
+                    FROM image_hashes ih
+                    JOIN image_metadata im ON im.id = ih.image_id
+                    JOIN temp_run_files t ON t.file_path = im.file_path
+                    WHERE ih.algorithm = ? AND ih.hash_value IN ({placeholders})
+                    ORDER BY ih.hash_value, im.file_path
+                """
+                params = [algorithm, *hashes]
+                rows = conn.execute(sql, params).fetchall()
+
+                # Group in Python into the requested shape
+                grouped: dict[str, dict] = {}
+                for r in rows:
+                    h = str(r["hash"])
+                    g = grouped.get(h)
+                    if g is None:
+                        g = {"hash": h, "count": 0, "files": []}
+                        grouped[h] = g
+                    file_path = str(r["file_path"])
+                    try:
+                        size = int(r["file_size"]) if r["file_size"] is not None else 0
+                    except Exception:
+                        size = 0
+                    modified = _to_int_timestamp(r["file_modified"])
+                    pool = str(r["pool"] or "")
+                    g["files"].append({"path": file_path, "size": size, "modified": modified, "pool": pool})
+
+                # Finalize counts and filter to groups with at least two members
+                for h, g in grouped.items():
+                    g["count"] = len(g["files"])
+                    if g["count"] >= 2:
+                        groups.append(g)
+
+            return groups
+        except Exception:
+            # Defensive: never crash caller; empty means "no groups"
+            return []
 
     def _simulate_operation(self) -> None:
         """
