@@ -32,6 +32,12 @@ from src.pk_py_lib.core.database import CACHE_SCHEMA
 from src.pk_py_lib.core.filesystem.paths import PathOperations
 from src.pk_py_lib.core.filesystem.traversal import DirectoryTraversal
 from src.pk_py_lib.core.filesystem.identity import get_inode_device, compute_sha256
+from datetime import datetime
+import traceback
+from src.pk_py_lib.core.logging.logger import get_logger
+
+# Module-level logger for scan workflow; ERROR+ routes to STDERR via console output
+LOGGER = get_logger("img_app.scan")
 
 # Import Settings Manager components
 try:
@@ -372,6 +378,7 @@ class ScanWorker(QThread):
             "invalidated": 0,
             "hashes_computed": 0,
             "errors": 0,
+            "error_details": [],  # Collect structured per-error details for post-scan reporting
         }
 
         try:
@@ -432,6 +439,11 @@ class ScanWorker(QThread):
                     self.progress.emit(stats["processed"], total, current_path, "Processing")
 
                     try:
+                        # Track the last executed SQL and parameters for per-error diagnostics.
+                        # These are updated immediately before each write (DELETE/UPDATE/INSERT).
+                        last_sql = None
+                        last_params = None
+
                         st = os.stat(path)
                         size_now = int(st.st_size)
                         mtime_ns_now = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
@@ -471,20 +483,26 @@ class ScanWorker(QThread):
     
                             if not (size_match and mtime_match):
                                 # Invalidate: cascades remove dependent rows
-                                conn.execute("DELETE FROM image_metadata WHERE id = ?", (image_id,))
+                                # Track last executed SQL for diagnostics
+                                last_sql = "DELETE FROM image_metadata WHERE id = ?"
+                                last_params = (image_id,)
+                                conn.execute(last_sql, last_params)
                                 stats["invalidated"] += 1
                                 image_id = None
                             else:
                                 # Existing row remains valid; ensure current pool label reflects this run's selection
                                 if pool_db != pool_label:
-                                    conn.execute("UPDATE image_metadata SET pool = ? WHERE id = ?", (pool_label, image_id))
+                                    # Track last executed SQL for diagnostics
+                                    last_sql = "UPDATE image_metadata SET pool = ? WHERE id = ?"
+                                    last_params = (pool_label, image_id)
+                                    conn.execute(last_sql, last_params)
 
                         if image_id is None:
                             # Create fresh metadata record
                             # Determine pool label for this file; default to 'A' for single-pool
                             pool_label = self._file_pool_map.get(current_path, "A")
-                            conn.execute(
-                                """
+                            # Prepare SQL and parameters explicitly so we can capture them on error
+                            last_sql = """
                                 INSERT INTO image_metadata (
                                     file_path, file_name, file_size, file_modified, file_created,
                                     pool,
@@ -498,21 +516,21 @@ class ScanWorker(QThread):
                                     NULL, NULL, ?, ?,
                                     NULL, NULL, NULL, NULL, NULL,
                                     NULL, NULL, NULL, NULL, NULL,
-                                    NULL, NULL, CURRENT_TIMESTAMP, NULL, 1, ?
+                                    NULL, NULL, NULL, CURRENT_TIMESTAMP, NULL, 1, ?
                                 )
-                                """,
-                                (
-                                    current_path,
-                                    file_name,
-                                    size_now,
-                                    mtime_s_now,
-                                    int(getattr(st, "st_ctime", mtime_s_now)),
-                                    pool_label,
-                                    int(inode) if inode is not None else None,
-                                    int(device) if device is not None else None,
-                                    mtime_ns_now,
-                                ),
+                            """
+                            last_params = (
+                                current_path,
+                                file_name,
+                                size_now,
+                                mtime_s_now,
+                                int(getattr(st, "st_ctime", mtime_s_now)),
+                                pool_label,
+                                int(inode) if inode is not None else None,
+                                int(device) if device is not None else None,
+                                mtime_ns_now,
                             )
+                            conn.execute(last_sql, last_params)
                             image_id = int(
                                 conn.execute(
                                     "SELECT id FROM image_metadata WHERE file_path = ?",
@@ -530,14 +548,14 @@ class ScanWorker(QThread):
 
                         if not have_hash:
                             sha = compute_sha256(path)
-                            conn.execute(
-                                "INSERT INTO image_hashes (image_id, algorithm, hash_value, hash_size) VALUES (?, ?, ?, NULL)",
-                                (image_id, algo, sha),
-                            )
-                            conn.execute(
-                                "UPDATE image_metadata SET file_hash_sha256 = ?, hash_computed_at = CURRENT_TIMESTAMP WHERE id = ?",
-                                (sha, image_id),
-                            )
+                            # Record executed SQL for diagnostics
+                            last_sql = "INSERT INTO image_hashes (image_id, algorithm, hash_value, hash_size) VALUES (?, ?, ?, NULL)"
+                            last_params = (image_id, algo, sha)
+                            conn.execute(last_sql, last_params)
+
+                            last_sql = "UPDATE image_metadata SET file_hash_sha256 = ?, hash_computed_at = CURRENT_TIMESTAMP WHERE id = ?"
+                            last_params = (sha, image_id)
+                            conn.execute(last_sql, last_params)
                             stats["hashes_computed"] += 1
 
                         stats["processed"] += 1
@@ -545,8 +563,53 @@ class ScanWorker(QThread):
                         self.progress.emit(stats["processed"], total, current_path, "Processed")
 
                     except Exception as e:
+                        # Record structured error details with only built-in types for Qt-signal safety
+                        try:
+                            tb = traceback.format_exc()
+                        except Exception:
+                            tb = f"{type(e).__name__}: {e}"
+                        # Compute SQL diagnostics for better error analysis
+                        try:
+                            placeholder_count = (last_sql.count("?") if isinstance(last_sql, str) else None)
+                        except Exception:
+                            placeholder_count = None
+                        try:
+                            param_count = (len(last_params) if hasattr(last_params, "__len__") else (0 if last_params is None else None))
+                        except Exception:
+                            param_count = None
+
+                        # Build context with only built-in types to ensure Qt-signal safety
+                        ctx = {
+                            "profile_id": getattr(self, "profile_id", None),
+                            "algorithm": getattr(self, "algorithm", None),
+                            "sql": last_sql,
+                            "params": (list(last_params) if isinstance(last_params, (list, tuple)) else last_params),
+                            "placeholder_count": placeholder_count,
+                            "param_count": param_count,
+                        }
+
+                        error_detail = {
+                            "timestamp": datetime.now().isoformat(timespec="seconds"),
+                            "operation": "scan",
+                            "path": current_path,
+                            "exception_type": type(e).__name__,
+                            "message": str(e),
+                            "traceback": tb,
+                            "context": ctx,
+                        }
                         stats["errors"] += 1
+                        try:
+                            stats.setdefault("error_details", []).append(error_detail)
+                        except Exception:
+                            stats["error_details"] = [error_detail]
+                        # Keep existing behavior for incremental UI updates
                         self.error.emit(f"{current_path}: {e}")
+                        # Emit structured logger entry at ERROR level to STDERR
+                        try:
+                            LOGGER.error("ScanWorker error", exception=e, variables=error_detail)
+                        except Exception:
+                            # Never let logging crash the worker loop
+                            pass
 
         except Exception as e:
             # Top-level fatal error
@@ -1257,6 +1320,20 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        # After summary, if detailed per-error data is present, show a full error report dialog
+        try:
+            error_details = list(summary.get("error_details") or [])
+        except Exception:
+            error_details = []
+        if error_details:
+            try:
+                report_text = self._format_error_report(error_details)
+                # Use resizable, selectable dialog suitable for large text content
+                self._show_resizable_text_dialog("Scan Errors", report_text)
+            except Exception:
+                # Never allow error reporting to crash the UI
+                pass
+
         # Generate and display duplicate report with summary statistics
         try:
             db_mgr = getattr(self, "database_manager", None)
@@ -1571,6 +1648,98 @@ class MainWindow(QMainWindow):
             pass
         dlg.resize(1000, 700)
         dlg.exec()
+
+    def _format_error_report(self, error_details: List[Dict[str, Any]]) -> str:
+        """
+        Build a human-readable, fully-detailed error report for scan/comparison errors.
+
+        Parameters
+        ----------
+        error_details : list[dict]
+            A list of dictionaries where each entry describes one error with the following keys:
+              - 'timestamp' (str): ISO-8601 timestamp (seconds precision) of when the error was captured.
+              - 'operation' (str): The logical operation (e.g., 'scan').
+              - 'path' (str): The file or resource path associated with the error.
+              - 'exception_type' (str): The exception class name.
+              - 'message' (str): The exception message text.
+              - 'traceback' (str): The full Python traceback string as plain text.
+              - 'context' (dict): Optional arbitrary contextual details (e.g., 'profile_id', 'algorithm', 'sql', 'params', 'placeholder_count', 'param_count'); all keys are displayed generically.
+
+        Returns
+        -------
+        str
+            A multi-line string containing a concise header and one detailed block per error.
+
+        Notes
+        -----
+        - The returned string is intended for display in a selectable QTextEdit using _show_resizable_text_dialog().
+        - Only built-in Python types are assumed; values are defensively coerced to str() where appropriate.
+        - Keys missing from an entry are treated as empty strings; context keys with None/empty values are omitted.
+
+        Examples
+        --------
+        >>> sample = [{
+        ...     "timestamp": "2025-09-08T21:00:00",
+        ...     "operation": "scan",
+        ...     "path": "/tmp/image.jpg",
+        ...     "exception_type": "FileNotFoundError",
+        ...     "message": "No such file or directory",
+        ...     "traceback": "Traceback (most recent call last): ...",
+        ...     "context": {"profile_id": "abc123", "algorithm": "sha256"}
+        ... }]
+        >>> # self is an instance of MainWindow
+        >>> isinstance(self._format_error_report(sample), str)
+        True
+        """
+        # Compose header with clear indication that text is selectable/copyable
+        lines: List[str] = []
+        total = len(error_details or [])
+        lines.append("Scan Error Details")
+        lines.append(f"Total Errors: {total}")
+        lines.append("Note: Text is fully selectable. Copy/paste as needed.")
+        lines.append("-" * 80)
+
+        # Emit one fully-detailed section per error
+        for i, ed in enumerate(error_details or [], start=1):
+            # Defensive extraction with str() coercions to guarantee built-in, serializable types
+            ed = ed or {}
+            ts = str(ed.get("timestamp") or "")
+            op = str(ed.get("operation") or "")
+            path = str(ed.get("path") or "")
+            ex_type = str(ed.get("exception_type") or "")
+            msg = str(ed.get("message") or "")
+            tb = str(ed.get("traceback") or "")
+            ctx = ed.get("context") or {}
+            ctx_items: List[Tuple[str, Any]] = []
+            if isinstance(ctx, dict):
+                # Render all context items generically, sorted by key for stability
+                for k in sorted(ctx.keys(), key=lambda s: str(s)):
+                    v = ctx.get(k)
+                    if v is None or v == "":
+                        continue
+                    try:
+                        v_str = str(v)
+                    except Exception:
+                        v_str = repr(v)
+                    ctx_items.append((str(k), v_str))
+
+            lines.append(f"Error #{i}")
+            if op:
+                lines.append(f"Operation: {op}")
+            lines.append(f"Path: {path}")
+            lines.append(f"Type: {ex_type}")
+            lines.append(f"Message: {msg}")
+            lines.append(f"Timestamp: {ts}")
+            if ctx_items:
+                lines.append("Context:")
+                for k, v in ctx_items:
+                    lines.append(f"  {k}: {v}")
+            lines.append("Traceback:")
+            # Ensure clean separation with trailing newline removal for consistency
+            lines.append(tb.rstrip("\n"))
+            lines.append("-" * 80)
+
+        return "\n".join(lines)
 
     def load_profiles(self) -> None:
         """
