@@ -462,12 +462,45 @@ class PathSelectorDialog(QDialog):
         self.splitter = QSplitter(Qt.Vertical)
         layout.addWidget(self.splitter, 1)
 
-        # Tree view
+        # Tree view models
         self.fs_model = QFileSystemModel(self)
         self.fs_model.setRootPath(QDir.rootPath())
 
+        # Icon provider optimization: avoid expensive Windows shell icon/type lookups (SHGetFileInfo).
+        # Use lightweight provider and disable custom directory icons; also avoid resolving symlinks and enforce read-only.
+        try:
+            # Local import to minimize top-level dependencies and avoid altering import section line numbers
+            from PySide6.QtWidgets import QFileIconProvider  # type: ignore
+            provider = QFileIconProvider()
+            try:
+                opts = provider.options()
+                provider.setOptions(opts | QFileIconProvider.DontUseCustomDirectoryIcons)
+            except Exception:
+                try:
+                    provider.setOptions(QFileIconProvider.DontUseCustomDirectoryIcons)
+                except Exception:
+                    pass
+            self.fs_model.setIconProvider(provider)
+        except Exception:
+            pass
+        try:
+            self.fs_model.setResolveSymlinks(False)  # reduces path resolution overhead
+            self.fs_model.setReadOnly(True)          # avoid needless write-capable behaviors
+        except Exception:
+            pass
+
         self.proxy = FileSystemFilterProxy(self._filter_spec, self)
         self.proxy.setSourceModel(self.fs_model)
+        try:
+            # Disable dynamic re-sorting while directories populate; we will re-apply sort once per load.
+            self.proxy.setDynamicSortFilter(False)
+        except Exception:
+            pass
+        try:
+            # Re-apply current sort indicator after a directory finishes loading
+            self.fs_model.directoryLoaded.connect(self._on_dir_loaded_sort)
+        except Exception:
+            pass
 
         self.tree = QTreeView(self)
         self.tree.setModel(self.proxy)
@@ -480,12 +513,13 @@ class PathSelectorDialog(QDialog):
 
         # Install custom branch indicator delegate on the name (column 0) to draw +/- explicitly
         self._branch_delegate = BranchIndicatorDelegate(self.tree, box_size=12, margin=6, parent=self.tree)
-        self.tree.setItemDelegateForColumn(0, self._branch_delegate)
+        # Detached delegate for this pass to reduce per-paint model queries; native indicator is faster.
+        # self.tree.setItemDelegateForColumn(0, self._branch_delegate)
 
-        # Ensure table uses 100% width of its container and columns fill space
-        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Allow horizontal scrollbar as needed to prevent expensive reflow/recalc when content changes
+        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.tree.setWordWrap(False)
-        self.tree.setUniformRowHeights(True)  # improves paint correctness
+        self.tree.setUniformRowHeights(True)  # big win for QTreeView with uniform rows
         self.tree.setAllColumnsShowFocus(True)
 
         # Configure header/columns to fill available width with visual separators
@@ -496,51 +530,31 @@ class PathSelectorDialog(QDialog):
             header.setHighlightSections(False)
             header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             header.setMinimumSectionSize(60)
-            # Name column expands; other columns auto-size but keep a sane minimum
+            # Performance: avoid O(N) content measuring on metadata-heavy columns.
+            # Name stays flexible; other columns are fixed to stable widths to avoid repeated stat/type queries.
             header.setSectionResizeMode(0, QHeaderView.Stretch)  # Name
-            for col in (1, 2, 3):  # Size, Type, Date Modified
-                header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+            header.resizeSection(0, 400)
+            header.setSectionResizeMode(1, QHeaderView.Fixed)  # Size
+            header.resizeSection(1, 120)
+            header.setSectionResizeMode(2, QHeaderView.Fixed)  # Type
+            header.resizeSection(2, 160)
+            header.setSectionResizeMode(3, QHeaderView.Fixed)  # Date Modified
+            header.resizeSection(3, 170)
         except Exception:
             pass
 
-        # Visible separators and selection colors; keep text visible on selection
-        # Also enforce vertical separators using header style and grid-like item borders
+        # Simplified, performance-friendly stylesheet; previous verbose QSS triggered extra paints.
         self.tree.setStyleSheet("""
-            QTreeView {
-                border: 1px solid #dcdcdc;
-                outline: none;
-            }
-            QTreeView::item {
-                border-bottom: 1px solid #e6e6e6;
-            }
-            QTreeView::item:selected {
-                background: #2d6cdf;
-                color: #ffffff;
-            }
-            QTreeView::item:hover:!selected {
-                background: #f2f6ff;
-            }
+            QTreeView { outline: none; }
+            QTreeView::item:selected { background: #2d6cdf; color: #ffffff; }
             QHeaderView::section {
-                border-right: 1px solid #e0e0e0;
                 border-bottom: 1px solid #e0e0e0;
                 background: #fafafa;
-                padding: 4px 6px;
-                color: #222;
-            }
-            /* Force default platform indicators to be visible and prominent */
-            QTreeView::branch:has-children:closed,
-            QTreeView::branch:closed:has-children {
-                border-image: none;
-                image: none;
-            }
-            QTreeView::branch:open:has-children,
-            QTreeView::branch:open:has-children:!has-siblings {
-                border-image: none;
-                image: none;
+                padding: 3px 6px;
             }
         """)
 
-        # Ensure indicator size is large enough and explicitly set standard icons for folders
+        # Ensure indicator size and interaction behavior are sensible and cheap to repaint
         try:
             style = self.style()
             icon_closed = style.standardIcon(QStyle.SP_DirClosedIcon)
@@ -550,7 +564,7 @@ class PathSelectorDialog(QDialog):
             # Additionally, set indentation so indicators stand out
             self.tree.setItemsExpandable(True)
             self.tree.setExpandsOnDoubleClick(True)
-            self.tree.setAnimated(True)
+            self.tree.setAnimated(False)  # reduce repaints on expand/collapse
             self.tree.setIndentation(20)
         except Exception:
             pass
@@ -634,6 +648,23 @@ class PathSelectorDialog(QDialog):
     def _apply_filter_to_model(self) -> None:
         # QFileSystemModel uses name filters differently; we rely on proxy filter
         self.proxy.set_filter_spec(self._filter_spec)
+
+    def _on_dir_loaded_sort(self, _path: str) -> None:
+        """
+        Re-apply current sort after a directory finishes loading to avoid dynamic re-sorting
+        during population while preserving user-facing sorting.
+        """
+        try:
+            header = self.tree.header()
+            col = header.sortIndicatorSection()
+            order = header.sortIndicatorOrder()
+            # If no indicator is set yet, default to column 0 ascending
+            if col < 0:
+                col, order = 0, Qt.AscendingOrder
+            self.tree.sortByColumn(col, order)
+        except Exception:
+            # Non-fatal; sorting is optional
+            pass
 
     def _on_selection_changed(self) -> None:
         idx = self.tree.currentIndex()

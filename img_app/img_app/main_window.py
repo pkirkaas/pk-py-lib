@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QLabel, QWidget, QVBoxLayout, QMenuBar, QStatusBar,
     QComboBox, QPushButton, QHBoxLayout, QFrame, QProgressBar, QApplication,
     QDialog, QLineEdit, QFormLayout, QDialogButtonBox, QStackedWidget,
-    QMessageBox, QToolBar, QMenu, QSizePolicy
+    QMessageBox, QToolBar, QMenu, QSizePolicy, QTextEdit
 )
 from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
@@ -113,8 +113,8 @@ class ScanWorker(QThread):
         Emitted frequently to update progress UI.
     error(message: str)
         Emitted on non-fatal per-file errors; processing continues.
-    finished(summary: dict)
-        Emitted once on completion (or early stop) with final counters.
+    finished(profile_name: str, summary: dict)
+        Emitted once on completion (or early stop) with the profile name used for the scan and final counters.
 
     Notes
     -----
@@ -126,9 +126,9 @@ class ScanWorker(QThread):
 
     progress = Signal(int, int, str, str)
     error = Signal(str)
-    finished = Signal(dict)
+    finished = Signal(str, dict)
 
-    def __init__(self, db_manager, profile_json: dict, algorithm: str = "sha256", parent=None):
+    def __init__(self, db_manager, profile_json: dict, algorithm: str = "sha256", profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
         """
         Initialize worker.
 
@@ -140,6 +140,9 @@ class ScanWorker(QThread):
             Structured Settings Profile (Option A) JSON object.
         algorithm : str
             Hash algorithm token to ensure in image_hashes (default 'sha256').
+        profile_name : Optional[str]
+            Human-friendly profile name used for this scan; emitted with the finished signal
+            to ensure reporting uses the exact profile that initiated the scan.
         parent : Optional[QObject]
             Optional Qt parent object.
         """
@@ -147,6 +150,16 @@ class ScanWorker(QThread):
         self.db_manager = db_manager
         self.profile = profile_json or {}
         self.algorithm = (algorithm or "sha256").lower().strip()
+        # Capture the profile name used for this run (best effort)
+        try:
+            self.profile_name = str(profile_name or (self.profile.get("name") if isinstance(self.profile, dict) else "") or "")
+        except Exception:
+            self.profile_name = str(profile_name or "")
+        # Capture the profile id used for this run (best effort; may be empty)
+        try:
+            self.profile_id = str(profile_id or "")
+        except Exception:
+            self.profile_id = ""
         self._stop = False
         # Map from absolute file path (POSIX string) to pool label 'A' or 'B'
         self._file_pool_map: dict[str, str] = {}
@@ -365,6 +378,15 @@ class ScanWorker(QThread):
             files = self._gather_files()
             total = len(files)
             stats["found"] = total
+            # Record current run file set and provenance to restrict reporting to this run
+            try:
+                run_paths = [p.as_posix() for p in files]
+            except Exception:
+                run_paths = [str(p) for p in files]
+            stats["run_paths"] = run_paths
+            stats["algorithm"] = self.algorithm
+            if getattr(self, "profile_id", None):
+                stats["profile_id"] = self.profile_id
 
             # Ensure cache DB exists and has schema (defensive)
             cache_path = self.db_manager.cache_db
@@ -404,6 +426,8 @@ class ScanWorker(QThread):
                         break
 
                     current_path = path.as_posix()
+                    # Determine current pool label for this file (default 'A' for single-pool)
+                    pool_label = self._file_pool_map.get(current_path, "A")
                     # Inform start of work on this item
                     self.progress.emit(stats["processed"], total, current_path, "Processing")
 
@@ -417,7 +441,7 @@ class ScanWorker(QThread):
 
                         # Get existing metadata row
                         cur = conn.execute(
-                            "SELECT id, file_size, mtime_ns, file_modified FROM image_metadata WHERE file_path = ?",
+                            "SELECT id, file_size, mtime_ns, file_modified, pool FROM image_metadata WHERE file_path = ?",
                             (current_path,),
                         )
                         row = cur.fetchone()
@@ -440,12 +464,20 @@ class ScanWorker(QThread):
                             else:
                                 mtime_match = (mtime_ns_now == mtime_ns_db)
                             size_match = (size_db == size_now)
-
+                            try:
+                                pool_db = str(row["pool"])
+                            except Exception:
+                                pool_db = None
+    
                             if not (size_match and mtime_match):
                                 # Invalidate: cascades remove dependent rows
                                 conn.execute("DELETE FROM image_metadata WHERE id = ?", (image_id,))
                                 stats["invalidated"] += 1
                                 image_id = None
+                            else:
+                                # Existing row remains valid; ensure current pool label reflects this run's selection
+                                if pool_db != pool_label:
+                                    conn.execute("UPDATE image_metadata SET pool = ? WHERE id = ?", (pool_label, image_id))
 
                         if image_id is None:
                             # Create fresh metadata record
@@ -521,7 +553,7 @@ class ScanWorker(QThread):
             self.error.emit(str(e))
 
         # Emit summary at the end (even on partial stop)
-        self.finished.emit(stats)
+        self.finished.emit(self.profile_name, stats)
 class MainWindow(QMainWindow):
     """
     QMainWindow for the KDC Image Organizer.
@@ -1110,7 +1142,20 @@ class MainWindow(QMainWindow):
         self.start_time = time.time()
         self._scan_errors = []
 
-        self._scan_worker = ScanWorker(db_manager=db_mgr, profile_json=payload, algorithm="sha256", parent=self)
+        # Determine the profile name used for this run and pass it to the worker
+        try:
+            prof_name = str((payload.get("name") if isinstance(payload, dict) else (self.active_profile.get("name") if self.active_profile else "")) or "")
+        except Exception:
+            prof_name = str(self.active_profile.get("name")) if getattr(self, "active_profile", None) else ""
+
+        self._scan_worker = ScanWorker(
+            db_manager=db_mgr,
+            profile_json=payload,
+            algorithm="sha256",
+            profile_name=prof_name,
+            profile_id=(self.active_profile.get('id') if self.active_profile else None),
+            parent=self
+        )
         self._scan_worker.progress.connect(self._on_scan_progress)
         self._scan_worker.error.connect(self._on_scan_error)
         self._scan_worker.finished.connect(self._on_scan_finished)
@@ -1162,12 +1207,14 @@ class MainWindow(QMainWindow):
             self._scan_errors = [message]
         self.status_label.setText(f"Error: {message}")
 
-    def _on_scan_finished(self, summary: dict) -> None:
+    def _on_scan_finished(self, profile_name: str, summary: dict) -> None:
         """
         Finalize UI and present a selectable summary dialog when the worker finishes.
 
         Parameters
         ----------
+        profile_name : str
+            The name of the profile that was used for the scan (emitted by ScanWorker).
         summary : dict
             Worker-reported counters including: found, processed, inserted, invalidated,
             hashes_computed, errors.
@@ -1214,23 +1261,51 @@ class MainWindow(QMainWindow):
         try:
             db_mgr = getattr(self, "database_manager", None)
             if db_mgr is not None:
-                # Determine two-pool mode from the active profile (presence of paths in both A and B)
-                two_pool = False
+                # Extract run context from worker summary
+                run_paths = []
+                algo = "sha256"
+                used_profile_id = None
                 try:
-                    if self.controller and self.active_profile:
-                        prof = self.controller.get_profile(self.active_profile['id'])
-                        if prof.success and prof.data:
-                            payload = prof.data.get('json_data') if isinstance(prof.data, dict) and prof.data.get('format') == 'json' and 'json_data' in prof.data else prof.data
-                            pools = payload.get('pools', {}) if isinstance(payload, dict) else {}
-                            def _has_paths(cfg: dict | None) -> bool:
-                                try:
-                                    return any(bool(p) for p in (cfg or {}).get('paths', []))
-                                except Exception:
-                                    return False
-                            two_pool = _has_paths(pools.get('A')) and _has_paths(pools.get('B'))
+                    run_paths = list(summary.get("run_paths") or [])
+                except Exception:
+                    run_paths = []
+                try:
+                    algo = str(summary.get("algorithm") or "sha256")
+                except Exception:
+                    algo = "sha256"
+                try:
+                    used_profile_id = summary.get("profile_id")
+                except Exception:
+                    used_profile_id = None
+    
+                # Determine two-pool mode and direction from the profile USED for this scan
+                two_pool = False
+                payload = None
+                try:
+                    if self.controller:
+                        resolved_id = used_profile_id
+                        if not resolved_id:
+                            # Fallback: resolve by name, then active profile
+                            try:
+                                resolved_id = next((p.get('id') for p in (self.profiles or []) if str(p.get('name', '')) == str(profile_name)), None)
+                            except Exception:
+                                resolved_id = None
+                            if not resolved_id and getattr(self, "active_profile", None):
+                                resolved_id = self.active_profile.get('id')
+                        if resolved_id:
+                            prof = self.controller.get_profile(resolved_id)
+                            if prof.success and prof.data:
+                                payload = prof.data.get('json_data') if isinstance(prof.data, dict) and prof.data.get('format') == 'json' and 'json_data' in prof.data else prof.data
+                                pools = payload.get('pools', {}) if isinstance(payload, dict) else {}
+                                def _has_paths(cfg: dict | None) -> bool:
+                                    try:
+                                        return any(bool(p) for p in (cfg or {}).get('paths', []))
+                                    except Exception:
+                                        return False
+                                two_pool = _has_paths(pools.get('A')) and _has_paths(pools.get('B'))
                 except Exception:
                     two_pool = False
-
+    
                 from collections import defaultdict
                 # Determine direction (supports legacy tokens); default to 'duplicates'
                 direction = "duplicates"
@@ -1250,18 +1325,24 @@ class MainWindow(QMainWindow):
                 groups = 0
                 total_dups = 0
                 non_matches = 0
-                algo = "sha256"
 
                 with db_mgr.get_connection(db_mgr.cache_db) as conn:
+                    # Restrict report to current run files using a temporary table
+                    conn.execute("CREATE TEMP TABLE IF NOT EXISTS temp_run_files (file_path TEXT PRIMARY KEY)")
+                    conn.execute("DELETE FROM temp_run_files")
+                    if run_paths:
+                        conn.executemany("INSERT OR IGNORE INTO temp_run_files(file_path) VALUES (?)", [(p,) for p in run_paths])
                     if two_pool:
                         if direction == "duplicates":
-                            # For each Pool A file, list Pool B files with identical hash
+                            # For each Pool A file in this run, list Pool B files in this run with identical hash
                             rows = conn.execute("""
                                 SELECT ia.file_path AS a_path, ib.file_path AS b_path
                                 FROM image_hashes ih
                                 JOIN image_metadata ia ON ia.id = ih.image_id AND ia.pool = 'A'
+                                JOIN temp_run_files tra ON tra.file_path = ia.file_path
                                 JOIN image_hashes ihb ON ihb.algorithm = ih.algorithm AND ihb.hash_value = ih.hash_value
                                 JOIN image_metadata ib ON ib.id = ihb.image_id AND ib.pool = 'B'
+                                JOIN temp_run_files trb ON trb.file_path = ib.file_path
                                 WHERE ih.algorithm = ? AND ih.hash_value IS NOT NULL
                                 ORDER BY ia.file_path, ib.file_path
                             """, (algo,)).fetchall()
@@ -1285,11 +1366,13 @@ class MainWindow(QMainWindow):
                                 SELECT ib.file_path AS b_path
                                 FROM image_hashes hb
                                 JOIN image_metadata ib ON ib.id = hb.image_id AND ib.pool = 'B'
+                                JOIN temp_run_files trb ON trb.file_path = ib.file_path
                                 WHERE hb.algorithm = ? AND hb.hash_value IS NOT NULL
                                   AND NOT EXISTS (
                                       SELECT 1
                                       FROM image_hashes ha
                                       JOIN image_metadata ia ON ia.id = ha.image_id AND ia.pool = 'A'
+                                      JOIN temp_run_files tra ON tra.file_path = ia.file_path
                                       WHERE ha.algorithm = hb.algorithm
                                         AND ha.hash_value = hb.hash_value
                                   )
@@ -1306,6 +1389,7 @@ class MainWindow(QMainWindow):
                             SELECT ih.hash_value AS hv, im.file_path AS p
                             FROM image_hashes ih
                             JOIN image_metadata im ON im.id = ih.image_id
+                            JOIN temp_run_files tr ON tr.file_path = im.file_path
                             WHERE ih.algorithm = ? AND ih.hash_value IS NOT NULL
                             ORDER BY hv, p
                         """, (algo,)).fetchall()
@@ -1332,21 +1416,59 @@ class MainWindow(QMainWindow):
                                 current_files.append(p)
                         _flush()
 
-                # Build header and display appropriate report
+                # Build metadata header and display appropriate report (resizable dialog)
+                from datetime import datetime
+                import time as _time
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                try:
+                    started_dt = datetime.fromtimestamp(getattr(self, "start_time", _time.time()))
+                    started_str = started_dt.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    started_str = "unknown"
+                try:
+                    duration_s = max(0.0, (_time.time() - getattr(self, "start_time", _time.time())))
+                except Exception:
+                    duration_s = 0.0
+
+                mode_val = (payload.get("mode") if isinstance(payload, dict) else "?") or "?"
+                scope_kind = (((payload.get("scope") or {}).get("kind")) if isinstance(payload, dict) else None) or "?"
+                pools_obj = (payload.get("pools") if isinstance(payload, dict) else {}) or {}
+                paths_a = [str(p) for p in (pools_obj.get("A") or {}).get("paths", [])]
+                paths_b = [str(p) for p in (pools_obj.get("B") or {}).get("paths", [])]
+
+                header_lines = [
+                    "=== Report Metadata ===",
+                    f"Generated: {now_str}",
+                    f"Started: {started_str}",
+                    f"Duration: {duration_s:.2f} s",
+                    f"Profile: {profile_name} (id: {used_profile_id or 'n/a'})",
+                    f"Mode: {mode_val}; Scope: {scope_kind}; Direction: {direction}",
+                    f"Algorithm: {algo}",
+                    "Pools:",
+                    f"  A.paths: {(', '.join(paths_a) if paths_a else '(none)')}",
+                ]
+                if paths_b:
+                    header_lines.append(f"  B.paths: {', '.join(paths_b)}")
+                header_lines.append(
+                    f"Stats: found={found}, processed={processed}, inserted={inserted}, invalidated={invalidated}, hashes={hashes}, errors={errors}"
+                )
+
                 if two_pool and direction == "non_duplicates":
-                    header = [f"Summary: non_matches={non_matches}", "-" * 40]
-                    report_text = "\n".join(header + report_lines)
+                    header_lines.append(f"Summary: non_matches={non_matches}")
+                    header_lines.append("-" * 60)
+                    report_text = "\n".join(header_lines + report_lines)
                     if non_matches > 0:
-                        show_selectable_info(self, "Non-duplicates Report", report_text)
+                        self._show_resizable_text_dialog("Non-duplicates Report", report_text)
                     try:
                         self.statusBar().showMessage(f"Non-duplicates (B not in A): {non_matches}", 10000)
                     except Exception:
                         pass
                 else:
-                    header = [f"Summary: groups={groups}, files={total_dups}", "-" * 40]
-                    report_text = "\n".join(header + report_lines)
+                    header_lines.append(f"Summary: groups={groups}, files={total_dups}")
+                    header_lines.append("-" * 60)
+                    report_text = "\n".join(header_lines + report_lines)
                     if groups > 0:
-                        show_selectable_info(self, "Duplicate Report", report_text)
+                        self._show_resizable_text_dialog("Duplicate Report", report_text)
                     try:
                         self.statusBar().showMessage(f"Duplicate groups: {groups}; duplicate files: {total_dups}", 10000)
                     except Exception:
@@ -1396,6 +1518,59 @@ class MainWindow(QMainWindow):
             "Duplicates found: 5\n"
             "Time taken: 5.0 seconds"
         )
+    def _show_resizable_text_dialog(self, title: str, text: str) -> None:
+        """
+        Show a resizable dialog containing large, selectable report text.
+
+        Parameters
+        ----------
+        title : str
+            Dialog window title.
+        text : str
+            Complete report text to present. Text is selectable/copyable.
+
+        Notes
+        -----
+        - Uses a QTextEdit to allow selection and scrolling of large reports.
+        - Dialog is explicitly made resizable with a size grip and generous default size.
+        - A "Copy to Clipboard" action is provided for quick export.
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        layout = QVBoxLayout(dlg)
+
+        # Large, scrollable, selectable text surface
+        edit = QTextEdit(dlg)
+        edit.setReadOnly(True)
+        try:
+            edit.setLineWrapMode(QTextEdit.NoWrap)  # keep wide reports readable
+        except Exception:
+            pass
+        edit.setPlainText(text)
+        layout.addWidget(edit)
+
+        # Buttons: Copy to Clipboard + Close
+        btns = QDialogButtonBox(QDialogButtonBox.Close, parent=dlg)
+        copy_btn = QPushButton("Copy to Clipboard", dlg)
+        btns.addButton(copy_btn, QDialogButtonBox.ActionRole)
+
+        def _copy() -> None:
+            try:
+                QApplication.clipboard().setText(text)
+            except Exception:
+                pass
+
+        copy_btn.clicked.connect(_copy)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        # Make dialog comfortably large and resizable
+        try:
+            dlg.setSizeGripEnabled(True)
+        except Exception:
+            pass
+        dlg.resize(1000, 700)
+        dlg.exec()
 
     def load_profiles(self) -> None:
         """

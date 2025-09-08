@@ -367,7 +367,7 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     criteria = normalized.setdefault("criteria", {})
     # For duplicates mode, default to blake3; for similarity, default to pHash
     if normalized["mode"] == "duplicates":
-        criteria.setdefault("algorithm", "blake3")
+        criteria.setdefault("algorithm", "xxh3")
     else:
         criteria.setdefault("algorithm", "pHash")
     
@@ -450,7 +450,7 @@ def create_default_profile(name: str, description: Optional[str] = None) -> Dict
         },
         "mode": "duplicates",
         "criteria": {
-            "algorithm": "blake3"
+            "algorithm": "xxh3"
         },
         "scope": {
             "kind": "single_pool"
