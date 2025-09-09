@@ -445,6 +445,29 @@ class ScanWorker(QThread):
                         last_params = None
 
                         st = os.stat(path)
+                    except OSError as e_stat:
+                        if e_stat.errno == getattr(os, "ENOENT", 2):  # No such file or directory
+                            # Delete the stale cache row if it exists
+                            cur = conn.execute(
+                                "SELECT id FROM image_metadata WHERE file_path = ? AND is_valid = 1",
+                                (current_path,)
+                            )
+                            row = cur.fetchone()
+                            if row:
+                                last_sql = "DELETE FROM image_metadata WHERE id = ?"
+                                last_params = (int(row["id"]),)
+                                conn.execute(last_sql, last_params)
+                                stats["invalidated"] += 1
+                            # Log the cleanup
+                            try:
+                                LOGGER.info("ScanWorker cleaned missing file", variables={"path": current_path, "pool": pool_label})
+                            except Exception:
+                                pass
+                            continue  # Skip insertion and processing
+                        else:
+                            # Other stat errors (permission, etc.)
+                            self.error.emit(f"{current_path}: stat failed {e_stat}")
+                            continue
                         size_now = int(st.st_size)
                         mtime_ns_now = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
                         mtime_s_now = int(st.st_mtime)
@@ -453,7 +476,7 @@ class ScanWorker(QThread):
 
                         # Get existing metadata row
                         cur = conn.execute(
-                            "SELECT id, file_size, mtime_ns, file_modified, pool FROM image_metadata WHERE file_path = ?",
+                            "SELECT id, file_size, mtime_ns, file_modified, pool FROM image_metadata WHERE file_path = ? AND is_valid = 1",
                             (current_path,),
                         )
                         row = cur.fetchone()
@@ -481,9 +504,15 @@ class ScanWorker(QThread):
                             except Exception:
                                 pool_db = None
     
-                            if not (size_match and mtime_match):
-                                # Invalidate: cascades remove dependent rows
-                                # Track last executed SQL for diagnostics
+                            if not Path(current_path).exists():
+                                # File missing: invalidate cache row
+                                last_sql = "DELETE FROM image_metadata WHERE id = ?"
+                                last_params = (image_id,)
+                                conn.execute(last_sql, last_params)
+                                stats["invalidated"] += 1
+                                image_id = None
+                            elif not (size_match and mtime_match):
+                                # File exists but stats changed: invalidate cache row
                                 last_sql = "DELETE FROM image_metadata WHERE id = ?"
                                 last_params = (image_id,)
                                 conn.execute(last_sql, last_params)
@@ -1359,7 +1388,7 @@ class MainWindow(QMainWindow):
     
                 # Determine two-pool mode and direction from the profile USED for this scan
                 two_pool = False
-                is_single_pool = False
+                is_single_pool = True
                 payload = None
                 try:
                     if self.controller:
@@ -1399,7 +1428,7 @@ class MainWindow(QMainWindow):
                                     is_single_pool = not two_pool
                 except Exception:
                     two_pool = False
-                    is_single_pool = False
+                    is_single_pool = True
     
                 from collections import defaultdict
                 # Determine direction (supports legacy tokens); default to 'duplicates'
@@ -1420,6 +1449,8 @@ class MainWindow(QMainWindow):
                 groups = 0
                 total_dups = 0
                 non_matches = 0
+                groups_data_prepared: list[dict] = []
+                groups_data_fallback: list[dict] = []
 
                 with db_mgr.get_connection(db_mgr.cache_db) as conn:
                     # Restrict report to current run files using a temporary table
@@ -1483,7 +1514,7 @@ class MainWindow(QMainWindow):
                         rows = conn.execute("""
                             SELECT ih.hash_value AS hv, im.file_path AS p
                             FROM image_hashes ih
-                            JOIN image_metadata im ON im.id = ih.image_id
+                            JOIN image_metadata im ON im.id = ih.image_id AND im.is_valid = 1
                             JOIN temp_run_files tr ON tr.file_path = im.file_path
                             WHERE ih.algorithm = ? AND ih.hash_value IS NOT NULL
                             ORDER BY hv, p
@@ -1510,6 +1541,76 @@ class MainWindow(QMainWindow):
                             else:
                                 current_files.append(p)
                         _flush()
+
+                        # Prepare data for DuplicateManagerDialog in the same connection/run-scope
+                        try:
+                            hv_to_paths: dict[str, list[str]] = defaultdict(list)
+                            for r in rows:
+                                try:
+                                    h = str(r["hv"])
+                                    p = str(r["p"])
+                                    hv_to_paths[h].append(p)
+                                except Exception:
+                                    continue
+
+                            # Identify duplicate hashes and prepare a zero-info fallback set
+                            dup_hashes = [h for h, lst in hv_to_paths.items() if len(lst) >= 2]
+                            groups_data_fallback = [
+                                {
+                                    "hash": h,
+                                    "count": len(hv_to_paths[h]),
+                                    "files": [{"path": p, "size": 0, "modified": 0, "pool": ""} for p in hv_to_paths[h]],
+                                }
+                                for h in dup_hashes
+                            ]
+
+                            if dup_hashes:
+                                placeholders = ",".join("?" for _ in dup_hashes)
+                                sql = f"""
+                                    SELECT ih.hash_value AS hash,
+                                           im.file_path,
+                                           im.file_size,
+                                           im.file_modified,
+                                           im.pool
+                                    FROM image_hashes ih
+                                    JOIN image_metadata im ON im.id = ih.image_id
+                                    JOIN temp_run_files tr ON tr.file_path = im.file_path
+                                    WHERE ih.algorithm = ? AND ih.hash_value IN ({placeholders})
+                                    ORDER BY ih.hash_value, im.file_path
+                                """
+                                params = [algo, *dup_hashes]
+                                rows2 = conn.execute(sql, params).fetchall()
+
+                                by_hash: dict[str, dict] = {}
+                                for rr in rows2:
+                                    h = str(rr["hash"])
+                                    g = by_hash.get(h)
+                                    if g is None:
+                                        g = {"hash": h, "count": 0, "files": []}
+                                        by_hash[h] = g
+                                    fp = str(rr["file_path"])
+                                    try:
+                                        sz = int(rr["file_size"]) if rr["file_size"] is not None else 0
+                                    except Exception:
+                                        sz = 0
+                                    try:
+                                        mod = int(rr["file_modified"]) if rr["file_modified"] is not None else 0
+                                    except Exception:
+                                        mod = 0
+                                    pl = str(rr["pool"] or "")
+                                    g["files"].append({"path": fp, "size": sz, "modified": mod, "pool": pl})
+
+                                # Finalize counts and keep only true groups (>=2)
+                                groups_data_prepared = []
+                                for h, g in by_hash.items():
+                                    g["count"] = len(g["files"])
+                                    if g["count"] >= 2:
+                                        groups_data_prepared.append(g)
+                        except Exception as e:
+                            try:
+                                LOGGER.error("dups.dialog.precompute_failed", exception=e)
+                            except Exception:
+                                pass
 
                 # Build metadata header and display appropriate report (resizable dialog)
                 from datetime import datetime
@@ -1566,15 +1667,37 @@ class MainWindow(QMainWindow):
                         self._show_resizable_text_dialog("Duplicate Report", report_text)
                         # After the textual report dialog is closed, open the Duplicate Manager (Milestone 1)
                         try:
-                            if is_single_pool:
-                                groups_data = self._get_duplicate_groups_single_pool()
+                            if not two_pool:
+                                try:
+                                    groups_data = (groups_data_prepared or self._get_duplicate_groups_single_pool() or groups_data_fallback)
+                                    try:
+                                        LOGGER.info(
+                                            "dups.dialog.guard",
+                                            variables={
+                                                "two_pool": two_pool,
+                                                "groups_report": groups,
+                                                "prepared": len(groups_data_prepared),
+                                                "fallback": len(groups_data_fallback),
+                                                "final": len(groups_data),
+                                            },
+                                        )
+                                    except Exception:
+                                        pass
+                                except Exception as e_prep:
+                                    try:
+                                        LOGGER.error("dups.dialog.prep_exception", exception=e_prep)
+                                    except Exception:
+                                        pass
+                                    groups_data = groups_data_fallback
                                 if groups_data:
-                                    from img_app.img_app.widgets import DuplicateManagerDialog
+                                    from .widgets import DuplicateManagerDialog
                                     dlg = DuplicateManagerDialog(groups=groups_data, parent=self)
                                     dlg.exec()
-                        except Exception:
-                            # Defensive: never allow the follow-up dialog to crash the UI
-                            pass
+                        except Exception as e_dlg:
+                            try:
+                                LOGGER.error("dups.dialog.failed", exception=e_dlg)
+                            except Exception:
+                                pass
                     try:
                         self.statusBar().showMessage(f"Duplicate groups: {groups}; duplicate files: {total_dups}", 10000)
                     except Exception:

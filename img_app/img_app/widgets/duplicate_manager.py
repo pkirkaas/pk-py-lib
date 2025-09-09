@@ -158,7 +158,7 @@ class DuplicateManagerDialog(QDialog):
             # Make the group rows non-checkable and bold-ish via flags; actual styling can be added later
             top.setFlags((top.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable) & ~Qt.ItemIsUserCheckable)
             # Expand groups by default for quick inspection
-            self.tree.setItemExpanded(top, True)
+            self.tree.expandItem(top)
 
             # Add file children with a checkbox in column 0
             for f in files:
@@ -430,7 +430,7 @@ class DuplicateManagerDialog(QDialog):
                         try:
                             with db_mgr.get_connection(db_mgr.cache_db) as conn:
                                 conn.execute(
-                                    "UPDATE image_metadata SET is_valid = 0, last_scanned = CURRENT_TIMESTAMP WHERE file_path = ?",
+                                    "DELETE FROM image_metadata WHERE file_path = ?",
                                     (path,),
                                 )
                         except Exception as e_db:
