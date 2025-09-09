@@ -113,18 +113,25 @@
   {
     "id": "UI-002",
     "title": "Results grouping & preview UI",
-    "status": "planned",
-    "next_step": "Prototype Results panel showing groups and previews in img_app main window",
+    "status": "implemented",
+    "next_step": "N/A - completed",
     "spec_refs": [
       "docs/roo/img-app-specification.md",
       "docs/roo/img-app-ui-design.md"
     ],
-    "code_refs": ["img_app/img_app/main_window.py"],
+    "code_refs": [
+      "img_app/img_app/main_window.py",
+      "img_app/img_app/widgets/duplicate_manager.py"
+    ],
     "test_refs": [],
-    "acceptance": ["Groups displayed hierarchically with preview panel and basic sorting"],
-    "risk": "medium",
-    "last_updated": "2025-08-14",
-    "notes": "Early prototype acceptable for M1"
+    "acceptance": [
+      "DuplicateManagerDialog opens with integrated tabs for Processing Summary and Duplicate Report",
+      "All text is selectable and copyable",
+      "No modal dialogs interrupt the flow"
+    ],
+    "risk": "low",
+    "last_updated": "2025-09-09",
+    "notes": "Implemented enhanced flow with tabs in DuplicateManagerDialog; eliminated separate dialogs for better user experience"
   },
   {
     "id": "CACHE-001",

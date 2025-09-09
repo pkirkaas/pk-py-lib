@@ -235,3 +235,25 @@ Acceptance checklist (UI)
 - Cache → Clear Cache and Cache → Clean Cache are present and functional as specified.
 - About dialog shows app name and version with selectable text.
 - Menu bar remains visible; toolbar is anchored in the top toolbar area (non-movable, non-floatable).
+
+## Duplicate Manager Dialog
+
+### Enhanced Flow for Single-Pool Mode
+
+**New User Experience:**
+- **Elimination of Modal Interruptions**: The previous "Processing Summary" and "Report" modal dialogs have been removed to improve workflow continuity.
+- **Integrated Tabbed Interface**: Upon scan completion, the DuplicateManagerDialog opens directly with two dedicated tabs:
+  - **Processing Summary Tab**: Displays real-time processing counters (files scanned, duplicates found, etc.) with selectable text for easy copying.
+  - **Duplicate Report Tab**: Provides detailed duplicate detection results with cluster information, similarity scores, and file details, all with selectable text.
+- **Direct Access**: Users can immediately interact with results without dismissing intermediate dialogs.
+
+**Implementation Details:**
+- **Code Changes**:
+  - [`main_window.py`](img_app/img_app/main_window.py): Modified `_on_scan_finished` method to open enhanced DuplicateManagerDialog directly.
+  - [`duplicate_manager.py`](img_app/img_app/widgets/duplicate_manager.py): Enhanced `__init__` to include tab widget with QTextEdit areas for summary and report.
+- **Text Selectability**: All text in both tabs is selectable and copyable, adhering to project guidelines (`setTextInteractionFlags(Qt.TextSelectableByMouse)`).
+
+**Benefits:**
+- **Streamlined Workflow**: Users proceed directly from scan initiation to result interaction without modal interruptions.
+- **Improved Usability**: Tabbed interface allows easy switching between summary statistics and detailed reports.
+- **Enhanced Data Accessibility**: Selectable text facilitates copying of results for external use or documentation.

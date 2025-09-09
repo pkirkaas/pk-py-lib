@@ -1335,7 +1335,7 @@ flowchart TD
 The main window now features:
 - **Profile Toolbar**: Combobox for profile selection, "New Profile", "Copy Profile", and "Start" buttons
 - **Progress Section**: Progress bar, status labels (percentage, files processed, ETA)
-- **Results Dialog**: Modal dialog showing operation results upon completion
+- **Results Display**: Integrated into tabs within the DuplicateManagerDialog (no modal interruption), with 'Processing Summary' and 'Duplicate Report' tabs providing detailed information. All text is selectable as per project requirements.
 
 14.4 Dependencies and Notes
 

@@ -17,6 +17,8 @@ Syntax validation: This file has been reviewed for Python syntax correctness.
 
 from __future__ import annotations
 
+import sys
+
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtWidgets import (
@@ -645,6 +647,7 @@ class ScanWorker(QThread):
             self.error.emit(str(e))
 
         # Emit summary at the end (even on partial stop)
+        print(f"[ScanWorker] Emitting finished signal with profile_name={self.profile_name}, stats={stats}", file=sys.stderr)
         self.finished.emit(self.profile_name, stats)
 class MainWindow(QMainWindow):
     """
@@ -1301,20 +1304,30 @@ class MainWindow(QMainWindow):
 
     def _on_scan_finished(self, profile_name: str, summary: dict) -> None:
         """
-        Finalize UI and present a selectable summary dialog when the worker finishes.
+        Finalize UI and present summary, textual reports, and the Duplicate Manager dialog.
 
-        Parameters
-        ----------
-        profile_name : str
-            The name of the profile that was used for the scan (emitted by ScanWorker).
-        summary : dict
-            Worker-reported counters including: found, processed, inserted, invalidated,
-            hashes_computed, errors.
+        This function restores a clean structure with a single try/except for the
+        report-building section, fixes previous indentation errors, and preserves
+        the enhanced debug logging added during diagnosis.
         """
+        # Basic completion UI
+        try:
+            print(f"[DEBUG _on_scan_finished] START: profile_name={profile_name}", file=sys.stderr)
+            print(f"[DEBUG _on_scan_finished] Summary keys: {list(summary.keys()) if summary else 'None'}", file=sys.stderr)
+            print(f"[DEBUG _on_scan_finished] Summary: {summary}", file=sys.stderr)
+            LOGGER.info("Scan finished handler started", variables={
+                "profile_name": profile_name,
+                "summary_keys": list(summary.keys()) if summary else [],
+                "found_count": int((summary or {}).get("found", 0) or 0),
+            })
+        except Exception:
+            pass
+
         self.progress_bar.setValue(100)
         self.progress_status_label.setText("Operation completed")
         self.start_btn.setEnabled(True)
 
+        # Extract counters
         found = int(summary.get("found", 0) or 0)
         processed = int(summary.get("processed", 0) or 0)
         inserted = int(summary.get("inserted", 0) or 0)
@@ -1328,6 +1341,120 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        # Initial mode state and run context
+        two_pool = False
+        is_single_pool = True
+        payload_for_mode = None
+        direction = "duplicates"
+
+        db_mgr = getattr(self, "database_manager", None)
+        try:
+            run_paths = list(summary.get("run_paths") or [])
+        except Exception:
+            run_paths = []
+        self._last_run_paths = run_paths
+        try:
+            algo = str(summary.get("algorithm") or "sha256")
+        except Exception:
+            algo = "sha256"
+        try:
+            used_profile_id = summary.get("profile_id")
+        except Exception:
+            used_profile_id = None
+
+        # Determine mode and direction from the profile used during this run
+        try:
+            if self.controller:
+                resolved_id = used_profile_id
+                if not resolved_id:
+                    try:
+                        resolved_id = next(
+                            (p.get('id') for p in (self.profiles or [])
+                             if str(p.get('name', '')) == str(profile_name)),
+                            None
+                        )
+                    except Exception:
+                        resolved_id = None
+                    if not resolved_id and getattr(self, "active_profile", None):
+                        resolved_id = self.active_profile.get('id')
+
+                if resolved_id:
+                    prof = self.controller.get_profile(resolved_id)
+                    if prof.success and prof.data:
+                        payload_for_mode = (
+                            prof.data.get('json_data')
+                            if isinstance(prof.data, dict) and prof.data.get('format') == 'json' and 'json_data' in prof.data
+                            else prof.data
+                        )
+                        pools = payload_for_mode.get('pools', {}) if isinstance(payload_for_mode, dict) else {}
+
+                        def _has_paths(cfg: dict | None) -> bool:
+                            try:
+                                return any(bool(p) for p in (cfg or {}).get('paths', []))
+                            except Exception:
+                                return False
+
+                        two_pool_by_paths = _has_paths(pools.get('A')) and _has_paths(pools.get('B'))
+                        try:
+                            scope_kind = str(
+                                ((payload_for_mode.get('scope') or {}).get('kind'))
+                                if isinstance(payload_for_mode, dict) else ""
+                            ).strip().lower()
+                        except Exception:
+                            scope_kind = ""
+
+                        if scope_kind == "single_pool":
+                            two_pool = False
+                            is_single_pool = True
+                        elif scope_kind == "two_pool":
+                            two_pool = True
+                            is_single_pool = False
+                        else:
+                            two_pool = two_pool_by_paths
+                            is_single_pool = not two_pool
+
+                        # Direction mapping
+                        try:
+                            d = (payload_for_mode.get('scope', {}) or {}).get('direction') if isinstance(payload_for_mode, dict) else None
+                            if d in ("A_TO_B", "B_TO_A"):
+                                direction = "duplicates"
+                            elif d in ("A_WITHOUT_IN_B", "B_WITHOUT_IN_A"):
+                                direction = "non_duplicates"
+                            elif d in ("duplicates", "non_duplicates"):
+                                direction = str(d)
+                        except Exception:
+                            pass
+        except Exception:
+            two_pool = False
+            is_single_pool = True
+            direction = "duplicates"
+            try:
+                print(f"[DEBUG _on_scan_finished] Exception in mode detection; default single_pool", file=sys.stderr)
+                print(f"[DEBUG _on_scan_finished] {traceback.format_exc()}", file=sys.stderr)
+            except Exception:
+                pass
+
+        # Pools debug
+        try:
+            pools_obj = payload_for_mode.get('pools', {}) if isinstance(payload_for_mode, dict) else {}
+            paths_a = [str(p) for p in (pools_obj.get("A") or {}).get("paths", [])]
+            paths_b = [str(p) for p in (pools_obj.get("B") or {}).get("paths", [])]
+        except Exception:
+            pools_obj = {}
+            paths_a = []
+            paths_b = []
+
+        print(f"[DEBUG _on_scan_finished] FINAL MODE: single_pool={is_single_pool}, two_pool={two_pool}, direction={direction}", file=sys.stderr)
+        print(f"[DEBUG _on_scan_finished] Pools: A={len(paths_a)} paths, B={len(paths_b)} paths", file=sys.stderr)
+        LOGGER.info("Final mode detection", variables={
+            "is_single_pool": is_single_pool,
+            "two_pool": two_pool,
+            "direction": direction,
+            "profile_name": profile_name,
+            "found_files": found
+        })
+
+        # Summary text
         text = (
             "File processing completed.\n\n"
             f"Total files found: {found}\n"
@@ -1338,10 +1465,6 @@ class MainWindow(QMainWindow):
             f"Errors: {errors}"
         )
         try:
-            show_selectable_info(self, "Processing Summary", text)
-        except Exception:
-            pass
-        try:
             self.statusBar().showMessage(
                 f"Processed {processed}/{found}; invalidated {invalidated}; inserted {inserted}; hashes {hashes}; errors {errors}",
                 10000
@@ -1349,118 +1472,44 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # After summary, if detailed per-error data is present, show a full error report dialog
+        # Optional detailed error report
         try:
             error_details = list(summary.get("error_details") or [])
         except Exception:
             error_details = []
         if error_details:
             try:
-                report_text = self._format_error_report(error_details)
-                # Use resizable, selectable dialog suitable for large text content
-                self._show_resizable_text_dialog("Scan Errors", report_text)
+                error_report = self._format_error_report(error_details)
+                if is_single_pool:
+                    self._scan_error_report = error_report
+                else:
+                    self._show_resizable_text_dialog("Scan Errors", error_report)
             except Exception:
-                # Never allow error reporting to crash the UI
                 pass
 
-        # Generate and display duplicate report with summary statistics
-        try:
-            db_mgr = getattr(self, "database_manager", None)
-            if db_mgr is not None:
-                # Extract run context from worker summary
-                run_paths = []
-                algo = "sha256"
-                used_profile_id = None
-                try:
-                    run_paths = list(summary.get("run_paths") or [])
-                except Exception:
-                    run_paths = []
-                # Persist this run's file scope for the Duplicate Manager follow-up dialog
-                self._last_run_paths = run_paths
-                try:
-                    algo = str(summary.get("algorithm") or "sha256")
-                except Exception:
-                    algo = "sha256"
-                try:
-                    used_profile_id = summary.get("profile_id")
-                except Exception:
-                    used_profile_id = None
-    
-                # Determine two-pool mode and direction from the profile USED for this scan
-                two_pool = False
-                is_single_pool = True
-                payload = None
-                try:
-                    if self.controller:
-                        resolved_id = used_profile_id
-                        if not resolved_id:
-                            # Fallback: resolve by name, then active profile
-                            try:
-                                resolved_id = next((p.get('id') for p in (self.profiles or []) if str(p.get('name', '')) == str(profile_name)), None)
-                            except Exception:
-                                resolved_id = None
-                            if not resolved_id and getattr(self, "active_profile", None):
-                                resolved_id = self.active_profile.get('id')
-                        if resolved_id:
-                            prof = self.controller.get_profile(resolved_id)
-                            if prof.success and prof.data:
-                                payload = prof.data.get('json_data') if isinstance(prof.data, dict) and prof.data.get('format') == 'json' and 'json_data' in prof.data else prof.data
-                                pools = payload.get('pools', {}) if isinstance(payload, dict) else {}
-                                def _has_paths(cfg: dict | None) -> bool:
-                                    try:
-                                        return any(bool(p) for p in (cfg or {}).get('paths', []))
-                                    except Exception:
-                                        return False
-                                two_pool_by_paths = _has_paths(pools.get('A')) and _has_paths(pools.get('B'))
-                                # Prefer explicit run scope when available; fallback to path presence
-                                try:
-                                    scope_kind = str(((payload.get('scope') or {}).get('kind')) if isinstance(payload, dict) else "").strip().lower()
-                                except Exception:
-                                    scope_kind = ""
-                                if scope_kind == "single_pool":
-                                    two_pool = False
-                                    is_single_pool = True
-                                elif scope_kind == "two_pool":
-                                    two_pool = True
-                                    is_single_pool = False
-                                else:
-                                    two_pool = two_pool_by_paths
-                                    is_single_pool = not two_pool
-                except Exception:
-                    two_pool = False
-                    is_single_pool = True
-    
-                from collections import defaultdict
-                # Determine direction (supports legacy tokens); default to 'duplicates'
-                direction = "duplicates"
-                try:
-                    if payload and isinstance(payload, dict):
-                        d = (payload.get('scope', {}) or {}).get('direction')
-                        if d in ("A_TO_B", "B_TO_A"):
-                            direction = "duplicates"
-                        elif d in ("A_WITHOUT_IN_B", "B_WITHOUT_IN_A"):
-                            direction = "non_duplicates"
-                        elif d in ("duplicates", "non_duplicates"):
-                            direction = str(d)
-                except Exception:
-                    # Fallback: keep default 'duplicates'
-                    pass
-                report_lines: list[str] = []
-                groups = 0
-                total_dups = 0
-                non_matches = 0
-                groups_data_prepared: list[dict] = []
-                groups_data_fallback: list[dict] = []
+        # Build report and groups (single, consistent try/except)
+        report_lines: list[str] = []
+        groups = 0
+        total_dups = 0
+        non_matches = 0
+        groups_data_prepared: list[dict] = []
+        groups_data_fallback: list[dict] = []
 
+        try:
+            if db_mgr is not None:
+                from collections import defaultdict
                 with db_mgr.get_connection(db_mgr.cache_db) as conn:
-                    # Restrict report to current run files using a temporary table
+                    # Restrict to current run
                     conn.execute("CREATE TEMP TABLE IF NOT EXISTS temp_run_files (file_path TEXT PRIMARY KEY)")
                     conn.execute("DELETE FROM temp_run_files")
                     if run_paths:
-                        conn.executemany("INSERT OR IGNORE INTO temp_run_files(file_path) VALUES (?)", [(p,) for p in run_paths])
+                        conn.executemany(
+                            "INSERT OR IGNORE INTO temp_run_files(file_path) VALUES (?)",
+                            [(p,) for p in run_paths]
+                        )
+
                     if two_pool:
                         if direction == "duplicates":
-                            # For each Pool A file in this run, list Pool B files in this run with identical hash
                             rows = conn.execute("""
                                 SELECT ia.file_path AS a_path, ib.file_path AS b_path
                                 FROM image_hashes ih
@@ -1474,8 +1523,7 @@ class MainWindow(QMainWindow):
                             """, (algo,)).fetchall()
                             groups_map: dict[str, list[str]] = defaultdict(list)
                             for r in rows:
-                                a = str(r["a_path"])
-                                b = str(r["b_path"])
+                                a = str(r["a_path"]); b = str(r["b_path"])
                                 groups_map[a].append(b)
                             report_lines.append("Two-Pool Report — duplicates (A vs B)")
                             for a_path, b_list in groups_map.items():
@@ -1487,7 +1535,6 @@ class MainWindow(QMainWindow):
                                 for b in b_list:
                                     report_lines.append(f"  - {b}")
                         else:
-                            # non_duplicates: List Pool B files whose hash is NOT present in any Pool A file
                             rows = conn.execute("""
                                 SELECT ib.file_path AS b_path
                                 FROM image_hashes hb
@@ -1510,7 +1557,7 @@ class MainWindow(QMainWindow):
                                 non_matches += 1
                                 report_lines.append(f"  - {b}")
                     else:
-                        # Single pool: cluster all files by identical hash (any pool label)
+                        # Single-pool duplicate clustering
                         rows = conn.execute("""
                             SELECT ih.hash_value AS hv, im.file_path AS p
                             FROM image_hashes ih
@@ -1519,10 +1566,11 @@ class MainWindow(QMainWindow):
                             WHERE ih.algorithm = ? AND ih.hash_value IS NOT NULL
                             ORDER BY hv, p
                         """, (algo,)).fetchall()
-    
+
                         current_hash: str | None = None
                         current_files: list[str] = []
                         report_lines.append("Duplicate Report — Single Pool")
+
                         def _flush():
                             nonlocal groups, total_dups, report_lines, current_hash, current_files
                             if current_hash is not None and len(current_files) >= 2:
@@ -1531,9 +1579,9 @@ class MainWindow(QMainWindow):
                                 report_lines.append(f"\nHash: {current_hash}")
                                 for fp in current_files:
                                     report_lines.append(f"  - {fp}")
+
                         for r in rows:
-                            hv = str(r["hv"])
-                            p = str(r["p"])
+                            hv = str(r["hv"]); p = str(r["p"])
                             if hv != current_hash:
                                 _flush()
                                 current_hash = hv
@@ -1542,168 +1590,173 @@ class MainWindow(QMainWindow):
                                 current_files.append(p)
                         _flush()
 
-                        # Prepare data for DuplicateManagerDialog in the same connection/run-scope
-                        try:
-                            hv_to_paths: dict[str, list[str]] = defaultdict(list)
-                            for r in rows:
+                        # Prepare data for DuplicateManagerDialog
+                        hv_to_paths: dict[str, list[str]] = defaultdict(list)
+                        for r in rows:
+                            h = str(r["hv"]); p = str(r["p"])
+                            hv_to_paths[h].append(p)
+
+                        dup_hashes = [h for h, lst in hv_to_paths.items() if len(lst) >= 2]
+                        groups_data_fallback = [
+                            {
+                                "hash": h,
+                                "count": len(hv_to_paths[h]),
+                                "files": [{"path": p, "size": 0, "modified": 0, "pool": ""} for p in hv_to_paths[h]],
+                            }
+                            for h in dup_hashes
+                        ]
+
+                        if dup_hashes:
+                            placeholders = ",".join("?" for _ in dup_hashes)
+                            sql = f"""
+                                SELECT ih.hash_value AS hash,
+                                       im.file_path,
+                                       im.file_size,
+                                       im.file_modified,
+                                       im.pool
+                                FROM image_hashes ih
+                                JOIN image_metadata im ON im.id = ih.image_id
+                                JOIN temp_run_files tr ON tr.file_path = im.file_path
+                                WHERE ih.algorithm = ? AND ih.hash_value IN ({placeholders})
+                                ORDER BY ih.hash_value, im.file_path
+                            """
+                            params = [algo, *dup_hashes]
+                            rows2 = conn.execute(sql, params).fetchall()
+
+                            by_hash: dict[str, dict] = {}
+                            for rr in rows2:
+                                h = str(rr["hash"])
+                                g = by_hash.get(h)
+                                if g is None:
+                                    g = {"hash": h, "count": 0, "files": []}
+                                    by_hash[h] = g
+                                fp = str(rr["file_path"])
                                 try:
-                                    h = str(r["hv"])
-                                    p = str(r["p"])
-                                    hv_to_paths[h].append(p)
+                                    sz = int(rr["file_size"]) if rr["file_size"] is not None else 0
                                 except Exception:
-                                    continue
-
-                            # Identify duplicate hashes and prepare a zero-info fallback set
-                            dup_hashes = [h for h, lst in hv_to_paths.items() if len(lst) >= 2]
-                            groups_data_fallback = [
-                                {
-                                    "hash": h,
-                                    "count": len(hv_to_paths[h]),
-                                    "files": [{"path": p, "size": 0, "modified": 0, "pool": ""} for p in hv_to_paths[h]],
-                                }
-                                for h in dup_hashes
-                            ]
-
-                            if dup_hashes:
-                                placeholders = ",".join("?" for _ in dup_hashes)
-                                sql = f"""
-                                    SELECT ih.hash_value AS hash,
-                                           im.file_path,
-                                           im.file_size,
-                                           im.file_modified,
-                                           im.pool
-                                    FROM image_hashes ih
-                                    JOIN image_metadata im ON im.id = ih.image_id
-                                    JOIN temp_run_files tr ON tr.file_path = im.file_path
-                                    WHERE ih.algorithm = ? AND ih.hash_value IN ({placeholders})
-                                    ORDER BY ih.hash_value, im.file_path
-                                """
-                                params = [algo, *dup_hashes]
-                                rows2 = conn.execute(sql, params).fetchall()
-
-                                by_hash: dict[str, dict] = {}
-                                for rr in rows2:
-                                    h = str(rr["hash"])
-                                    g = by_hash.get(h)
-                                    if g is None:
-                                        g = {"hash": h, "count": 0, "files": []}
-                                        by_hash[h] = g
-                                    fp = str(rr["file_path"])
-                                    try:
-                                        sz = int(rr["file_size"]) if rr["file_size"] is not None else 0
-                                    except Exception:
-                                        sz = 0
-                                    try:
-                                        mod = int(rr["file_modified"]) if rr["file_modified"] is not None else 0
-                                    except Exception:
-                                        mod = 0
-                                    pl = str(rr["pool"] or "")
-                                    g["files"].append({"path": fp, "size": sz, "modified": mod, "pool": pl})
-
-                                # Finalize counts and keep only true groups (>=2)
-                                groups_data_prepared = []
-                                for h, g in by_hash.items():
-                                    g["count"] = len(g["files"])
-                                    if g["count"] >= 2:
-                                        groups_data_prepared.append(g)
-                        except Exception as e:
-                            try:
-                                LOGGER.error("dups.dialog.precompute_failed", exception=e)
-                            except Exception:
-                                pass
-
-                # Build metadata header and display appropriate report (resizable dialog)
-                from datetime import datetime
-                import time as _time
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                try:
-                    started_dt = datetime.fromtimestamp(getattr(self, "start_time", _time.time()))
-                    started_str = started_dt.strftime("%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    started_str = "unknown"
-                try:
-                    duration_s = max(0.0, (_time.time() - getattr(self, "start_time", _time.time())))
-                except Exception:
-                    duration_s = 0.0
-
-                mode_val = (payload.get("mode") if isinstance(payload, dict) else "?") or "?"
-                scope_kind = (((payload.get("scope") or {}).get("kind")) if isinstance(payload, dict) else None) or "?"
-                pools_obj = (payload.get("pools") if isinstance(payload, dict) else {}) or {}
-                paths_a = [str(p) for p in (pools_obj.get("A") or {}).get("paths", [])]
-                paths_b = [str(p) for p in (pools_obj.get("B") or {}).get("paths", [])]
-
-                header_lines = [
-                    "=== Report Metadata ===",
-                    f"Generated: {now_str}",
-                    f"Started: {started_str}",
-                    f"Duration: {duration_s:.2f} s",
-                    f"Profile: {profile_name} (id: {used_profile_id or 'n/a'})",
-                    f"Mode: {mode_val}; Scope: {scope_kind}; Direction: {direction}",
-                    f"Algorithm: {algo}",
-                    "Pools:",
-                    f"  A.paths: {(', '.join(paths_a) if paths_a else '(none)')}",
-                ]
-                if paths_b:
-                    header_lines.append(f"  B.paths: {', '.join(paths_b)}")
-                header_lines.append(
-                    f"Stats: found={found}, processed={processed}, inserted={inserted}, invalidated={invalidated}, hashes={hashes}, errors={errors}"
-                )
-
-                if two_pool and direction == "non_duplicates":
-                    header_lines.append(f"Summary: non_matches={non_matches}")
-                    header_lines.append("-" * 60)
-                    report_text = "\n".join(header_lines + report_lines)
-                    if non_matches > 0:
-                        self._show_resizable_text_dialog("Non-duplicates Report", report_text)
-                    try:
-                        self.statusBar().showMessage(f"Non-duplicates (B not in A): {non_matches}", 10000)
-                    except Exception:
-                        pass
-                else:
-                    header_lines.append(f"Summary: groups={groups}, files={total_dups}")
-                    header_lines.append("-" * 60)
-                    report_text = "\n".join(header_lines + report_lines)
-                    if groups > 0:
-                        self._show_resizable_text_dialog("Duplicate Report", report_text)
-                        # After the textual report dialog is closed, open the Duplicate Manager (Milestone 1)
-                        try:
-                            if not two_pool:
+                                    sz = 0
                                 try:
-                                    groups_data = (groups_data_prepared or self._get_duplicate_groups_single_pool() or groups_data_fallback)
-                                    try:
-                                        LOGGER.info(
-                                            "dups.dialog.guard",
-                                            variables={
-                                                "two_pool": two_pool,
-                                                "groups_report": groups,
-                                                "prepared": len(groups_data_prepared),
-                                                "fallback": len(groups_data_fallback),
-                                                "final": len(groups_data),
-                                            },
-                                        )
-                                    except Exception:
-                                        pass
-                                except Exception as e_prep:
-                                    try:
-                                        LOGGER.error("dups.dialog.prep_exception", exception=e_prep)
-                                    except Exception:
-                                        pass
-                                    groups_data = groups_data_fallback
-                                if groups_data:
-                                    from .widgets import DuplicateManagerDialog
-                                    dlg = DuplicateManagerDialog(groups=groups_data, parent=self)
-                                    dlg.exec()
-                        except Exception as e_dlg:
-                            try:
-                                LOGGER.error("dups.dialog.failed", exception=e_dlg)
-                            except Exception:
-                                pass
-                    try:
-                        self.statusBar().showMessage(f"Duplicate groups: {groups}; duplicate files: {total_dups}", 10000)
-                    except Exception:
-                        pass
+                                    mod = int(rr["file_modified"]) if rr["file_modified"] is not None else 0
+                                except Exception:
+                                    mod = 0
+                                pl = str(rr["pool"] or "")
+                                g["files"].append({"path": fp, "size": sz, "modified": mod, "pool": pl})
+
+                            groups_data_prepared = []
+                            for h, g in by_hash.items():
+                                g["count"] = len(g["files"])
+                                if g["count"] >= 2:
+                                    groups_data_prepared.append(g)
+        except Exception as e:
+            try:
+                tb = traceback.format_exc()
+                print(f"Exception in _on_scan_finished report generation: {e}\n{tb}", file=sys.stderr)
+                LOGGER.error("report.generation.failed", exception=e)
+            except Exception:
+                pass
+
+        # Final debug on groups
+        print(f"[DEBUG _on_scan_finished] groups={groups}, total_dups={total_dups}, non_matches={non_matches}", file=sys.stderr)
+        print(f"[DEBUG _on_scan_finished] prepared_groups={len(groups_data_prepared)}, fallback_groups={len(groups_data_fallback)}", file=sys.stderr)
+        LOGGER.info("Final groups data state", variables={
+            "groups_data_prepared_count": len(groups_data_prepared),
+            "groups_data_fallback_count": len(groups_data_fallback),
+            "total_groups": groups,
+            "total_duplicate_files": total_dups,
+            "non_matches": non_matches,
+            "is_single_pool": is_single_pool,
+            "two_pool": two_pool
+        })
+
+        # Build header and final report text
+        from datetime import datetime as _dt
+        import time as _time
+        now_str = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            started_dt = _dt.fromtimestamp(getattr(self, "start_time", _time.time()))
+            started_str = started_dt.strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
-            # Never allow report generation to crash the UI
+            started_str = "unknown"
+        try:
+            duration_s = max(0.0, (_time.time() - getattr(self, "start_time", _time.time())))
+        except Exception:
+            duration_s = 0.0
+
+        mode_val = (payload_for_mode.get("mode") if isinstance(payload_for_mode, dict) else "?") or "?"
+        scope_kind = (((payload_for_mode.get("scope") or {}).get("kind")) if isinstance(payload_for_mode, dict) else None) or "?"
+
+        header_lines = [
+            "=== Report Metadata ===",
+            f"Generated: {now_str}",
+            f"Started: {started_str}",
+            f"Duration: {duration_s:.2f} s",
+            f"Profile: {profile_name} (id: {used_profile_id or 'n/a'})",
+            f"Mode: {mode_val}; Scope: {scope_kind}; Direction: {direction}",
+            f"Algorithm: {algo}",
+            "Pools:",
+            f"  A.paths: {(', '.join(paths_a) if paths_a else '(none)')}",
+        ]
+        if paths_b:
+            header_lines.append(f"  B.paths: {', '.join(paths_b)}")
+
+        if two_pool and direction == "non_duplicates":
+            header_lines.append(f"Summary: non_matches={non_matches}")
+        else:
+            header_lines.append(f"Summary: groups={groups}, files={total_dups}")
+        header_lines.append("-" * 60)
+        report_text = "\n".join(header_lines + report_lines)
+        if is_single_pool and not two_pool and hasattr(self, "_scan_error_report"):
+            report_text += f"\n\n--- Scan Errors ---\n{self._scan_error_report}"
+            try:
+                del self._scan_error_report
+            except Exception:
+                pass
+
+        # Display logic
+        if two_pool:
+            if direction == "non_duplicates":
+                self._show_resizable_text_dialog("Non-duplicates Report", report_text)
+                try:
+                    self.statusBar().showMessage(f"Non-duplicates (B not in A): {non_matches}", 10000)
+                except Exception:
+                    pass
+            else:
+                self._show_resizable_text_dialog("Duplicate Report", report_text)
+                try:
+                    self.statusBar().showMessage(f"Two-pool duplicates groups: {groups}", 10000)
+                except Exception:
+                    pass
+            return
+
+        # Single-pool: open Duplicate Manager (even if empty)
+        try:
+            groups_data = (groups_data_prepared or self._get_duplicate_groups_single_pool() or groups_data_fallback)
+        except Exception:
+            groups_data = groups_data_fallback
+
+        try:
+            from .widgets import DuplicateManagerDialog
+            dlg = DuplicateManagerDialog(groups=groups_data or [], summary_text=text, report_text=report_text, parent=self)
+            ret = dlg.exec()
+            print(f"[DEBUG _on_scan_finished] DuplicateManagerDialog exec() returned: {ret}", file=sys.stderr)
+            LOGGER.info("DuplicateManagerDialog executed", variables={
+                "return_code": ret,
+                "dialog_created": True,
+                "groups_passed": len(groups_data or [])
+            })
+        except Exception as e:
+            try:
+                print(f"[DEBUG _on_scan_finished] Exception creating DuplicateManagerDialog: {e}", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+                LOGGER.error("dups.dialog.failed", exception=e, variables={
+                    "groups_count": len(groups_data or [])
+                })
+            except Exception:
+                pass
+
+        try:
+            self.statusBar().showMessage(f"Duplicate groups: {groups}; duplicate files: {total_dups}", 10000)
+        except Exception:
             pass
 
     def _get_duplicate_groups_single_pool(self) -> list[dict]:

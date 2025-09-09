@@ -10,14 +10,15 @@ Syntax validation: This file has been reviewed with ast.parse for Python syntax 
 from __future__ import annotations
 
 import os
+import sys
 from typing import Optional, List, Dict, Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem,
-    QHBoxLayout, QPushButton, QWidget, QSizePolicy, QSpacerItem, QMessageBox
+    QHBoxLayout, QPushButton, QWidget, QSizePolicy, QSpacerItem, QMessageBox,
+    QHeaderView, QTextEdit, QTabWidget
 )
-from PySide6.QtWidgets import QHeaderView
 from PySide6.QtGui import QGuiApplication
 
 from src.pk_py_lib.gui.utils.messages import show_selectable_info, show_selectable_error
@@ -69,7 +70,7 @@ class DuplicateManagerDialog(QDialog):
     - The dialog is resizable and modal; it can be closed with the Close button or Esc.
     """
 
-    def __init__(self, groups: List[Dict[str, Any]], parent: Optional[QWidget] = None) -> None:
+    def __init__(self, groups: List[Dict[str, Any]], summary_text: str = "", report_text: str = "", parent: Optional[QWidget] = None) -> None:
         """
         Construct the dialog with duplicate groups and populate the tree.
 
@@ -93,6 +94,8 @@ class DuplicateManagerDialog(QDialog):
         - Syntax validation was performed with ast.parse prior to inclusion.
         """
         super().__init__(parent)
+        print(f"Dialog initialized with groups={len(groups or [])}, summary_text len={len(summary_text or '')}, report_text len={len(report_text or '')}", file=sys.stderr)
+        print(f"[DEBUG DuplicateManagerDialog] Initialized with {len(groups or [])} groups, summary length: {len(summary_text or '')}, report length: {len(report_text or '')}", file=sys.stderr)
         self.setWindowTitle("Duplicate Manager")
         self.setModal(True)
         self.resize(900, 600)
@@ -116,7 +119,27 @@ class DuplicateManagerDialog(QDialog):
             total_files = 0
 
         # Header label
+        # Add tabs for integrated summary and report
+        self.summary_tab = QTextEdit(self)
+        self.summary_tab.setReadOnly(True)
+        self.summary_tab.setPlainText(summary_text)
+        self.summary_tab.setLineWrapMode(QTextEdit.NoWrap)
+        self.summary_tab.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self.report_tab = QTextEdit(self)
+        self.report_tab.setReadOnly(True)
+        self.report_tab.setPlainText(report_text)
+        self.report_tab.setLineWrapMode(QTextEdit.NoWrap)
+        self.report_tab.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self.tabs = QTabWidget(self)
+        self.tabs.addTab(self.summary_tab, "Processing Summary")
+        self.tabs.addTab(self.report_tab, "Duplicate Report")
+        main_layout.addWidget(self.tabs)
+
+        # Header label (remains for group/file counts)
         self.header_label = QLabel(f"Duplicate Groups: {total_groups} — Files: {total_files}", self)
+        main_layout.addWidget(self.header_label)
         main_layout.addWidget(self.header_label)
 
         # Tree widget with 4 columns: Select, File Path, Modified, Size
