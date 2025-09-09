@@ -13,11 +13,11 @@ import os
 import sys
 from typing import Optional, List, Dict, Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem,
     QHBoxLayout, QPushButton, QWidget, QSizePolicy, QSpacerItem, QMessageBox,
-    QHeaderView, QTextEdit, QTabWidget
+    QHeaderView, QTextEdit, QTabWidget, QSplitter
 )
 from PySide6.QtGui import QGuiApplication
 
@@ -63,11 +63,15 @@ class DuplicateManagerDialog(QDialog):
     - Columns: [Select, File Path, Modified, Size]; sorting enabled.
     - File Path column stretches; Modified and Size auto-resize to contents for readability.
     - Delete button is enabled when at least one file is checked; deletions use Recycle Bin when available, with safe fallbacks and confirmations.
+    - The dialog uses a vertical QSplitter to separate the tab widget (top pane) from the duplicate management interface (bottom pane).
+    - The top pane (QTabWidget) is initially sized to fit the content height of the Processing Summary tab.
 
     Notes
     -----
     - Timestamps (Modified) and Sizes are shown as raw integers; no humanization here.
     - The dialog is resizable and modal; it can be closed with the Close button or Esc.
+    - Users can resize the splitter handle to adjust the height of the top and bottom panes.
+    - The initial height of the top pane is calculated based on the content's sizeHint() to ensure it fits the text content comfortably.
     """
 
     def __init__(self, groups: List[Dict[str, Any]], summary_text: str = "", report_text: str = "", parent: Optional[QWidget] = None) -> None:
@@ -79,18 +83,26 @@ class DuplicateManagerDialog(QDialog):
         groups : List[Dict[str, Any]]
             Duplicate groups structured as described in the class docstring. Only groups
             with count >= 2 are expected, but the dialog will render whatever is provided.
+        summary_text : str
+            Text content for the Processing Summary tab.
+        report_text : str
+            Text content for the Duplicate Report tab.
         parent : Optional[QWidget]
             Optional parent widget; typically the main window.
 
         Behavior
         --------
-        - Builds the header and tree.
+        - Builds the UI with a resizable splitter separating the tab widget (top pane)
+          from the duplicate management interface (bottom pane).
         - Populates group/file rows with checkboxes for file items.
         - Wires the Delete button to be enabled only when at least one file is checked.
+        - Sets initial splitter position based on content height of Processing Summary tab.
 
         Notes
         -----
         - All UI work occurs on the GUI thread; no background threads are used.
+        - The top pane (QTabWidget) is initially sized to fit the Processing Summary content.
+        - Users can resize the splitter handle to adjust pane heights.
         - Syntax validation was performed with ast.parse prior to inclusion.
         """
         super().__init__(parent)
@@ -118,8 +130,11 @@ class DuplicateManagerDialog(QDialog):
         except Exception:
             total_files = 0
 
-        # Header label
-        # Add tabs for integrated summary and report
+        # Create a vertical splitter for resizable top and bottom panes
+        self.splitter = QSplitter(Qt.Vertical, self)
+        self.splitter.setChildrenCollapsible(False)  # Prevent complete collapse of either pane
+
+        # Top pane: tabs for summary and report
         self.summary_tab = QTextEdit(self)
         self.summary_tab.setReadOnly(True)
         self.summary_tab.setPlainText(summary_text)
@@ -135,12 +150,16 @@ class DuplicateManagerDialog(QDialog):
         self.tabs = QTabWidget(self)
         self.tabs.addTab(self.summary_tab, "Processing Summary")
         self.tabs.addTab(self.report_tab, "Duplicate Report")
-        main_layout.addWidget(self.tabs)
+        self.splitter.addWidget(self.tabs)
+
+        # Bottom pane: container for the rest of the UI elements
+        bottom_widget = QWidget(self)
+        bottom_layout = QVBoxLayout(bottom_widget)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins for seamless appearance
 
         # Header label (remains for group/file counts)
         self.header_label = QLabel(f"Duplicate Groups: {total_groups} — Files: {total_files}", self)
-        main_layout.addWidget(self.header_label)
-        main_layout.addWidget(self.header_label)
+        bottom_layout.addWidget(self.header_label)
 
         # Tree widget with 4 columns: Select, File Path, Modified, Size
         self.tree = QTreeWidget(self)
@@ -163,7 +182,7 @@ class DuplicateManagerDialog(QDialog):
             # Defensive in case Qt platform backends vary
             pass
 
-        main_layout.addWidget(self.tree)
+        bottom_layout.addWidget(self.tree)
 
         # Populate tree with groups and files
         # Each group is a top-level item with text in the "File Path" column (index 1)
@@ -232,7 +251,16 @@ class DuplicateManagerDialog(QDialog):
         self.close_btn.clicked.connect(self.accept)
         btn_row.addWidget(self.close_btn)
 
-        main_layout.addLayout(btn_row)
+        bottom_layout.addLayout(btn_row)
+
+        # Add bottom widget to splitter
+        self.splitter.addWidget(bottom_widget)
+
+        # Add splitter to main layout
+        main_layout.addWidget(self.splitter)
+
+        # Set initial splitter sizes based on content height after UI is populated
+        # This is handled by the QTimer singleShot call below
 
         # Wire signals (after population to avoid spurious itemChanged during build)
         try:
@@ -242,6 +270,9 @@ class DuplicateManagerDialog(QDialog):
             pass
         self.delete_btn.clicked.connect(self._on_delete_clicked)
         self._update_delete_enabled()
+
+        # Set up single-shot timer to configure splitter after UI is fully populated
+        QTimer.singleShot(100, self._configure_initial_splitter_sizes)
 
     def _on_item_changed(self, item: "QTreeWidgetItem", column: int) -> None:
         """
@@ -608,3 +639,51 @@ class DuplicateManagerDialog(QDialog):
         box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         box.setDefaultButton(QMessageBox.No)
         return box.exec() == QMessageBox.Yes
+
+    def _configure_initial_splitter_sizes(self) -> None:
+        """
+        Configure initial splitter sizes based on content height after UI is fully populated.
+
+        Behavior
+        --------
+        - Calculates the natural height required by the Processing Summary tab content.
+        - Sets the top pane height to fit the content with appropriate padding.
+        - Ensures reasonable minimum and maximum height constraints.
+        - Configures the splitter to allow user resizing while providing sensible defaults.
+
+        Edge Cases
+        ----------
+        - Handles empty or minimal content gracefully with minimum height constraints.
+        - Prevents the top pane from consuming all available space.
+        - Maintains functionality across different platform and content scenarios.
+        """
+        try:
+            # Calculate the natural height of the Processing Summary content
+            summary_height = self.summary_tab.sizeHint().height()
+            
+            # Add padding for tab headers, margins, and visual comfort
+            tab_header_height = 30  # Approximate height of tab bar
+            padding = 20  # Additional padding for comfort
+            
+            total_top_height = summary_height + tab_header_height + padding
+            
+            # Ensure we have reasonable minimum and maximum constraints
+            min_top_height = 100  # Minimum sensible height for top pane
+            max_top_height = self.height() - 200  # Leave room for bottom pane
+            
+            # Clamp the calculated height to reasonable bounds
+            clamped_height = max(min_top_height, min(total_top_height, max_top_height))
+            
+            # Set splitter sizes - using proportional approach for better cross-platform behavior
+            total_height = self.splitter.height()
+            if total_height > 0:
+                top_ratio = clamped_height / total_height
+                bottom_ratio = 1.0 - top_ratio
+                self.splitter.setSizes([int(clamped_height), int(total_height * bottom_ratio)])
+            
+        except Exception as e:
+            # Log error but don't crash the dialog - use default splitter behavior
+            LOGGER.error("Failed to set initial splitter sizes", exception=e)
+            # Set reasonable default split (40% top, 60% bottom)
+            default_top = int(self.splitter.height() * 0.4)
+            self.splitter.setSizes([default_top, self.splitter.height() - default_top])
