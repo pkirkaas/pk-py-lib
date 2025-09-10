@@ -36,5 +36,6 @@ Widgets should both receive and return data to the enclosing parent widget/compo
 
 The widgets & containing widgets/components should be designed so the containing widget can contain multiple instances of the contained widget, which operate independently. For example, if we implement a file selector widget, the containing app/widget window should be able to include 2 instances of the file selector widgets, separately configurable, and maintain separate states/data, etc.
 
-
+## Images included in chat prompts for RooCode
+Images may be included in a Roo chat prompt. If the text prompt does not specifically identify what that image is or describe it, your default assumption should be that it is a screenshot of the current GUI implementation that needs to be fixed/changed.
 

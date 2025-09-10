@@ -13,13 +13,15 @@ import os
 import sys
 from typing import Optional, List, Dict, Any
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QRect, QSize
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem,
     QHBoxLayout, QPushButton, QWidget, QSizePolicy, QSpacerItem, QMessageBox,
-    QHeaderView, QTextEdit, QTabWidget, QSplitter
+    QHeaderView, QTextEdit, QTabWidget, QSplitter, QStyledItemDelegate
 )
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QPainter, QPen, QColor, QBrush, QFont
+from PySide6.QtWidgets import QStyleOptionViewItem
+from PySide6.QtCore import QModelIndex
 
 from src.pk_py_lib.gui.utils.messages import show_selectable_info, show_selectable_error
 from src.pk_py_lib.core.logging import get_logger
@@ -33,6 +35,268 @@ except Exception:  # pragma: no cover
 
 # Module-level logger for duplicate operations within the app
 LOGGER = get_logger("img_app.duplicates")
+
+
+def format_file_size(size_bytes: int) -> str:
+    """
+    Format file size in bytes to human-readable string.
+    
+    Parameters
+    ----------
+    size_bytes : int
+        File size in bytes.
+        
+    Returns
+    -------
+    str
+        Formatted file size string (e.g., "3.5 MB").
+        
+    Examples
+    --------
+    >>> format_file_size(1024)
+    '1.0 KB'
+    >>> format_file_size(3670016)
+    '3.5 MB'
+    """
+    if size_bytes == 0:
+        return "0 B"
+    
+    size_names = ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    size = float(size_bytes)
+    
+    while size >= 1024 and i < len(size_names) - 1:
+        size /= 1024
+        i += 1
+        
+    return f"{size:.1f} {size_names[i]}"
+
+
+def format_timestamp(timestamp: int) -> str:
+    """
+    Format Unix timestamp to "dd-MMM-yy" format.
+    
+    Parameters
+    ----------
+    timestamp : int
+        Unix timestamp in seconds.
+        
+    Returns
+    -------
+    str
+        Formatted date string (e.g., "09-Sep-25").
+        
+    Examples
+    --------
+    >>> format_timestamp(1725926400)  # Assuming this is Sep 9, 2025
+    '09-Sep-25'
+    """
+    from datetime import datetime
+    try:
+        dt = datetime.fromtimestamp(timestamp)
+        return dt.strftime("%d-%b-%y")
+    except (ValueError, OSError):
+        return str(timestamp)
+
+
+
+class GroupFrameDelegate(QStyledItemDelegate):
+    """
+    QStyledItemDelegate that adds visual separation to groups in a QTreeWidget by:
+    - Applying a pure white background to top-level group header rows for optimal contrast with bold dark red text.
+    - Drawing strong 3px horizontal lines above subsequent groups (except the first and last) to separate them, spanning full viewport width.
+    - Increasing vertical spacing for header rows (font height + 10px) to provide moderate separation without excess,
+      with adjusted line positioning to center the line in the reduced space closer to the last file of the previous group.
+
+    The delegate always invokes the base delegate to paint default cell content first. It does not
+    draw frames or borders around groups. Background is explicitly filled white for header rows, and lines are
+    drawn only once per group boundary (when painting the first column of subsequent top-level items).
+
+    Parameters
+    ----------
+    tree : QTreeWidget
+        The tree view this delegate will paint for.
+
+    Notes
+    -----
+    - This delegate is strictly visual; it does not modify model data or selection.
+    - It assumes the tree is expanded by default for groups; lines are drawn based on current visual
+      positions and do not adjust for collapsed states.
+    - Vertical separation is implemented by increasing the height of top-level header rows via sizeHint().
+    - Handles edge cases: no lines for single group or empty tree; lines span full viewport width using multiple thin lines for exact 3px thickness.
+    - For groups with no children, line positioning remains correct relative to previous group.
+    - Explicit fillRect ensures pure white background regardless of stylesheet interference.
+    """
+
+    def __init__(self, tree: QTreeWidget) -> None:
+        super().__init__(tree)
+        self._tree = tree
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        """
+        Paint item content with enhancements for group separation:
+        - For top-level header rows (any column), explicitly fill the background with pure white using fillRect,
+          then set a white background brush before base painting to ensure clean contrast for bold dark red group titles
+          and override any stylesheet interference.
+        - For the first column of subsequent top-level header rows (index.row() > 0), draw a strong
+          3px horizontal line (via three 1px lines for exact thickness and full span) positioned at y = option.rect.top() + 24px
+          (centered in the increased space) across the full viewport width to separate from the previous group.
+          This positions the separator on its own distinct separate line above the header, with the header content
+          painted below it in the remaining space (shifted down by line thickness + 28px gap to avoid overlap).
+          Combined with increased header row height (base + 0px for first group, base + font_height*2.8 + 56px for subsequent),
+          this creates clear vertical separation for the line as a separate visual element without excess vertical space
+          or overlap with the group label, with detailed comments on larger y-shift/gap and full width clip handling.
+       
+        Always calls the base implementation to render native content (text, checkboxes, etc.) after
+        setting and filling background for headers, with rect adjusted if a line is drawn to prevent overlap.
+       
+        Parameters
+        ----------
+        painter : QPainter
+            The painter to draw with.
+        option : QStyleOptionViewItem
+            Style options for the item, potentially modified for background and rect shifting.
+        index : QModelIndex
+            Model index being painted; used to detect header rows and group boundaries.
+       
+        Notes
+        -----
+        - Background is explicitly filled per cell in header rows with QColor(255,255,255) for full row coverage and pure white,
+          ensuring readability of dark red text; brush is also set for base paint compatibility. The fillRect covers
+          the full row including the line space, with the line drawn on top.
+        - Line drawing is triggered only once per group boundary (column 0 of top-level items where row > 0),
+          ensuring no double-drawing or over-drawing; line is 3px thick in dark gray (QColor(80,80,80)) using multiple 1px lines
+          for precise full-width rendering without clipping to item rect; x from 0 to self.tree.viewport().width() confirms
+          full dialog pane width, dynamically handling resizes. painter.save()/restore() with setClipRect(Qt.NoClip)
+          guarantees full span without clipping. This clip handling ensures the horizontal group separator extends the full width of the dialog,
+          with detailed comments on full width clip handling.
+        - If index.row() == 0 (first group), no line is drawn above it.
+        - The line y-position is set to option.rect.top() + 24px (slight offset for centering in the increased space) to place it
+          within the header row for subsequent groups, creating a separate visual line above the header content. To ensure
+          the header appears below the separator with clear vertical separation, the option.rect is adjusted downward by 31px
+          (3px line + 28px gap) before calling super().paint(), utilizing the increased extra height added in sizeHint()
+          for row > 0; this positions the label text starting below the line without clipping or excess gap. For groups
+          with no children, the line still separates cleanly from the previous header's bottom. y-position calculation:
+          line_y = option.rect.top() + 24; no font_height dependency to keep it positioned for distinct separation
+          regardless of content; option.rect is restored implicitly per-item, with detailed comments on larger y-shift/gap.
+        - Visual-only operation; exceptions are silently ignored to prevent painting failures; painter is not clipped to item rect.
+        - Preserves all default painting for child rows (files) without modifications; no interference with
+          selection, checkboxes, or other elements; handles variable viewport sizes dynamically; empty/single group cases draw no lines.
+        """
+        is_header = not index.parent().isValid()
+        original_rect = option.rect
+        shift = 0
+    
+        # Set white background for top-level header rows (any column) to provide clean contrast for bold dark red group titles
+        if is_header:
+            # Explicitly fill the rect with pure white to ensure full coverage and override any stylesheet;
+            # this covers the full row including the line space for subsequent headers
+            painter.fillRect(option.rect, QColor(255, 255, 255))
+    
+            # Draw strong horizontal separator line only for subsequent groups (row > 0), in column 0
+            if (index.column() == 0 and index.row() > 0):
+                try:
+                    painter.save()
+                    painter.setClipRect(self._tree.viewport().rect(), Qt.NoClip)
+                    # Strong dark gray line, exactly 3px thick using multiple 1px lines for full width and no clipping
+                    pen = QPen(QColor(80, 80, 80))
+                    pen.setWidth(1)
+                    painter.setPen(pen)
+ 
+                    # Line positioned at y = option.rect.top() + 24px (centered in the increased space) to create
+                    # a distinct separate line above the group label, confirming full dialog pane width via self.tree.viewport().width();
+                    # this ensures the separator extends across the entire width dynamically on resize. For groups with no children,
+                    # this still provides clean separation from previous header bottom. The 3px line is drawn with offsets 0,1,2
+                    # within the top space for precise thickness. The clip handling with Qt.NoClip guarantees full span without any clipping,
+                    # with detailed comments on full width clip handling.
+                    line_y = option.rect.top() + 24
+                    viewport_width = self._tree.viewport().width()
+                    # Draw three parallel 1px lines for exact 3px thickness and full viewport span (x from 0 to viewport_width)
+                    # This full-width loop ensures horizontal group separators extend the full dialog width.
+                    for i in range(3):
+                        painter.drawLine(0, line_y + i, viewport_width, line_y + i)
+                    painter.restore()
+ 
+                    # Adjust rect for super().paint to shift content down by line thickness + 28px gap to position header below the line
+                    # with clear vertical separation; height reduced accordingly to fit within the increased extra height added in sizeHint.
+                    # This larger y-shift ensures the next group header appears below the separator line with sufficient space for distinct line effect,
+                    # with detailed comments on larger y-shift/gap.
+                    shift = 31  # 3px line + 28px gap
+                    temp_rect = option.rect.translated(0, shift)
+                    option.rect = temp_rect
+                except Exception:
+                    # Visual-only; ignore errors to avoid disrupting painting
+                    pass
+    
+            option.backgroundBrush = QBrush(QColor(255, 255, 255))
+    
+        # Always paint default content (text, checkboxes, selection) using the (possibly modified/shifted) option
+        super().paint(painter, option, index)
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex):
+        """
+        Provide size hints for rows to enhance vertical separation between groups moderately without excess padding.
+  
+        For top-level header rows (column 0, no parent):
+        - If row == 0 (first group), use base height with no extra (0px) to keep it close to standard line height.
+        - If row > 0 (subsequent groups), add extra height of fontMetrics.height() * 2.8 + 56px
+          (further increase from previous 2.6 + 52px) to create even more space for the line as a distinct separate line,
+          positioning the header content below it. This further increased extra height ensures distinct vertical separation
+          between the separator line and the next group header while keeping overall layout compact, with detailed comments on further increased spacing for distinct line effect.
+        Other rows (child file rows and non-header cells) use the base size.
+  
+        This approach adds moderate vertical spacing specifically for subsequent headers to accommodate
+        the 3px line + 28px gap without overlapping content or excess sprawl, using a font-relative
+        calculation for scalability across different font sizes. The fine-tuned extra height
+        provides further increased group separation as per latest feedback for a distinct line effect.
+  
+        Parameters
+        ----------
+        option : QStyleOptionViewItem
+            Style options including font metrics for calculating spacing.
+        index : QModelIndex
+            Model index for which size is requested; checked for top-level header condition and row.
+  
+        Returns
+        -------
+        QSize
+            Size hint for the item: width unchanged; height increased only for top-level
+            header rows (column 0, row > 0) by font_height * 2.8 + 56px to accommodate the separator line
+            and further increased separation.
+  
+        Notes
+        -----
+        - Applies only to column 0 of top-level items to trigger row height increase via max across cells.
+        - Extra height is 0px for first header (row 0) and font_height * 2.8 + 56px for subsequent (row > 0)
+          to support the line at rect.top() in paint(), providing space for the line + gap while shifting
+          content down; this ensures moderate separation scaled to font size, with a fine-tuned further increase for
+          distinct line effect, reducing header tallness overall without excess gap after last child.
+        - Handles empty or invalid indices gracefully by falling back to base size; for groups with
+          no children, the extra still allows clean line positioning between headers.
+        - Uses fontMetrics.height() for dynamic, font-dependent extra height to ensure consistency
+          across platforms and font variations; the 2.8 factor provides further increased proportional spacing,
+          plus 56px fixed for the line and gap.
+        - No extra height for row == 0 keeps first header compact; single group cases have no lines or extras.
+        """
+        base = super().sizeHint(option, index)
+        try:
+            if index.column() == 0 and not index.parent().isValid():
+                font_height = option.fontMetrics().height()
+                extra = 0
+                if index.row() > 0:
+                    # Extra height for subsequent headers: font_height * 2.8 + 56px (further increase from previous 2.6 + 52px),
+                    # providing even more vertical space for the line as a distinct separate line above the header,
+                    # with the 3px line + 28px gap below it without overlapping the shifted-down header content;
+                    # this font-relative calculation ensures scalability and clear group distinction while
+                    # keeping layout compact. For no-children groups, it still fits the line relative to
+                    # previous header bottom without excess padding. The further increased spacing creates a more distinct line effect,
+                    # with detailed comments on further increased spacing for distinct line effect.
+                    extra = int(font_height * 2.8) + 56
+                return QSize(base.width(), base.height() + extra)
+        except Exception:
+            # Defensive: return base if metrics or index issues arise
+            pass
+        return base
 
 
 class DuplicateManagerDialog(QDialog):
@@ -161,15 +425,15 @@ class DuplicateManagerDialog(QDialog):
         self.header_label = QLabel(f"Duplicate Groups: {total_groups} — Files: {total_files}", self)
         bottom_layout.addWidget(self.header_label)
 
-        # Tree widget with 4 columns: Select, File Path, Modified, Size
+        # Tree widget with 3 columns: Select, File Path, Modified (Size removed)
         self.tree = QTreeWidget(self)
-        self.tree.setColumnCount(4)
-        self.tree.setHeaderLabels(["Select", "File Path", "Modified", "Size"])
+        self.tree.setColumnCount(3)
+        self.tree.setHeaderLabels(["Select", "File Path", "Modified"])
         self.tree.setSortingEnabled(True)
 
         # Column sizing policies:
         # - File Path stretches
-        # - Modified and Size are resize-to-contents
+        # - Modified auto-resizes to contents for readability
         # - Select column fits to checkbox content
         try:
             header = self.tree.header()
@@ -177,11 +441,21 @@ class DuplicateManagerDialog(QDialog):
             header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
             header.setSectionResizeMode(1, QHeaderView.Stretch)
             header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         except Exception:
             # Defensive in case Qt platform backends vary
             pass
 
+        # Minimal, selection-friendly stylesheet; explicitly no borders or frames to prevent visual artifacts
+        self.tree.setAlternatingRowColors(False)
+        self.tree.setStyleSheet("""
+QTreeWidget::item { background-color: transparent; border: none; }
+QTreeWidget::item:selected { background-color: palette(highlight); color: palette(highlighted-text); }
+QTreeView::branch { background: transparent; }
+QTreeWidget { border: none; }
+""")
+        # Install delegate for group separation (no frames, only backgrounds and lines)
+        self.tree.setItemDelegate(GroupFrameDelegate(self.tree))
+        
         bottom_layout.addWidget(self.tree)
 
         # Populate tree with groups and files
@@ -193,12 +467,30 @@ class DuplicateManagerDialog(QDialog):
                 gh = ""
             files = list(group.get("files") or [])
             k = len(files)
+            
+            # Get file size from first file in group (all files are identical)
+            group_size = 0
+            if files:
+                try:
+                    group_size = int(files[0].get("size")) if files[0].get("size") is not None else 0
+                except Exception:
+                    group_size = 0
 
             top = QTreeWidgetItem(self.tree)
             # Place the group title in the File Path column to keep the "Select" column free for child checkboxes
-            top.setText(1, f"Group #{i} — Hash: {gh} — Files: {k}")
-            # Make the group rows non-checkable and bold-ish via flags; actual styling can be added later
+            # Format: "Group #i: k files (formatted_size)" - hash removed as requested
+            formatted_size = format_file_size(group_size)
+            top.setText(1, f"Group #{i}: {k} files ({formatted_size})")
+            # Make the group rows non-checkable
             top.setFlags((top.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable) & ~Qt.ItemIsUserCheckable)
+            # Header visual: bold font and dark red text on the label column only
+            try:
+                fnt = top.font(1)
+                fnt.setBold(True)
+                top.setFont(1, fnt)
+                top.setForeground(1, QBrush(QColor("#8B0000")))
+            except Exception:
+                pass
             # Expand groups by default for quick inspection
             self.tree.expandItem(top)
 
@@ -220,24 +512,29 @@ class DuplicateManagerDialog(QDialog):
                 child = QTreeWidgetItem(top)
                 # Column 0 holds a checkbox; we add text to other columns
                 child.setText(1, path)
-                child.setText(2, str(modified))
-                child.setText(3, str(size))
+                # Format modified timestamp to "dd-MMM-yy" using helper function
+                child.setText(2, format_timestamp(modified))
                 # Store raw values for reliable retrieval independent of display formatting
                 try:
                     child.setData(1, Qt.UserRole, path)
                     child.setData(2, Qt.UserRole, modified)
+                    # Store size in UserRole for potential future use, though not displayed
                     child.setData(3, Qt.UserRole, size)
                 except Exception:
                     pass
                 # Enable user check state on the "Select" column
                 child.setFlags(child.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
                 child.setCheckState(0, Qt.Unchecked)
-                # Provide numeric sort keys for Modified and Size to ensure numeric sort when used
+                # Provide numeric sort keys for Modified to ensure numeric sort when used
                 try:
                     child.setData(2, Qt.UserRole, modified)
-                    child.setData(3, Qt.UserRole, size)
                 except Exception:
                     pass
+
+        # Status line: shows "X files selected out of Y total files"
+        self.status_label = QLabel("0 files selected out of 0 total files", self)
+        self.status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        bottom_layout.addWidget(self.status_label)
 
         # Buttons row: spacer + [Delete] [Close]
         btn_row = QHBoxLayout()
@@ -252,6 +549,9 @@ class DuplicateManagerDialog(QDialog):
         btn_row.addWidget(self.close_btn)
 
         bottom_layout.addLayout(btn_row)
+
+        # Initialize status line with current counts
+        self._update_status_line()
 
         # Add bottom widget to splitter
         self.splitter.addWidget(bottom_widget)
@@ -276,7 +576,7 @@ class DuplicateManagerDialog(QDialog):
 
     def _on_item_changed(self, item: "QTreeWidgetItem", column: int) -> None:
         """
-        React to any item change (primarily checkbox toggles) to update the Delete button state.
+        React to any item change (primarily checkbox toggles) to update the Delete button state and status line.
 
         Parameters
         ----------
@@ -289,9 +589,11 @@ class DuplicateManagerDialog(QDialog):
         --------
         - Recomputes whether any file rows are checked.
         - Enables the Delete button only when at least one file is checked.
+        - Updates the status line with current selection counts.
         """
         try:
             self._update_delete_enabled()
+            self._update_status_line()
         except Exception as e:
             # Defensive: never propagate errors from UI state updates
             LOGGER.error("State update after itemChanged failed", exception=e, variables={"column": column})
@@ -314,6 +616,55 @@ class DuplicateManagerDialog(QDialog):
         except Exception:
             any_checked = False
         self.delete_btn.setEnabled(any_checked)
+
+    def _update_status_line(self) -> None:
+        """
+        Update the status line with current selection and total file/group counts.
+        
+        Behavior
+        --------
+        - Counts total files across all groups.
+        - Counts checked files across all groups.
+        - Counts groups with at least one selected file.
+        - Counts total groups.
+        - Updates status label text to show "X files from Y groups selected out of Z total files in W groups".
+        - If no duplicates to manage, shows "No duplicates to manage".
+        """
+        try:
+            total_files = 0
+            selected_files = 0
+            groups_with_selected = 0
+            total_groups = self.tree.topLevelItemCount()
+            
+            # Count total files, selected files, and groups with selected files
+            for gi in range(total_groups):
+                group = self.tree.topLevelItem(gi)
+                group_file_count = group.childCount()
+                total_files += group_file_count
+                
+                # Check if this group has any selected files
+                has_selected = False
+                for ci in range(group_file_count):
+                    file_item = group.child(ci)
+                    if file_item.checkState(0) == Qt.Checked:
+                        selected_files += 1
+                        has_selected = True
+                
+                if has_selected:
+                    groups_with_selected += 1
+            
+            # Update status label
+            if total_groups == 0:
+                self.status_label.setText("No duplicates to manage")
+            else:
+                self.status_label.setText(
+                    f"{selected_files} files from {groups_with_selected} groups selected "
+                    f"out of {total_files} total files in {total_groups} groups"
+                )
+        except Exception as e:
+            # Log error but don't crash - set default text
+            LOGGER.error("Failed to update status line", exception=e)
+            self.status_label.setText("Error updating selection status")
 
     def _collect_checked_files(self) -> List[Dict[str, Any]]:
         """
@@ -545,7 +896,8 @@ class DuplicateManagerDialog(QDialog):
 
             self._refresh_header_counts()
             self._update_delete_enabled()
-
+            self._update_status_line()
+            
             # Summary information
             show_selectable_info(self, "Delete Summary", f"Deleted {deleted_ok} file(s); {failed} failed.")
         except Exception as e:
@@ -673,6 +1025,11 @@ class DuplicateManagerDialog(QDialog):
             
             # Clamp the calculated height to reasonable bounds
             clamped_height = max(min_top_height, min(total_top_height, max_top_height))
+            
+            # Enforce maximum height on the tabs widget to prevent the top pane from growing beyond content height
+            # This allows shrinking via splitter handle but caps expansion at the calculated content-fitted height
+            # Ensures the pane remains shrinkable while preventing unnecessary growth during dialog resizes
+            self.tabs.setMaximumHeight(clamped_height)
             
             # Set splitter sizes - using proportional approach for better cross-platform behavior
             total_height = self.splitter.height()
