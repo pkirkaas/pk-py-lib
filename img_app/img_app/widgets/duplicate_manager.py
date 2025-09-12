@@ -131,170 +131,71 @@ class GroupFrameDelegate(QStyledItemDelegate):
     def __init__(self, tree: QTreeWidget) -> None:
         super().__init__(tree)
         self._tree = tree
+        # Visual separation tuning constants (single source of truth for paint/sizeHint)
+        self._sep_color = QColor(173, 216, 230)   # light blue separator
+        self._sep_thickness = 2                   # 2 px for better visibility on dark themes
+        self._sep_margin_top = 8                  # whitespace above the line
+        self._content_gap = 12                    # whitespace between line and header text
+        self._sep_row_height = 14                 # height of dedicated separator rows
+        # Group header background lightening factors (percent for QColor.lighter)
+        # Push lighter background further per request
+        self._header_lighten_dark = 280
+        self._header_lighten_light = 140
+        # Near-white header background (not pure white, but very close for maximum readability)
+        self._header_bg_color = QColor(245, 247, 250)  # ~#F5F7FA
+        # Group header background lightening factors (percent for QColor.lighter)
+        # Dark themes: brighten noticeably; Light themes: subtle lift for a pale band
+        self._header_lighten_dark = 175
+        self._header_lighten_light = 110
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         """
-        Paint item content with enhancements for group separation:
-        - For top-level header rows (any column), explicitly fill the background with pure white using fillRect,
-          then set a white background brush before base painting to ensure clean contrast for bold dark red group titles
-          and override any stylesheet interference.
-        - For the first column of subsequent top-level header rows (index.row() > 0), draw a strong
-          3px horizontal line (via three 1px lines for exact thickness and full span) positioned at y = option.rect.top() + 24px
-          (centered in the increased space) across the full viewport width to separate from the previous group.
-          This positions the separator on its own distinct separate line above the header, with the header content
-          painted below it in the remaining space (shifted down by line thickness + 28px gap to avoid overlap).
-          Combined with increased header row height (base + 0px for first group, base + font_height*2.8 + 56px for subsequent),
-          this creates clear vertical separation for the line as a separate visual element without excess vertical space
-          or overlap with the group label, with detailed comments on larger y-shift/gap and full width clip handling.
-       
-        Always calls the base implementation to render native content (text, checkboxes, etc.) after
-        setting and filling background for headers, with rect adjusted if a line is drawn to prevent overlap.
-       
-        Parameters
-        ----------
-        painter : QPainter
-            The painter to draw with.
-        option : QStyleOptionViewItem
-            Style options for the item, potentially modified for background and rect shifting.
-        index : QModelIndex
-            Model index being painted; used to detect header rows and group boundaries.
-       
-        Notes
-        -----
-        - Background is explicitly filled per cell in header rows with QColor(255,255,255) for full row coverage and pure white,
-          ensuring readability of dark red text; brush is also set for base paint compatibility. The fillRect covers
-          the full row including the line space, with the line drawn on top.
-        - Line drawing is triggered only once per group boundary (column 0 of top-level items where row > 0),
-          ensuring no double-drawing or over-drawing; line is 3px thick in dark gray (QColor(80,80,80)) using multiple 1px lines
-          for precise full-width rendering without clipping to item rect; x from 0 to self.tree.viewport().width() confirms
-          full dialog pane width, dynamically handling resizes. painter.save()/restore() with setClipRect(Qt.NoClip)
-          guarantees full span without clipping. This clip handling ensures the horizontal group separator extends the full width of the dialog,
-          with detailed comments on full width clip handling.
-        - If index.row() == 0 (first group), no line is drawn above it.
-        - The line y-position is set to option.rect.top() + 24px (slight offset for centering in the increased space) to place it
-          within the header row for subsequent groups, creating a separate visual line above the header content. To ensure
-          the header appears below the separator with clear vertical separation, the option.rect is adjusted downward by 31px
-          (3px line + 28px gap) before calling super().paint(), utilizing the increased extra height added in sizeHint()
-          for row > 0; this positions the label text starting below the line without clipping or excess gap. For groups
-          with no children, the line still separates cleanly from the previous header's bottom. y-position calculation:
-          line_y = option.rect.top() + 24; no font_height dependency to keep it positioned for distinct separation
-          regardless of content; option.rect is restored implicitly per-item, with detailed comments on larger y-shift/gap.
-        - Visual-only operation; exceptions are silently ignored to prevent painting failures; painter is not clipped to item rect.
-        - Preserves all default painting for child rows (files) without modifications; no interference with
-          selection, checkboxes, or other elements; handles variable viewport sizes dynamically; empty/single group cases draw no lines.
+        Draw dedicated separator rows as full-width light-blue rules.
+        For normal top-level group headers, fill a light, theme-appropriate
+        background band to improve readability of the dark-red title.
+        Child rows are painted normally.
         """
-        is_header = not index.parent().isValid()
-        original_rect = option.rect
-        shift = 0
-    
-        # Set white background for top-level header rows (any column) to provide clean contrast for bold dark red group titles
-        if is_header:
-            # Explicitly fill the rect with pure white to ensure full coverage and override any stylesheet;
-            # this covers the full row including the line space for subsequent headers
-            painter.fillRect(option.rect, QColor(255, 255, 255))
-    
-            # Draw strong horizontal separator line only for subsequent groups (row > 0), in column 0
-            if (index.column() == 0 and index.row() > 0):
-                try:
-                    painter.save()
-                    painter.setClipRect(self._tree.viewport().rect(), Qt.NoClip)
-                    # Strong dark gray line, exactly 3px thick using multiple 1px lines for full width and no clipping
-                    pen = QPen(QColor(80, 80, 80))
-                    pen.setWidth(1)
-                    painter.setPen(pen)
- 
-                    # Line positioned at y = option.rect.top() + 24px (centered in the increased space) to create
-                    # a distinct separate line above the group label, confirming full dialog pane width via self.tree.viewport().width();
-                    # this ensures the separator extends across the entire width dynamically on resize. For groups with no children,
-                    # this still provides clean separation from previous header bottom. The 3px line is drawn with offsets 0,1,2
-                    # within the top space for precise thickness. The clip handling with Qt.NoClip guarantees full span without any clipping,
-                    # with detailed comments on full width clip handling.
-                    line_y = option.rect.top() + 24
-                    viewport_width = self._tree.viewport().width()
-                    # Draw three parallel 1px lines for exact 3px thickness and full viewport span (x from 0 to viewport_width)
-                    # This full-width loop ensures horizontal group separators extend the full dialog width.
-                    for i in range(3):
-                        painter.drawLine(0, line_y + i, viewport_width, line_y + i)
-                    painter.restore()
- 
-                    # Adjust rect for super().paint to shift content down by line thickness + 28px gap to position header below the line
-                    # with clear vertical separation; height reduced accordingly to fit within the increased extra height added in sizeHint.
-                    # This larger y-shift ensures the next group header appears below the separator line with sufficient space for distinct line effect,
-                    # with detailed comments on larger y-shift/gap.
-                    shift = 31  # 3px line + 28px gap
-                    temp_rect = option.rect.translated(0, shift)
-                    option.rect = temp_rect
-                except Exception:
-                    # Visual-only; ignore errors to avoid disrupting painting
-                    pass
-    
-            option.backgroundBrush = QBrush(QColor(255, 255, 255))
-    
-        # Always paint default content (text, checkboxes, selection) using the (possibly modified/shifted) option
+        try:
+            # Separator rows are marked with "__separator__" in column 0, UserRole
+            root_col0 = index.sibling(index.row(), 0)
+            if root_col0.isValid() and root_col0.data(Qt.UserRole) == "__separator__":
+                painter.save()
+                viewport_rect = self._tree.viewport().rect()
+                painter.setClipRect(viewport_rect)
+                pen = QPen(self._sep_color)
+                pen.setWidth(self._sep_thickness)
+                painter.setPen(pen)
+                y = option.rect.center().y()
+                painter.drawLine(0, y, viewport_rect.width(), y)
+                painter.restore()
+                return
+        except Exception:
+            # Fall through to default painting on any issue
+            pass
+
+        # Light header background for top-level non-separator rows (near-white band)
+        try:
+            if not index.parent().isValid():
+                bg = self._header_bg_color
+                painter.save()
+                painter.fillRect(option.rect, bg)
+                painter.restore()
+        except Exception:
+            pass
+
+        # Default painting for normal rows (group headers and file items)
         super().paint(painter, option, index)
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex):
         """
-        Provide size hints for rows to enhance vertical separation between groups moderately without excess padding.
-  
-        For top-level header rows (column 0, no parent):
-        - If row == 0 (first group), use base height with no extra (0px) to keep it close to standard line height.
-        - If row > 0 (subsequent groups), add extra height of fontMetrics.height() * 2.8 + 56px
-          (further increase from previous 2.6 + 52px) to create even more space for the line as a distinct separate line,
-          positioning the header content below it. This further increased extra height ensures distinct vertical separation
-          between the separator line and the next group header while keeping overall layout compact, with detailed comments on further increased spacing for distinct line effect.
-        Other rows (child file rows and non-header cells) use the base size.
-  
-        This approach adds moderate vertical spacing specifically for subsequent headers to accommodate
-        the 3px line + 28px gap without overlapping content or excess sprawl, using a font-relative
-        calculation for scalability across different font sizes. The fine-tuned extra height
-        provides further increased group separation as per latest feedback for a distinct line effect.
-  
-        Parameters
-        ----------
-        option : QStyleOptionViewItem
-            Style options including font metrics for calculating spacing.
-        index : QModelIndex
-            Model index for which size is requested; checked for top-level header condition and row.
-  
-        Returns
-        -------
-        QSize
-            Size hint for the item: width unchanged; height increased only for top-level
-            header rows (column 0, row > 0) by font_height * 2.8 + 56px to accommodate the separator line
-            and further increased separation.
-  
-        Notes
-        -----
-        - Applies only to column 0 of top-level items to trigger row height increase via max across cells.
-        - Extra height is 0px for first header (row 0) and font_height * 2.8 + 56px for subsequent (row > 0)
-          to support the line at rect.top() in paint(), providing space for the line + gap while shifting
-          content down; this ensures moderate separation scaled to font size, with a fine-tuned further increase for
-          distinct line effect, reducing header tallness overall without excess gap after last child.
-        - Handles empty or invalid indices gracefully by falling back to base size; for groups with
-          no children, the extra still allows clean line positioning between headers.
-        - Uses fontMetrics.height() for dynamic, font-dependent extra height to ensure consistency
-          across platforms and font variations; the 2.8 factor provides further increased proportional spacing,
-          plus 56px fixed for the line and gap.
-        - No extra height for row == 0 keeps first header compact; single group cases have no lines or extras.
+        Provide a small fixed height for separator rows; default size for all others.
         """
         base = super().sizeHint(option, index)
         try:
-            if index.column() == 0 and not index.parent().isValid():
-                font_height = option.fontMetrics().height()
-                extra = 0
-                if index.row() > 0:
-                    # Extra height for subsequent headers: font_height * 2.8 + 56px (further increase from previous 2.6 + 52px),
-                    # providing even more vertical space for the line as a distinct separate line above the header,
-                    # with the 3px line + 28px gap below it without overlapping the shifted-down header content;
-                    # this font-relative calculation ensures scalability and clear group distinction while
-                    # keeping layout compact. For no-children groups, it still fits the line relative to
-                    # previous header bottom without excess padding. The further increased spacing creates a more distinct line effect,
-                    # with detailed comments on further increased spacing for distinct line effect.
-                    extra = int(font_height * 2.8) + 56
-                return QSize(base.width(), base.height() + extra)
+            root_col0 = index.sibling(index.row(), 0)
+            if root_col0.isValid() and root_col0.data(Qt.UserRole) == "__separator__":
+                return QSize(base.width(), self._sep_row_height)
         except Exception:
-            # Defensive: return base if metrics or index issues arise
             pass
         return base
 
@@ -404,6 +305,10 @@ class DuplicateManagerDialog(QDialog):
         self.summary_tab.setPlainText(summary_text)
         self.summary_tab.setLineWrapMode(QTextEdit.NoWrap)
         self.summary_tab.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # Reduce vertical space in Processing Summary by setting minimal document margins for compact layout;
+        # this minimizes the gap below the last line (e.g., "Errors: 0") without affecting readability,
+        # ensuring the summary section ends closely above the Duplicates Groups section in the splitter.
+        self.summary_tab.document().setDocumentMargin(0)
 
         self.report_tab = QTextEdit(self)
         self.report_tab.setReadOnly(True)
@@ -420,6 +325,9 @@ class DuplicateManagerDialog(QDialog):
         bottom_widget = QWidget(self)
         bottom_layout = QVBoxLayout(bottom_widget)
         bottom_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins for seamless appearance
+        # Set minimal spacing in the bottom layout to keep the Duplicates Groups section compact while
+        # allowing sufficient separation between elements (header, tree, status); default is small, but explicit for control.
+        bottom_layout.setSpacing(5)
 
         # Header label (remains for group/file counts)
         self.header_label = QLabel(f"Duplicate Groups: {total_groups} — Files: {total_files}", self)
@@ -429,7 +337,8 @@ class DuplicateManagerDialog(QDialog):
         self.tree = QTreeWidget(self)
         self.tree.setColumnCount(3)
         self.tree.setHeaderLabels(["Select", "File Path", "Modified"])
-        self.tree.setSortingEnabled(True)
+        # Sorting disabled to keep dedicated separator rows correctly positioned between groups
+        self.tree.setSortingEnabled(False)
 
         # Column sizing policies:
         # - File Path stretches
@@ -461,6 +370,17 @@ QTreeWidget { border: none; }
         # Populate tree with groups and files
         # Each group is a top-level item with text in the "File Path" column (index 1)
         for i, group in enumerate(self._groups, start=1):
+            # Insert a dedicated separator row between groups (after the first)
+            if i > 1:
+                sep = QTreeWidgetItem(self.tree)
+                try:
+                    sep.setData(0, Qt.UserRole, "__separator__")
+                    sep.setFirstColumnSpanned(True)
+                    sep.setSizeHint(0, QSize(0, 14))
+                    # No interaction on separator rows
+                    sep.setFlags(Qt.NoItemFlags)
+                except Exception:
+                    pass
             try:
                 gh = str(group.get("hash") or "")
             except Exception:
@@ -488,7 +408,7 @@ QTreeWidget { border: none; }
                 fnt = top.font(1)
                 fnt.setBold(True)
                 top.setFont(1, fnt)
-                top.setForeground(1, QBrush(QColor("#8B0000")))
+                top.setForeground(1, QBrush(QColor("#200")))
             except Exception:
                 pass
             # Expand groups by default for quick inspection
@@ -558,6 +478,9 @@ QTreeWidget { border: none; }
 
         # Add splitter to main layout
         main_layout.addWidget(self.splitter)
+        # Minimize spacing in the main layout to reduce any gap between the splitter panes and ensure
+        # the summary section ends closely above the Duplicates Groups section without unnecessary vertical space.
+        main_layout.setSpacing(0)
 
         # Set initial splitter sizes based on content height after UI is populated
         # This is handled by the QTimer singleShot call below
@@ -598,6 +521,34 @@ QTreeWidget { border: none; }
             # Defensive: never propagate errors from UI state updates
             LOGGER.error("State update after itemChanged failed", exception=e, variables={"column": column})
 
+    def _is_separator_item(self, item: "QTreeWidgetItem" | None) -> bool:
+        """
+        Determine whether a top-level item is a dedicated separator row.
+
+        A separator row is a top-level QTreeWidgetItem we insert between groups.
+        It is marked by setting column 0, Qt.UserRole to the sentinel string "__separator__".
+        These rows:
+        - Have no children and no flags (non-interactive)
+        - Must be excluded from counts and selection scans
+        - Are painted by GroupFrameDelegate as a thin light-blue rule
+
+        Parameters
+        ----------
+        item : QTreeWidgetItem | None
+            The item to test (may be None).
+
+        Returns
+        -------
+        bool
+            True if item is a separator row, else False.
+        """
+        try:
+            if item is None:
+                return False
+            return item.data(0, Qt.UserRole) == "__separator__"
+        except Exception:
+            return False
+
     def _update_delete_enabled(self) -> None:
         """
         Compute whether any file items are checked and toggle the Delete button accordingly.
@@ -606,6 +557,8 @@ QTreeWidget { border: none; }
         try:
             for gi in range(self.tree.topLevelItemCount()):
                 g = self.tree.topLevelItem(gi)
+                if self._is_separator_item(g):
+                    continue
                 for ci in range(g.childCount()):
                     c = g.child(ci)
                     if c.checkState(0) == Qt.Checked:
@@ -634,11 +587,14 @@ QTreeWidget { border: none; }
             total_files = 0
             selected_files = 0
             groups_with_selected = 0
-            total_groups = self.tree.topLevelItemCount()
+            total_groups = 0
             
-            # Count total files, selected files, and groups with selected files
-            for gi in range(total_groups):
+            # Count total files, selected files, and groups with selected files (skip separator rows)
+            for gi in range(self.tree.topLevelItemCount()):
                 group = self.tree.topLevelItem(gi)
+                if self._is_separator_item(group):
+                    continue
+                total_groups += 1
                 group_file_count = group.childCount()
                 total_files += group_file_count
                 
@@ -721,10 +677,13 @@ QTreeWidget { border: none; }
         - Sums all child rows across groups as the file count.
         """
         try:
-            groups = self.tree.topLevelItemCount()
+            groups = 0
             files = 0
-            for gi in range(groups):
+            for gi in range(self.tree.topLevelItemCount()):
                 g = self.tree.topLevelItem(gi)
+                if self._is_separator_item(g):
+                    continue
+                groups += 1
                 files += g.childCount()
             self.header_label.setText(f"Duplicate Groups: {groups} — Files: {files}")
         except Exception as e:
@@ -827,6 +786,14 @@ QTreeWidget { border: none; }
                                     idx = self.tree.indexOfTopLevelItem(parent)
                                     if idx >= 0:
                                         self.tree.takeTopLevelItem(idx)
+                                        # Remove preceding separator if present
+                                        try:
+                                            if idx - 1 >= 0:
+                                                prev = self.tree.topLevelItem(idx - 1)
+                                                if self._is_separator_item(prev):
+                                                    self.tree.takeTopLevelItem(idx - 1)
+                                        except Exception:
+                                            pass
                     except Exception as e_ui:
                         LOGGER.error("UI removal failed after delete", exception=e_ui, variables={"path": path})
 
@@ -860,6 +827,14 @@ QTreeWidget { border: none; }
                                 idx = self.tree.indexOfTopLevelItem(parent)
                                 if idx >= 0:
                                     self.tree.takeTopLevelItem(idx)
+                                    # Remove preceding separator if present
+                                    try:
+                                        if idx - 1 >= 0:
+                                            prev = self.tree.topLevelItem(idx - 1)
+                                            if self._is_separator_item(prev):
+                                                self.tree.takeTopLevelItem(idx - 1)
+                                    except Exception:
+                                        pass
                     except Exception as e_ui2:
                         LOGGER.error("UI removal failed after FileNotFound", exception=e_ui2, variables={"path": path})
 
