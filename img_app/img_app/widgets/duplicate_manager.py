@@ -14,9 +14,9 @@ import sys
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QRect, QSize
+from PySide6.QtCore import Qt, QTimer, QRect, QSize, QFileInfo
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem,
+    QDialog, QVBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QHBoxLayout, QPushButton, QWidget, QSizePolicy, QSpacerItem, QMessageBox,
     QHeaderView, QTextEdit, QTabWidget, QSplitter, QStyledItemDelegate,
     QScrollArea, QGridLayout
@@ -404,6 +404,8 @@ class SimilarityManagerDialog(QDialog):
         bottom_layout.setContentsMargins(0, 0, 0, 0)
 
         self.header_label = QLabel("Similarity Groups", self)
+        self.header_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.header_label.setMaximumHeight(30)
         bottom_layout.addWidget(self.header_label)
 
         controls_layout = QHBoxLayout()
@@ -419,21 +421,25 @@ class SimilarityManagerDialog(QDialog):
         self.refresh_btn = QPushButton("Refresh Groups", self)
         controls_layout.addWidget(self.refresh_btn)
         controls_layout.addStretch()
-        bottom_layout.addLayout(controls_layout)
+        controls_layout_widget = QWidget()
+        controls_layout_widget.setLayout(controls_layout)
+        controls_layout_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        controls_layout_widget.setMaximumHeight(40)
+        bottom_layout.addWidget(controls_layout_widget)
 
         self.tree_preview_splitter = QSplitter(Qt.Horizontal, self)
         
-        self.tree = QTreeWidget(self)
-        self.tree.setColumnCount(4)
-        self.tree.setHeaderLabels(["Select", "Preview", "Path", "Score"])
-        header = self.tree.header()
+        self.table = QTableWidget(self)
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(["Select", "Group", "Filename", "Size", "Resolution", "Score"])
+        header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Fixed)
-        header.resizeSection(1, 70)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.tree.setItemDelegate(GroupFrameDelegate(self.tree))
-        self.tree_preview_splitter.addWidget(self.tree)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        self.tree_preview_splitter.addWidget(self.table)
 
         self.preview_area = QScrollArea(self)
         self.preview_area.setWidgetResizable(True)
@@ -441,9 +447,12 @@ class SimilarityManagerDialog(QDialog):
         self.preview_area.setWidget(self.preview_pane)
         self.tree_preview_splitter.addWidget(self.preview_area)
         
+        self.tree_preview_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         bottom_layout.addWidget(self.tree_preview_splitter)
 
         self.status_label = QLabel("No similar images to manage", self)
+        self.status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.status_label.setMaximumHeight(30)
         bottom_layout.addWidget(self.status_label)
 
         btn_row = QHBoxLayout()
@@ -454,13 +463,17 @@ class SimilarityManagerDialog(QDialog):
         self.close_btn = QPushButton("Close", self)
         self.close_btn.clicked.connect(self.accept)
         btn_row.addWidget(self.close_btn)
-        bottom_layout.addLayout(btn_row)
+        btn_row_widget = QWidget()
+        btn_row_widget.setLayout(btn_row)
+        btn_row_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btn_row_widget.setMaximumHeight(40)
+        bottom_layout.addWidget(btn_row_widget)
 
         self.splitter.addWidget(bottom_widget)
         main_layout.addWidget(self.splitter)
 
-        self.tree.itemChanged.connect(self._on_item_changed)
-        self.tree.itemSelectionChanged.connect(self._on_selection_changed)
+        self.table.itemChanged.connect(self._on_item_changed)
+        self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.delete_btn.clicked.connect(self._on_delete_clicked)
         self.refresh_btn.clicked.connect(self._on_refresh)
 
@@ -478,65 +491,74 @@ class SimilarityManagerDialog(QDialog):
         return normalized
 
     def _populate_tree(self) -> None:
-        self.tree.clear()
+        self.table.setRowCount(0)
         if not self.groups:
             self.header_label.setText("No similar images found")
             return
-
+    
+        total_rows = sum(len(g.get('paths', [])) for g in self.groups)
+        self.table.setRowCount(total_rows)
+        row = 0
         for i, group in enumerate(self.groups, 1):
             paths = group.get('paths', [])
-            scores = group.get('scores', [])
-            if len(paths) < 2: continue
-
-            avg_score = sum(scores) / len(scores) if scores else 0.0
-            top = QTreeWidgetItem(self.tree)
-            top.setText(2, f"Group #{i}: {len(paths)} images (avg score: {avg_score:.2f})")
-            top.setFlags(top.flags() & ~Qt.ItemIsUserCheckable)
-            font = top.font(2)
-            font.setBold(True)
-            top.setFont(2, font)
-
+            scores = group.get('scores', [0.0] * len(paths))
             for j, path in enumerate(paths):
-                child = QTreeWidgetItem(top)
-                child.setFlags(child.flags() | Qt.ItemIsUserCheckable)
-                child.setCheckState(0, Qt.Unchecked)
-                
+                # Select
+                select_item = QTableWidgetItem()
+                select_item.setCheckState(Qt.Unchecked)
+                self.table.setItem(row, 0, select_item)
+    
+                # Group
+                group_item = QTableWidgetItem(f"Group #{i}")
+                self.table.setItem(row, 1, group_item)
+    
+                # Filename
+                filename = os.path.basename(path)
+                fname_item = QTableWidgetItem(filename)
+                fname_item.setData(Qt.UserRole, path)
+                self.table.setItem(row, 2, fname_item)
+    
+                # Size
+                info = QFileInfo(path)
+                size_str = format_file_size(info.size())
+                size_item = QTableWidgetItem(size_str)
+                self.table.setItem(row, 3, size_item)
+    
+                # Resolution
+                res_str = "Unknown"
                 try:
-                    pixmap = QPixmap(path).scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                    child.setIcon(1, QIcon(pixmap))
+                    with Image.open(path) as img:
+                        w, h = img.size
+                        res_str = f"{w}x{h}"
                 except Exception as e:
-                    LOGGER_SIM.warning(f"Could not load thumbnail for {path}: {e}")
-
-                child.setText(2, path)
-                child.setData(2, Qt.UserRole, path)
+                    LOGGER_SIM.warning(f"Could not get resolution for {path}: {e}")
+                res_item = QTableWidgetItem(res_str)
+                self.table.setItem(row, 4, res_item)
+    
+                # Score
                 score = scores[j] if j < len(scores) else 0.0
-                child.setText(3, f"{score:.2f}")
-
-            self.tree.expandItem(top)
+                score_item = QTableWidgetItem(f"{score:.2f}")
+                self.table.setItem(row, 5, score_item)
+    
+                row += 1
         self._update_header_counts()
 
-    def _on_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
-        # This signal is for checkbox changes
-        if column == 0:
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() == 0:
             self._update_delete_enabled()
             self._update_status_line()
 
     def _on_selection_changed(self) -> None:
-        # This signal is for row selection changes
-        selected_items = self.tree.selectedItems()
+        selected_indexes = self.table.selectedIndexes()
+        selected_rows = set(index.row() for index in selected_indexes)
         paths = []
-        for item in selected_items:
-            # If a group header is selected, show all its children
-            if item.childCount() > 0:
-                for i in range(item.childCount()):
-                    child_path = item.child(i).data(2, Qt.UserRole)
-                    if child_path:
-                        paths.append(child_path)
-            else: # A file item is selected
-                path = item.data(2, Qt.UserRole)
+        for row in selected_rows:
+            fname_item = self.table.item(row, 2)
+            if fname_item:
+                path = fname_item.data(Qt.UserRole)
                 if path:
                     paths.append(path)
-        self._update_preview_pane(list(set(paths))) # Use set to remove duplicates
+        self._update_preview_pane(list(set(paths)))
 
     def _update_preview_pane(self, paths: List[str]) -> None:
         self.preview_pane.clear()
@@ -550,32 +572,24 @@ class SimilarityManagerDialog(QDialog):
                 LOGGER_SIM.error(f"Failed to load image for preview {path}: {e}")
 
     def _update_delete_enabled(self) -> None:
-        any_checked = False
-        for i in range(self.tree.topLevelItemCount()):
-            group = self.tree.topLevelItem(i)
-            for j in range(group.childCount()):
-                if group.child(j).checkState(0) == Qt.Checked:
-                    any_checked = True
-                    break
-            if any_checked:
-                break
+        any_checked = any(
+            self.table.item(row, 0) and self.table.item(row, 0).checkState() == Qt.Checked
+            for row in range(self.table.rowCount())
+        )
         self.delete_btn.setEnabled(any_checked)
 
     def _update_status_line(self) -> None:
-        checked_count = 0
-        total_files = 0
-        for i in range(self.tree.topLevelItemCount()):
-            group = self.tree.topLevelItem(i)
-            total_files += group.childCount()
-            for j in range(group.childCount()):
-                if group.child(j).checkState(0) == Qt.Checked:
-                    checked_count += 1
+        total_files = self.table.rowCount()
+        checked_count = sum(
+            1 for row in range(total_files)
+            if self.table.item(row, 0) and self.table.item(row, 0).checkState() == Qt.Checked
+        )
         self.status_label.setText(f"{checked_count} of {total_files} files selected for deletion.")
 
     def _update_header_counts(self) -> None:
-        groups = self.tree.topLevelItemCount()
-        files = sum(self.tree.topLevelItem(i).childCount() for i in range(groups))
-        self.header_label.setText(f"Similarity Groups: {groups} — Files: {files}")
+        groups_count = len(self.groups)
+        files_count = sum(len(g.get('paths', [])) for g in self.groups)
+        self.header_label.setText(f"Similarity Groups: {groups_count} — Files: {files_count}")
 
     def _on_refresh(self) -> None:
         algorithm = self.alg_combo.currentText()
@@ -589,51 +603,116 @@ class SimilarityManagerDialog(QDialog):
             }
         }
 
-        # Re-compute and format groups
-        similarity_groups = self._compute_similarity_groups(profile_payload, self.run_paths, self.db_manager)
-        self.groups = self._format_similarity_groups(similarity_groups, self.db_manager)
-        
-        # Repopulate the tree and update UI
-        self._populate_tree()
-        self._update_status_line()
-
-    def _on_refresh(self) -> None:
-        algorithm = self.alg_combo.currentText()
-        threshold = self.threshold_spin.value()
-
-        # Create a profile payload for the computation methods
-        profile_payload = {
-            'similarity': {
-                f'{algorithm}_threshold': threshold,
-                'phash_hash_size': 8,  # Assuming default, can be configurable if needed
-            }
-        }
-
-        # Re-compute and format groups
+        # Re-compute groups
         similarity_groups = self._compute_similarity_groups(profile_payload, self.run_paths, self.db_manager)
         self.groups = self._normalize_groups_input(similarity_groups)
         
-        # Repopulate the tree and update UI
+        # Repopulate the table and update UI
         self._populate_tree()
         self._update_status_line()
 
     def _on_delete_clicked(self) -> None:
-        # Placeholder for delete logic
-        show_selectable_info(self, "Delete", "Delete functionality is not yet implemented.")
-
-    def _configure_initial_splitter_sizes(self) -> None:
-        try:
-            self.splitter.setSizes([self.height() // 4, 3 * self.height() // 4])
-            self.tree_preview_splitter.setSizes([self.width() // 2, self.width() // 2])
-        except Exception as e:
-            LOGGER_SIM.error(f"Failed to set splitter sizes: {e}")
-
-    def _is_separator_item(self, item: QTreeWidgetItem) -> bool:
-        return item.data(0, Qt.UserRole) == "__separator__"
-
-    def _compute_similarity_groups(self, profile_payload: dict, run_paths: list[str], db_mgr) -> list[list[str]]:
         """
-        Compute perceptual hash similarity groups for the scanned paths.
+        Handle the delete button click: confirm and delete selected files, then refresh groups.
+        """
+        checked_paths = self._collect_checked_files()
+        if not checked_paths:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Deletion",
+            f"Are you sure you want to delete {len(checked_paths)} selected files?\n\n"
+            f"Note: If send2trash is not available, this will permanently delete the files.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        success_count = 0
+        failed_files = []
+        for path in checked_paths:
+            try:
+                info = QFileInfo(path)
+                if not info.exists():
+                    LOGGER_SIM.warning(f"File no longer exists: {path}")
+                    continue
+
+                abs_path = str(info.absoluteFilePath())
+                if send2trash:
+                    send2trash(abs_path)
+                else:
+                    os.remove(abs_path)
+
+                # Verify deletion
+                if not QFileInfo(abs_path).exists():
+                    success_count += 1
+                else:
+                    raise Exception("File still exists after attempted deletion")
+            except Exception as e:
+                error_detail = f"{str(e)}\n{traceback.format_exc()}"
+                LOGGER_SIM.error(f"Failed to delete {path}: {error_detail}")
+                failed_files.append((path, error_detail))
+
+        # Provide user feedback
+        if failed_files:
+            error_text = "Some deletions failed:\n\n" + "\n".join([f"{os.path.basename(p)}: {err}" for p, err in failed_files[:5]])  # Limit to 5
+            if len(failed_files) > 5:
+                error_text += f"\n... and {len(failed_files) - 5} more."
+            from src.pk_py_lib.gui.utils.messages import show_selectable_error
+            show_selectable_error(self, "Deletion Partial Failure", error_text)
+
+        if success_count > 0:
+            self._refresh_groups()
+            from src.pk_py_lib.gui.utils.messages import show_selectable_info
+            show_selectable_info(self, "Deletion Successful", f"Deleted {success_count} file(s) successfully.")
+
+        # Clear previews after refresh
+        self._update_preview_pane([])
+
+    def _collect_checked_files(self) -> List[str]:
+        """
+        Collect paths of checked files from the Select column in the table.
+        Returns a list of file paths for selected rows.
+        """
+        checked = []
+        for row in range(self.table.rowCount()):
+            select_item = self.table.item(row, 0)
+            if select_item and select_item.checkState() == Qt.Checked:
+                fname_item = self.table.item(row, 2)
+                if fname_item:
+                    path = fname_item.data(Qt.UserRole)
+                    if isinstance(path, str) and os.path.exists(path):
+                        checked.append(path)
+        return checked
+
+    def _refresh_groups(self) -> None:
+        """
+        Refresh the groups list by removing deleted files and empty groups (less than 2 files).
+        Preserves corresponding scores for surviving files. Repopulates the table and updates UI.
+        """
+        new_groups = []
+        for group in self.groups:
+            paths = group.get('paths', [])
+            scores = group.get('scores', [0.0] * len(paths))
+            surviving = [(p, s) for p, s in zip(paths, scores) if os.path.exists(p)]
+            if len(surviving) >= 2:
+                group_copy = group.copy()
+                group_copy['paths'] = [p for p, s in surviving]
+                group_copy['scores'] = [s for p, s in surviving]
+                new_groups.append(group_copy)
+
+        self.groups = new_groups
+        self._populate_tree()
+        self._update_header_counts()
+        self._update_status_line()
+        self._update_delete_enabled()
+
+    def _compute_similarity_groups(self, profile_payload: dict, run_paths: list[str], db_mgr: Optional[DatabaseManager] = None) -> List[Dict[str, Any]]:
+        """
+        Compute perceptual hash similarity groups for the scanned paths using the library.
+        Returns normalized groups with 'paths' and 'scores'.
         """
         try:
             from src.pk_py_lib.core.image.similarity import compute_phash_batch, find_similar_phash
@@ -641,8 +720,9 @@ class SimilarityManagerDialog(QDialog):
 
             cache_mgr = CacheManager(Path(db_mgr.cache_db).parent) if db_mgr else None
             settings = profile_payload.get('similarity', {})
+            algorithm = self.alg_combo.currentText()
             hash_size = settings.get('phash_hash_size', 8)
-            threshold = settings.get(f'{self.alg_combo.currentText()}_threshold', 10)
+            threshold = settings.get(f'{algorithm}_threshold', 10)
 
             phash_results = compute_phash_batch(
                 paths=run_paths,
@@ -655,107 +735,45 @@ class SimilarityManagerDialog(QDialog):
             if not valid_hashes:
                 return []
 
-            groups = find_similar_phash(
+            raw_groups = find_similar_phash(
                 hashes=valid_hashes,
                 threshold=threshold,
-                settings={'similarity': {f'{self.alg_combo.currentText()}_threshold': threshold}}
+                settings={'similarity': {f'{algorithm}_threshold': threshold}}
             )
 
-            LOGGER.info(f"Computed {len(groups)} similarity groups (threshold={threshold}, valid_images={len(valid_hashes)})")
-            return groups
+            # Normalize to dict format with scores (assuming find_similar_phash returns list of lists of paths; scores computed as hamming distance)
+            normalized_groups = []
+            for group_paths in raw_groups:
+                if len(group_paths) >= 2:
+                    # Compute scores relative to first image
+                    base_hash = next((vh['hash'] for vh in valid_hashes if vh['path'] in group_paths), None)
+                    if base_hash:
+                        group_scores = []
+                        for gp in group_paths:
+                            gh = next((vh['hash'] for vh in valid_hashes if vh['path'] == gp), None)
+                            if gh:
+                                score = similarity.hamming_distance(base_hash, gh)  # Assuming hamming_distance available
+                                group_scores.append(score)
+                            else:
+                                group_scores.append(0.0)
+                        normalized_groups.append({'paths': group_paths, 'scores': group_scores})
+                    else:
+                        normalized_groups.append({'paths': group_paths, 'scores': [0.0] * len(group_paths)})
+
+            LOGGER_SIM.info(f"Computed {len(normalized_groups)} similarity groups (algorithm={algorithm}, threshold={threshold}, valid_images={len(valid_hashes)})")
+            return normalized_groups
         except Exception as e:
-            LOGGER.error("Similarity groups computation failed", exception=e)
+            LOGGER_SIM.error("Similarity groups computation failed", exception=e)
+            from src.pk_py_lib.gui.utils.messages import show_selectable_error
+            show_selectable_error(self, "Computation Error", f"Failed to compute similarity groups: {str(e)}")
             return []
 
     def _configure_initial_splitter_sizes(self) -> None:
+        """
+        Configure initial sizes for the vertical and horizontal splitters.
+        """
         try:
             self.splitter.setSizes([self.height() // 4, 3 * self.height() // 4])
-            self.tree_preview_splitter.setSizes([self.width() // 2, self.width() // 2])
+            self.tree_preview_splitter.setSizes([self.width() * 2 // 3, self.width() // 3])  # More space for table
         except Exception as e:
             LOGGER_SIM.error(f"Failed to set splitter sizes: {e}")
-
-    def _is_separator_item(self, item: QTreeWidgetItem) -> bool:
-        return item.data(0, Qt.UserRole) == "__separator__"
-
-    def _compute_similarity_groups(self, profile_payload: dict, run_paths: list[str], db_mgr) -> list[list[str]]:
-        """
-        Compute perceptual hash similarity groups for the scanned paths.
-        """
-        try:
-            from src.pk_py_lib.core.image.similarity import compute_phash_batch, find_similar_phash
-            from src.pk_py_lib.core.cache import CacheManager
-
-            cache_mgr = CacheManager(Path(db_mgr.cache_db).parent) if db_mgr else None
-            settings = profile_payload.get('similarity', {})
-            hash_size = settings.get('phash_hash_size', 8)
-            threshold = settings.get(f'{self.alg_combo.currentText()}_threshold', 10)
-
-            phash_results = compute_phash_batch(
-                paths=run_paths,
-                hash_size=hash_size,
-                settings={'criteria': {'phash': {'hash_size': hash_size}}},
-                cache_manager=cache_mgr
-            )
-
-            valid_hashes = [{'path': path, 'hash': phash} for path, phash in phash_results.items() if phash is not None]
-            if not valid_hashes:
-                return []
-
-            groups = find_similar_phash(
-                hashes=valid_hashes,
-                threshold=threshold,
-                settings={'similarity': {f'{self.alg_combo.currentText()}_threshold': threshold}}
-            )
-
-            LOGGER.info(f"Computed {len(groups)} similarity groups (threshold={threshold}, valid_images={len(valid_hashes)})")
-            return groups
-        except Exception as e:
-            LOGGER.error("Similarity groups computation failed", exception=e)
-            return []
-
-    def _format_similarity_groups(self, groups: list[list[str]], db_mgr) -> list[dict]:
-        """
-        Format similarity path groups into the standard groups_data structure for dialogs.
-        """
-        if not groups or not db_mgr:
-            return []
-
-        try:
-            with db_mgr.get_connection(db_mgr.cache_db) as conn:
-                all_paths = [path for group in groups for path in group]
-                
-                formatted_groups = []
-                for idx, group_paths in enumerate(groups, 1):
-                    if len(group_paths) < 2:
-                        continue
-
-                    placeholders = ",".join("?" for _ in group_paths)
-                    sql = f"""
-                        SELECT file_path, file_size, file_modified, pool
-                        FROM image_metadata
-                        WHERE file_path IN ({placeholders})
-                        ORDER BY file_path
-                    """
-                    rows = conn.execute(sql, group_paths).fetchall()
-
-                    files = []
-                    for row in rows:
-                        files.append({
-                            "path": str(row["file_path"]),
-                            "size": int(row["file_size"] or 0),
-                            "modified": int(row["file_modified"] or 0),
-                            "pool": str(row["pool"] or "A")
-                        })
-
-                    if len(files) >= 2:
-                        formatted_groups.append({
-                            "hash": f"perceptual_group_{idx}",
-                            "count": len(files),
-                            "files": files
-                        })
-
-            LOGGER.debug(f"Formatted {len(formatted_groups)} similarity groups from {len(groups)} raw groups")
-            return formatted_groups
-        except Exception as e:
-            LOGGER.error("Formatting similarity groups failed", exception=e)
-            return []
