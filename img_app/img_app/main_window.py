@@ -1517,11 +1517,12 @@ class MainWindow(QMainWindow):
                 # Compute perceptual hash groups for similarity mode
                 threshold = payload_for_mode.get('similarity', {}).get('phash_threshold', 10)
                 similarity_groups = self._compute_similarity_groups(payload_for_mode, run_paths, db_mgr)
-                groups_data = summary.get('groups_data', []) or self._format_similarity_groups(similarity_groups, db_mgr)
+                groups_data = similarity_groups
                 logger.info(f"Groups data prepared: {len(groups_data)} groups")
                 settings_sim = payload_for_mode.get('similarity', {}) if isinstance(payload_for_mode, dict) else {}
                 dlg = SimilarityManagerDialog(
                     groups=groups_data,
+                    paths=run_paths,
                     summary_text=text,
                     report_text=report_text,
                     db_manager=db_mgr,
@@ -2637,7 +2638,8 @@ class MainWindow(QMainWindow):
                 # Create temp table for current run paths (reuse logic from _get_duplicate_groups_single_pool)
                 conn.execute("CREATE TEMP TABLE IF NOT EXISTS temp_run_files (file_path TEXT PRIMARY KEY)")
                 conn.execute("DELETE FROM temp_run_files")
-                conn.executemany("INSERT OR IGNORE INTO temp_run_files(file_path) VALUES (?)", [(p,) for p in groups[0]])  # All paths in groups are from run_paths
+                all_paths = [path for group in groups for path in group]
+                conn.executemany("INSERT OR IGNORE INTO temp_run_files(file_path) VALUES (?)", [(p,) for p in all_paths])
 
                 formatted_groups = []
                 for idx, group_paths in enumerate(groups, 1):
