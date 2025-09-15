@@ -1919,7 +1919,7 @@ Implemented in [MainWindow._setup_menu_bar()](img_app/img_app/main_window.py:283
 16.7 Architectural alignment
 - Data locations and DB topology are canonical; cache.db resides under user_cache_dir. See [CACHE_SCHEMA](src/pk_py_lib/core/database.py:149).
 - The application bootstrap ensures managers exist and are attached to the main window before menu actions are used; see [app.main()](img_app/img_app/app.py:70).
-- The cache cleanliness of on-disk thumbnails is governed by the library’s file-backed cache policy (LRU, size triggers); DB “Clean” focuses on metadata integrity, not disk pruning.
+- The cache cleanliness of on-disk thumbnails is governed by the library's file-backed cache policy (LRU, size triggers); DB "Clean" focuses on metadata integrity, not disk pruning.
 
 Acceptance summary (this section)
 - Standard menu bar (File, Cache, View, Help) implemented in [MainWindow._setup_menu_bar()](img_app/img_app/main_window.py:283).
@@ -1927,3 +1927,168 @@ Acceptance summary (this section)
 - Cache → Clear (DB reset) and Cache → Clean (validate-and-prune + VACUUM) implemented.
 - About dialog shows selectable text with name/version and robust fallbacks.
 - Error handling and dialogs use reusable, selectable utilities with stderr diagnostics.
+
+## Image Similarity Detection
+
+### Usage
+The image similarity detection feature allows users to identify visually similar images within scanned collections using perceptual hashing (pHash for DCT-based or wHash for wavelet-based similarity). It supports interactive exploration in the GUI and can be invoked during file traversal for on-the-fly computation. Key usage patterns include:
+
+#### Traversal with Hash Computation
+To compute hashes during directory scanning, use `scan_directory` from `core/filesystem/traversal.py` with `compute_hashes=True`:
+
+```python
+from src.pk_py_lib.core.filesystem.traversal import scan_directory
+from src.pk_py_lib.core.database import DatabaseManager
+from src.pk_py_lib.core.cache import CacheManager
+from pathlib import Path
+
+db = DatabaseManager()
+cache = CacheManager(Path.home() / ".cache")
+settings = {"similarity": {"enabled_algorithms": ["phash"], "phash_threshold": 10}}
+
+root = Path("/photos")
+results = scan_directory(
+    root,
+    patterns=None,  # Defaults to image extensions
+    compute_hashes=True,
+    algorithms=["phash"],  # Or ["whash"] or both
+    db_manager=db,
+    cache_manager=cache,
+    settings=settings
+)
+
+# Results: List[Dict] with 'path', 'size', 'modified_time', 'extension', 'hashes' (e.g., {'phash': 'a1b2c3d4e5f67890'})
+for res in results:
+    print(f"{res['path']}: {res.get('hashes', {}).get('phash', 'No hash')}")
+```
+
+- Hashes are computed for image extensions (jpg, png, etc.) and stored in `image_metadata` and `image_hashes` tables.
+- Caching avoids recomputation; errors (e.g., corrupted images) are logged and skipped.
+- Output: Returns file info with 'hashes' dict; singletons without hashes if computation fails.
+
+#### GUI Mode ('similarity')
+In the DuplicateManagerDialog, set `mode='similarity'` to enable similarity detection:
+
+```python
+from img_app.img_app.widgets.duplicate_manager import DuplicateManagerDialog
+from src.pk_py_lib.core.database import DatabaseManager
+
+db = DatabaseManager()
+dialog = DuplicateManagerDialog(
+    mode='similarity',
+    db_manager=db,
+    settings_manager=None,  # Uses defaults: phash_threshold=10
+    paths=["/photos"]  # Optional: scan if hashes missing
+)
+dialog.exec()
+```
+
+- UI: Adds algorithm combo (pHash/wHash), threshold spinbox (0-64), refresh button.
+- Tree: Groups by similarity (transitive ≤ threshold), columns for preview (64x64 thumbnail), path, score (Hamming distance).
+- Behavior: Queries DB for hashes, groups via `find_similar_phash`/`find_similar_whash`, supports deletion (Recycle Bin).
+- Defaults: pHash threshold 10 (~similar), wHash 12; overrides via settings.
+
+### API Examples
+#### Hash Computation (from similarity.py)
+```python
+from src.pk_py_lib.core.image import similarity
+from src.pk_py_lib.core.cache import CacheManager
+
+cache = CacheManager(Path.home() / ".cache")
+settings = {"criteria": {"phash": {"hash_size": 16}}}
+
+# Single image
+phash = similarity.compute_phash("/img.jpg", hash_size=8, settings=settings, cache_manager=cache)
+print(phash)  # 'a1b2c3d4e5f67890'
+
+# Batch
+paths = ["/img1.jpg", "/img2.jpg"]
+hashes = similarity.compute_phash_batch(paths, settings=settings, cache_manager=cache)
+print(hashes)  # {'/img1.jpg': 'a1b2...', '/img2.jpg': None}  # None on failure
+```
+
+#### Grouping
+```python
+hashes = [
+    {"path": "/img1.jpg", "hash": "0000000000000000"},
+    {"path": "/img2.jpg", "hash": "0000000000000001"},
+    {"path": "/img3.jpg", "hash": "1111111111111111"}
+]
+groups = similarity.find_similar_phash(hashes, threshold=1, settings={"similarity": {"phash_threshold": 1}})
+print(groups)  # [['/img1.jpg', '/img2.jpg']]  # Groups ≥2 only
+```
+
+- Threshold: Lower = stricter (0=exact); defaults from settings (10 for pHash).
+- Transitive: Chains of ≤ threshold form groups.
+
+### Integration Notes
+- **Database Storage**: Hashes persist in `image_hashes` (image_id FK to `image_metadata`), queried for grouping. See schema in [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md).
+- **Settings Overrides**: `hash_size` from `criteria.phash.hash_size` (default 8); thresholds from `similarity.phash_threshold` (default 10). Algorithms via `similarity.enabled_algorithms` (default ['phash']).
+- **Caching**: 1-day TTL via CacheManager; key="path:phash". Batch progress logged.
+- **Error Handling**: InvalidImageError for corrupted/unsupported formats; SimilarityError for computation failures. GUI/DB errors shown selectably; continues on skips.
+- **Edge Cases**: Non-images skipped; empty scans return []; invalid thresholds raise ValueError; >1000 images warn on O(n²). Color variants for RGB sensitivity.
+- **PoC Considerations**: Sequential processing; no parallelism/perf tests. Brute-force suitable <1000 images; future LSH/ANN for scale.
+- **Cross-References**: Algorithm details [docs/roo/img-similarity-details.md](docs/roo/img-similarity-details.md); UI integration [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md); tests in [docs/roo/img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md).
+
+## Database Migration
+
+### Automatic Migration
+The application automatically handles database schema migrations during initialization via the `DatabaseManager.initialize()` method in [src/pk_py_lib/core/database.py](src/pk_py_lib/core/database.py). This includes:
+
+- Querying the current schema version from the `meta` table (e.g., `SELECT value FROM meta WHERE key='schema_version'`).
+- If the version is less than 1.3.0 or the `meta` table is missing:
+  - Ensures the `meta` table exists.
+  - Creates the `image_hashes` table if it does not exist (non-destructively with CREATE IF NOT EXISTS):
+    ```
+    CREATE TABLE IF NOT EXISTS image_hashes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        image_id INTEGER NOT NULL,
+        algorithm TEXT NOT NULL CHECK (algorithm IN ('phash', 'whash')),
+        hash_value TEXT NOT NULL,
+        computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (image_id) REFERENCES image_metadata (id) ON DELETE CASCADE,
+        UNIQUE(image_id, algorithm),
+        INDEX idx_hashes_image (image_id),
+        INDEX idx_hashes_algorithm_value (algorithm, hash_value)
+    );
+    ```
+  - Updates the schema version in the `meta` table to 1.3.0 using UPSERT (INSERT OR REPLACE).
+- Logs migration steps: e.g., "Starting migration from version X to 1.3.0", "Migration to 1.3.0 completed successfully".
+- Errors during migration raise `DatabaseMigrationError` with details (target version and underlying sqlite3.Error).
+
+This process is idempotent and non-destructive. The migration for 1.3.0 now properly triggers for versions < 1.3.0 (including unknown versions via broadened checks), ensures the image_hashes table and indexes, and syncs both settings.db and cache.db versions to 1.3.0 without data loss. It eliminates the "Unknown schema version" warning on app start.
+
+The migration is triggered automatically on app startup or when `DatabaseManager` is initialized. No user intervention is required unless errors occur.
+
+### Manual Migration Advice
+If the "Unknown schema version" warning persists after automatic migration:
+
+- Delete cache.db and restart the app; it will recreate with the 1.3.0 schema automatically.
+- Or, connect to the database using SQLite (e.g., `sqlite3 cache.db`) and run:
+  ```
+  CREATE TABLE IF NOT EXISTS image_hashes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      image_id INTEGER NOT NULL,
+      algorithm TEXT NOT NULL CHECK (algorithm IN ('phash', 'whash')),
+      hash_value TEXT NOT NULL,
+      computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (image_id) REFERENCES image_metadata (id) ON DELETE CASCADE,
+      UNIQUE(image_id, algorithm),
+      INDEX idx_hashes_image (image_id),
+      INDEX idx_hashes_algorithm_value (algorithm, hash_value)
+  );
+
+  INSERT OR REPLACE INTO meta (key, value, notes, updated_at) VALUES ('schema_version', '1.3.0', 'Manual migration to 1.3.0', CURRENT_TIMESTAMP);
+  ```
+  - Verify: `SELECT * FROM meta WHERE key='schema_version';` should return '1.3.0'.
+  - Restart the app to confirm no warnings.
+
+For more details on the schema, see the `CACHE_SCHEMA` in [src/pk_py_lib/core/database.py](src/pk_py_lib/core/database.py). If the database is corrupted, the app will log errors and may prompt for rebuild (cache.db is safe to delete; settings.db backups are preserved).
+
+### Migration Verification
+To verify the migration has succeeded:
+
+- For cache.db: Run `sqlite3 cache.db "SELECT * FROM meta WHERE key='schema_version';"` and expect output showing 'schema_version' with value '1.3.0'.
+- For settings.db: Run `sqlite3 settings.db "SELECT * FROM meta WHERE key='schema_version';"` and expect the same.
+- Programmatically: `pdm run python -c "from src.pk_py_lib.core.database import DatabaseManager; db = DatabaseManager(); print(db.get_version(db.cache_db)); print(db.get_version(db.settings_db))"` should output '1.3.0' for both.
+- For manual verification or reset: Delete the .db files (cache.db and/or settings.db) and restart the app; it will recreate them with version 1.3.0 and the image_hashes table in cache.db. No warning should appear on app start, and logs should show migration steps.

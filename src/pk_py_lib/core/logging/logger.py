@@ -13,6 +13,7 @@ import time
 import threading
 from pathlib import Path
 from contextlib import contextmanager
+import sys
 
 
 class LogLevel(Enum):
@@ -228,8 +229,38 @@ class PKLogger:
         """Log warning message."""
         self._log(LogLevel.WARNING, message, **kwargs)
     
-    def error(self, message: str, exception: Optional[Exception] = None, **kwargs) -> None:
-        """Log error message."""
+    def error(
+        self,
+        message: str,
+        exception: Optional[Exception] = None,
+        exc_info: bool = False,
+        **kwargs
+    ) -> None:
+        """
+        Log error message with support for both explicit exceptions and exc_info.
+
+        This method allows logging errors in two ways:
+        - Provide an explicit 'exception' parameter for a specific exception instance.
+        - Use 'exc_info=True' to automatically capture the current exception from the call stack
+          using sys.exc_info()[1] if no explicit exception is provided.
+
+        If both 'exception' and 'exc_info=True' are provided, the explicit 'exception' takes precedence.
+        This follows a similar pattern to Python's standard logging module but adapted for our LogEntry structure.
+
+        Args:
+            message: The primary error message to log.
+            exception: An optional explicit Exception instance to include in the log entry.
+            exc_info: If True and no exception is provided, captures the current exception.
+            **kwargs: Additional keyword arguments passed to the underlying _log method and LogEntry.
+
+        Note: When exc_info=True, sys.exc_info()[1] retrieves the active exception instance.
+              This is useful for logging exceptions from try-except blocks without explicitly passing the exception.
+        """
+        # Handle exc_info=True by capturing current exception if none provided
+        if exc_info and exception is None:
+            # sys.exc_info()[1] gets the current exception instance (index 1 is the exception object)
+            exception = sys.exc_info()[1]
+
         self._log(LogLevel.ERROR, message, exception=exception, **kwargs)
     
     def critical(self, message: str, exception: Optional[Exception] = None, **kwargs) -> None:

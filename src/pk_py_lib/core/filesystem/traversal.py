@@ -14,8 +14,17 @@ from collections import defaultdict, Counter
 from dataclasses import dataclass
 
 from ..logging import get_logger
+from ..image import similarity
+from ..database import DatabaseManager
+from ..cache import CacheManager
+import hashlib
+
+# Logger instance 'log = get_logger(__name__)' is used for consistent logging throughout the module, including DB storage errors in scan_directory
 
 log = get_logger(__name__)
+
+# Image file extensions for similarity hash computation
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.heif', '.heic'}
 
 
 @dataclass
@@ -658,20 +667,229 @@ def walk_files(
    )
 
 
+def compute_exact_hash(path: Path) -> str:
+    """Compute SHA256 hash of file content in 64KB chunks for large files."""
+    hasher = hashlib.sha256()
+    with open(path, 'rb') as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+def scan_directory(
+    roots: Union[Path, List[Path]],
+    patterns: Optional[List[str]] = None,
+    compute_hashes: bool = False,
+    exact_grouping: bool = False,
+    algorithms: Optional[List[str]] = None,
+    db_manager: Optional[DatabaseManager] = None,
+    cache_manager: Optional[CacheManager] = None,
+    settings: Optional[Dict[str, Any]] = None,
+    **walk_kwargs
+) -> Dict[str, Any]:
+    """
+    Scan a directory for image files and optionally compute perceptual hashes.
+ 
+    Extends directory traversal to collect file metadata and compute/store similarity
+    hashes (pHash/wHash) for images during scanning. Uses existing walk_files for
+    efficient traversal with filtering. Results include basic file info and optional
+    hashes dict. Hashes are stored in DB/cache if managers provided.
+ 
+    Args:
+        root (Path): Root directory to scan.
+        patterns (Optional[List[str]]): Glob patterns for files (default: image extensions).
+        compute_hashes (bool): If True, compute perceptual hashes for images (default: False).
+        algorithms (Optional[List[str]]): Algorithms to compute ('phash', 'whash'; default from settings or ['phash']).
+        db_manager (Optional[DatabaseManager]): For storing metadata/hashes in cache.db.
+        cache_manager (Optional[CacheManager]): For caching computed hashes.
+        settings (Optional[Dict[str, Any]]): Settings dict; if algorithms None, uses settings['similarity']['enabled_algorithms'].
+        **walk_kwargs: Additional kwargs passed to walk_files (e.g., exclude_patterns, max_depth).
+ 
+    Returns:
+        List[Dict[str, Any]]: List of file dicts with keys: 'path' (str), 'size' (int),
+            'modified_time' (float), 'extension' (str), and if compute_hashes: 'hashes' (Dict[str, str]).
+ 
+    Raises:
+        SimilarityError: If hash computation fails for an image (logged, but scan continues).
+        ValueError: If invalid algorithms or root not dir.
+ 
+    Example:
+        >>> results = scan_directory(Path("/photos"), compute_hashes=True, algorithms=['phash'])
+        >>> for res in results:
+        ...     print(res['path'], res.get('hashes', {}).get('phash'))
+        /photos/img1.jpg a1b2c3d4e5f67890
+        /photos/img2.jpg b2c3d4e5f6789012
+ 
+    Note:
+        - Only image files (by extension) are included unless patterns override.
+        - DB storage: Upserts image_metadata by file_path, then image_hashes by algorithm.
+        - Logging: Progress for hash computation; errors per file.
+        - PoC: Sequential; no parallelism. Mime-type via extension check.
+    """
+    # Normalize roots to list
+    if isinstance(roots, Path):
+        roots = [roots]
+    elif not isinstance(roots, list):
+        raise TypeError("roots must be a Path or list of Path objects")
+
+    # Validate at least one valid root
+    valid_roots = [r for r in roots if r.exists() and r.is_dir()]
+    if not valid_roots:
+        raise ValueError(f"No valid root directories provided: {roots}")
+
+    # Default to image patterns if none provided
+    if patterns is None:
+        patterns = [f"*{ext}" for ext in IMAGE_EXTENSIONS]
+
+    # Resolve algorithms
+    if algorithms is None:
+        if settings and 'similarity' in settings:
+            algorithms = settings['similarity'].get('enabled_algorithms', ['phash'])
+        else:
+            algorithms = ['phash']
+    algorithms = [alg.lower() for alg in algorithms if alg.lower() in ['phash', 'whash']]
+
+    if not algorithms:
+        raise ValueError("No valid algorithms specified")
+
+    # Traverse for files (images if patterns default, all if None)
+    all_paths = []
+    for root_path in roots:
+        paths = list(DirectoryTraversal.walk_files(root_path, patterns=patterns, **walk_kwargs))
+        all_paths.extend(paths)
+    # Deduplicate paths (rare, but possible with overlapping roots)
+    unique_paths = list({p.as_posix(): p for p in all_paths}.values())
+ 
+    results: List[Dict[str, Any]] = []
+    error_details: List[Dict[str, Any]] = []
+    file_count = len(unique_paths)
+    log.info(f"Scanning {file_count} files from {len(roots)} roots")
+ 
+    groups: Dict[str, List[str]] = defaultdict(list) if exact_grouping else None
+
+    for path in unique_paths:
+        try:
+            file_info = FileInfo.from_path(path)
+            if file_info.size == 0:
+                continue  # Skip empty/broken files
+ 
+            # Always compute exact SHA256 hash
+            try:
+                exact_hash = compute_exact_hash(path)
+            except Exception as e:
+                import traceback
+                error_details.append({
+                    'path': str(path),
+                    'error': str(e),
+                    'traceback': traceback.format_exc()
+                })
+                exact_hash = None
+
+            result: Dict[str, Any] = {
+                'path': str(path),
+                'size': file_info.size,
+                'modified_time': file_info.modified_time,
+                'extension': file_info.extension,
+                'exact_hash': exact_hash,
+            }
+
+            if compute_hashes and file_info.extension in IMAGE_EXTENSIONS:
+                hashes: Dict[str, str] = {}
+                for alg in algorithms:
+                    try:
+                        if alg == 'phash':
+                            hash_val = similarity.compute_phash(str(path), settings=settings, cache_manager=cache_manager)
+                        elif alg == 'whash':
+                            hash_val = similarity.compute_whash(str(path), settings=settings, cache_manager=cache_manager)
+                        else:
+                            continue
+                        hashes[alg] = hash_val
+                    except similarity.SimilarityError as e:
+                        log.error(f"Hash computation failed for {path} ({alg}): {e}")
+                        continue  # Skip this algorithm, continue with others
+
+                if hashes:
+                    result['hashes'] = hashes
+
+            # Store metadata and exact hash in DB always if manager provided
+            if db_manager and exact_hash:
+                try:
+                    with db_manager.get_connection(db_manager.cache_db) as conn:
+                        # Determine primary hash and algorithm: prefer perceptual if computed, fallback to exact
+                        primary_hash = exact_hash
+                        primary_alg = 'sha256'
+                        if 'hashes' in result and result['hashes']:
+                            # Prioritize first perceptual alg (e.g., 'phash')
+                            first_alg = next(iter(result['hashes']))
+                            primary_hash = result['hashes'][first_alg]
+                            primary_alg = first_alg
+                            log.debug(f"Using perceptual hash {primary_alg} for {path}")
+
+                        # Single upsert to image_metadata with unified hash/algorithm
+                        conn.execute("""
+                            INSERT OR REPLACE INTO image_metadata (
+                                file_path, file_name, extension, file_size, file_modified,
+                                file_hash_sha256, algorithm, last_scanned, is_valid
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 1)
+                        """, (str(path), path.name, file_info.extension, file_info.size, file_info.modified_time,
+                              primary_hash, primary_alg))
+                        log.debug(f"Stored metadata for {path} with algorithm='{primary_alg}', hash={primary_hash[:8]}...")
+                except Exception as e_db:
+                    log.error(f"DB storage failed for {path}: {e_db}", exc_info=True)
+                    error_details.append({
+                        'path': str(path),
+                        'error': f"DB storage failed: {str(e_db)}",
+                        'traceback': traceback.format_exc()
+                    })
+ 
+            results.append(result)
+        except Exception as e:
+            import traceback
+            log.error(f"Error processing {path}: {e}", exc_info=True)
+            error_details.append({
+                'path': str(path),
+                'error': str(e),
+                'traceback': traceback.format_exc()
+            })
+            continue
+
+    # Build exact groups if requested
+    if exact_grouping:
+        for f in results:
+            eh = f.get('exact_hash')
+            if eh:
+                groups[eh].append(f)
+        # Filter empty groups
+        groups = {h: fs for h, fs in groups.items() if len(fs) > 1}
+
+    log.info(f"Scan complete: {len(results)} files processed, exact hashes computed")
+    if exact_grouping:
+        total_grouped_files = sum(len(g) for g in groups.values())
+        log.info(f"Exact groups: {len(groups)} groups with {total_grouped_files} files")
+    if compute_hashes:
+        perceptual_count = sum(1 for r in results if 'hashes' in r)
+        log.info(f"Perceptual hash computation complete: {perceptual_count} images processed")
+
+    return {
+        'files': results,
+        'exact_groups': dict(groups) if exact_grouping else None,
+        'error_details': error_details
+    }
+
+
 def validate_paths(paths: List[Path]) -> List[str]:
-   """
-   Validate that paths exist and are accessible.
-   
-   Args:
-       paths: List of paths to validate
-       
-   Returns:
-       List of error messages for invalid paths, empty list if all valid
-   """
-   errors = []
-   for path in paths:
-       if not path.exists():
-           errors.append(f"Path does not exist: {path}")
-       elif not os.access(str(path), os.R_OK):
-           errors.append(f"Path is not readable: {path}")
-   return errors
+    """
+    Validate that paths exist and are accessible.
+    
+    Args:
+        paths: List of paths to validate
+        
+    Returns:
+        List of error messages for invalid paths, empty list if all valid
+    """
+    errors = []
+    for path in paths:
+        if not path.exists():
+            errors.append(f"Path does not exist: {path}")
+        elif not os.access(str(path), os.R_OK):
+            errors.append(f"Path is not readable: {path}")
+    return errors

@@ -6,7 +6,7 @@ authors = [
     {name = "Paul Kirkaas", email = "pkirkaas@gmail.com"},
 ]
 dependencies = [
-    "pillow>=10.0.0",           # Image loading/saving
+    "pillow>=10.4.0",           # Image loading/saving
     "numpy>=1.24.0",            # Array operations
     "watchdog>=3.0.0",          # Cross-platform file monitoring
     "rich>=13.0.0",             # Rich terminal output and formatting
@@ -17,7 +17,8 @@ dependencies = [
     "tqdm>=4.66.0",             # Progress bars
     "opencv-python>=4.8.0",     # Advanced image processing
     "scikit-image>=0.22.0",     # Image algorithms
-    "imagehash>=4.3.0",         # Perceptual hashing
+    "imagehash>=4.3.1",         # Perceptual hashing (aHash, dHash, pHash)
+    "PyWavelets>=1.5.0",        # Wavelet transforms for wHash
     "send2trash>=1.8.0",        # Safe file deletion to trash
     "exifread>=3.0.0",          # EXIF data reading
     "pillow-heif>=0.13.0",      # HEIF image support

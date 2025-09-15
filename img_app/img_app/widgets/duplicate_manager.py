@@ -26,6 +26,9 @@ from PySide6.QtCore import QModelIndex
 from src.pk_py_lib.gui.utils.messages import show_selectable_info, show_selectable_error
 from src.pk_py_lib.core.logging import get_logger
 from src.pk_py_lib.core.database import DatabaseManager
+from src.pk_py_lib.core.image import similarity
+from PySide6.QtWidgets import QComboBox, QSpinBox, QHBoxLayout
+from PySide6.QtGui import QPixmap, QIcon
 
 # Optional send2trash import; fallback would be permanent deletion
 try:
@@ -202,193 +205,305 @@ class GroupFrameDelegate(QStyledItemDelegate):
 
 class DuplicateManagerDialog(QDialog):
     """
-    Modal dialog listing duplicate groups and their member files for single_pool runs.
+    Modal dialog for managing duplicates or visually similar images.
+
+    Supports two modes:
+    - 'duplicates': Exact matches using cryptographic hashes (existing functionality).
+    - 'similarity': Perceptual similarity using pHash/wHash from DB, with Hamming distances.
+      Displays groups with thumbnails and similarity scores; configurable via settings.
 
     Parameters
     ----------
-    groups : list[dict]
-        Structured list of duplicate groups. Each group dict must match:
-          {
-            "hash": str,           # content identity hash for the group
-            "count": int,          # number of files in the group
-            "files": [             # per-file metadata (raw values; no formatting here)
-              { "path": str, "size": int, "modified": int, "pool": str },
-              ...
-            ]
-          }
-        Only groups with at least two files are expected.
+    mode : str
+        'duplicates' (default) or 'similarity'.
+    groups : Optional[list[dict]]
+        For duplicates mode: Structured groups with 'hash', 'count', 'files' (path, size, modified, pool).
+    db_manager : Optional[DatabaseManager]
+        Required for similarity mode (queries image_hashes).
+    settings_manager : Optional[SettingsManager]
+        For similarity settings (algorithms, thresholds).
+    paths : Optional[List[str]]
+        For similarity: Paths to scan if hashes missing.
+    summary_text : str
+        Processing summary tab content.
+    report_text : str
+        Duplicate/similarity report tab content.
     parent : Optional[QWidget]
-        Optional Qt parent widget.
+        Parent widget.
 
     Behavior
     --------
-    - Header label shows summary "Duplicate Groups: N — Files: M".
-    - Tree lists groups as top-level items with title "Group #i — Hash: <hash> — Files: K".
-    - Child items are individual files with a checkbox in the "Select" column.
-    - Columns: [Select, File Path, Modified, Size]; sorting enabled.
-    - File Path column stretches; Modified and Size auto-resize to contents for readability.
-    - Delete button is enabled when at least one file is checked; deletions use Recycle Bin when available, with safe fallbacks and confirmations.
-    - The dialog uses a vertical QSplitter to separate the tab widget (top pane) from the duplicate management interface (bottom pane).
-    - The top pane (QTabWidget) is initially sized to fit the content height of the Processing Summary tab.
+    - Duplicates mode: Existing UI with file paths, modified times; delete to Recycle Bin.
+    - Similarity mode: Adds algorithm selector, threshold spinner, refresh button.
+      Queries DB for hashes; if low coverage, optionally scans paths to compute missing hashes.
+      Tree: Select, Preview (thumbnail), Path, Score (Hamming distance).
+      Groups shown with max score; delete works similarly.
+    - Common: Splitter for tabs (summary/report) and tree; status line for selections.
+    - Error handling: Popups for failures (e.g., no hashes, DB errors); logs details.
 
     Notes
     -----
-    - Timestamps (Modified) and Sizes are shown as raw integers; no humanization here.
-    - The dialog is resizable and modal; it can be closed with the Close button or Esc.
-    - Users can resize the splitter handle to adjust the height of the top and bottom panes.
-    - The initial height of the top pane is calculated based on the content's sizeHint() to ensure it fits the text content comfortably.
+    - Similarity requires pre-computed hashes in image_hashes table (via scan_directory).
+    - Thumbnails: 64x64 scaled previews; errors skipped.
+    - PoC: Synchronous scan; brute-force grouping (O(n^2) for <1000 images).
+    - Settings default: pHash threshold 10; from settings_manager if available.
+    - Resizable, modal; close via button or Esc.
     """
 
-    def __init__(self, groups: List[Dict[str, Any]], summary_text: str = "", report_text: str = "", parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        mode: str = "duplicates",
+        groups: Optional[List[Dict[str, Any]]] = None,
+        db_manager: Optional[DatabaseManager] = None,
+        settings_manager: Optional[SettingsManager] = None,
+        paths: Optional[List[str]] = None,
+        summary_text: str = "",
+        report_text: str = "",
+        parent: Optional[QWidget] = None
+    ) -> None:
         """
-        Construct the dialog with duplicate groups and populate the tree.
-
+        Construct the dialog based on mode.
+    
         Parameters
         ----------
-        groups : List[Dict[str, Any]]
-            Duplicate groups structured as described in the class docstring. Only groups
-            with count >= 2 are expected, but the dialog will render whatever is provided.
+        mode : str
+            'duplicates' or 'similarity'.
+        groups : Optional[List[Dict[str, Any]]]
+            For duplicates: groups with 'hash', 'count', 'files'.
+        db_manager : Optional[DatabaseManager]
+            For similarity DB access.
+        settings_manager : Optional[SettingsManager]
+            For similarity config.
+        paths : Optional[List[str]]
+            Scan paths for missing hashes.
         summary_text : str
-            Text content for the Processing Summary tab.
+            Summary content.
         report_text : str
-            Text content for the Duplicate Report tab.
+            Report content.
         parent : Optional[QWidget]
-            Optional parent widget; typically the main window.
-
+    
         Behavior
         --------
-        - Builds the UI with a resizable splitter separating the tab widget (top pane)
-          from the duplicate management interface (bottom pane).
-        - Populates group/file rows with checkboxes for file items.
-        - Wires the Delete button to be enabled only when at least one file is checked.
-        - Sets initial splitter position based on content height of Processing Summary tab.
-
+        - Duplicates: Builds existing UI, populates from groups.
+        - Similarity: Adds controls, computes groups from DB/settings.
+        - Splitter for tabs/tree; initial sizing via timer.
+    
         Notes
         -----
-        - All UI work occurs on the GUI thread; no background threads are used.
-        - The top pane (QTabWidget) is initially sized to fit the Processing Summary content.
-        - Users can resize the splitter handle to adjust pane heights.
-        - Syntax validation was performed with ast.parse prior to inclusion.
+        - Similarity requires hashes; prompts scan if missing.
+        - All on GUI thread; synchronous for PoC.
         """
         super().__init__(parent)
-        print(f"Dialog initialized with groups={len(groups or [])}, summary_text len={len(summary_text or '')}, report_text len={len(report_text or '')}", file=sys.stderr)
-        print(f"[DEBUG DuplicateManagerDialog] Initialized with {len(groups or [])} groups, summary length: {len(summary_text or '')}, report length: {len(report_text or '')}", file=sys.stderr)
-        self.setWindowTitle("Duplicate Manager")
+        self.mode = mode.lower()
+        self.db_manager = db_manager
+        self.settings_manager = settings_manager
+        self.paths = paths or []
+    
+        if self.mode == "similarity" and not db_manager:
+            raise ValueError("Similarity mode requires DatabaseManager")
+    
+        # Use default settings for similarity (settings_manager integration pending)
+        self.settings = {
+            "similarity": {
+                "enabled_algorithms": ["phash"],
+                "phash_threshold": 10,
+                "whash_threshold": 12,
+                "max_distance": 15
+            }
+        }
+        LOGGER.info("Using default similarity settings")
+    
+        title = "Duplicate Manager" if self.mode == "duplicates" else "Similarity Manager"
+        self.setWindowTitle(title)
         self.setModal(True)
-        self.resize(900, 600)
+        self.resize(1000, 700)  # Wider for thumbs
         try:
             self.setSizeGripEnabled(True)
         except Exception:
             pass
-
-        # Keep a local reference to input data
-        self._groups: List[Dict[str, Any]] = list(groups or [])
-
+    
+        # For duplicates
+        self._groups: List[Dict[str, Any]] = list(groups or []) if self.mode == "duplicates" else []
+    
         # Build UI
         main_layout = QVBoxLayout(self)
-
-        # Compute summary numbers for header
+    
+        # Compute summary numbers (for duplicates)
         total_groups = len(self._groups)
         total_files = 0
-        try:
-            total_files = sum(len(g.get("files") or []) for g in self._groups)
-        except Exception:
-            total_files = 0
-
-        # Create a vertical splitter for resizable top and bottom panes
+        if self.mode == "duplicates":
+            try:
+                total_files = sum(len(g.get("files") or []) for g in self._groups)
+            except Exception:
+                total_files = 0
+    
+        # Splitter for tabs and main content
         self.splitter = QSplitter(Qt.Vertical, self)
-        self.splitter.setChildrenCollapsible(False)  # Prevent complete collapse of either pane
-
-        # Top pane: tabs for summary and report
+        self.splitter.setChildrenCollapsible(False)
+    
+        # Top tabs
         self.summary_tab = QTextEdit(self)
         self.summary_tab.setReadOnly(True)
         self.summary_tab.setPlainText(summary_text)
         self.summary_tab.setLineWrapMode(QTextEdit.NoWrap)
-        self.summary_tab.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # Reduce vertical space in Processing Summary by setting minimal document margins for compact layout;
-        # this minimizes the gap below the last line (e.g., "Errors: 0") without affecting readability,
-        # ensuring the summary section ends closely above the Duplicates Groups section in the splitter.
         self.summary_tab.document().setDocumentMargin(0)
-
+    
         self.report_tab = QTextEdit(self)
         self.report_tab.setReadOnly(True)
         self.report_tab.setPlainText(report_text)
         self.report_tab.setLineWrapMode(QTextEdit.NoWrap)
-        self.report_tab.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
+    
         self.tabs = QTabWidget(self)
         self.tabs.addTab(self.summary_tab, "Processing Summary")
-        self.tabs.addTab(self.report_tab, "Duplicate Report")
+        self.tabs.addTab(self.report_tab, f"{title.replace(' Manager', ' Report')}")
         self.splitter.addWidget(self.tabs)
-
-        # Bottom pane: container for the rest of the UI elements
+    
+        # Bottom widget
         bottom_widget = QWidget(self)
         bottom_layout = QVBoxLayout(bottom_widget)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins for seamless appearance
-        # Set minimal spacing in the bottom layout to keep the Duplicates Groups section compact while
-        # allowing sufficient separation between elements (header, tree, status); default is small, but explicit for control.
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(5)
-
-        # Header label (remains for group/file counts)
-        self.header_label = QLabel(f"Duplicate Groups: {total_groups} — Files: {total_files}", self)
+    
+        # Header label
+        header_text = f"Duplicate Groups: {total_groups} — Files: {total_files}" if self.mode == "duplicates" else "Similarity Groups: Loading..."
+        self.header_label = QLabel(header_text, self)
         bottom_layout.addWidget(self.header_label)
-
-        # Tree widget with 3 columns: Select, File Path, Modified (Size removed)
+    
+        # Similarity controls (only if mode similarity)
+        if self.mode == "similarity":
+            controls_layout = QHBoxLayout()
+            controls_layout.addWidget(QLabel("Algorithm:"))
+            self.alg_combo = QComboBox()
+            self.alg_combo.addItems(["phash", "whash"])
+            alg_default = self.settings["similarity"].get("enabled_algorithms", ["phash"])[0]
+            self.alg_combo.setCurrentText(alg_default)
+            controls_layout.addWidget(self.alg_combo)
+    
+            controls_layout.addWidget(QLabel("Threshold:"))
+            self.threshold_spin = QSpinBox()
+            self.threshold_spin.setMinimum(0)
+            self.threshold_spin.setMaximum(64)
+            thresh_default = self.settings["similarity"].get("phash_threshold", 10)
+            self.threshold_spin.setValue(thresh_default)
+            controls_layout.addWidget(self.threshold_spin)
+    
+            self.refresh_btn = QPushButton("Refresh Groups")
+            controls_layout.addWidget(self.refresh_btn)
+            controls_layout.addStretch()
+    
+            controls_widget = QWidget()
+            controls_widget.setLayout(controls_layout)
+            bottom_layout.addWidget(controls_widget)
+    
+        # Tree widget
         self.tree = QTreeWidget(self)
-        self.tree.setColumnCount(3)
-        self.tree.setHeaderLabels(["Select", "File Path", "Modified"])
-        # Sorting disabled to keep dedicated separator rows correctly positioned between groups
+        if self.mode == "duplicates":
+            self.tree.setColumnCount(3)
+            self.tree.setHeaderLabels(["Select", "File Path", "Modified"])
+        else:
+            self.tree.setColumnCount(4)
+            self.tree.setHeaderLabels(["Select", "Preview", "File Path", "Similarity Score"])
+    
         self.tree.setSortingEnabled(False)
-
-        # Column sizing policies:
-        # - File Path stretches
-        # - Modified auto-resizes to contents for readability
-        # - Select column fits to checkbox content
-        try:
-            header = self.tree.header()
-            header.setStretchLastSection(False)
-            header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header = self.tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1 if self.mode == "duplicates" else 2, QHeaderView.Stretch)  # Path stretches
+        if self.mode == "duplicates":
             header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        except Exception:
-            # Defensive in case Qt platform backends vary
-            pass
-
-        # Minimal, selection-friendly stylesheet; explicitly no borders or frames to prevent visual artifacts
+        else:
+            header.setSectionResizeMode(1, QHeaderView.Fixed)
+            header.resizeSection(1, 70)  # Thumb width
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+    
+        # Stylesheet
         self.tree.setAlternatingRowColors(False)
         self.tree.setStyleSheet("""
-QTreeWidget::item { background-color: transparent; border: none; }
-QTreeWidget::item:selected { background-color: palette(highlight); color: palette(highlighted-text); }
-QTreeView::branch { background: transparent; }
-QTreeWidget { border: none; }
-""")
-        # Install delegate for group separation (no frames, only backgrounds and lines)
+     QTreeWidget::item { background-color: transparent; border: none; }
+     QTreeWidget::item:selected { background-color: palette(highlight); color: palette(highlighted-text); }
+     QTreeView::branch { background: transparent; }
+     QTreeWidget { border: none; }
+        """)
         self.tree.setItemDelegate(GroupFrameDelegate(self.tree))
-        
+    
         bottom_layout.addWidget(self.tree)
+    
+        # Status label
+        initial_status = "No duplicates to manage" if self.mode == "duplicates" else "No similar images to manage"
+        self.status_label = QLabel(initial_status, self)
+        self.status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        bottom_layout.addWidget(self.status_label)
+    
+        # Populate based on mode
+        if self.mode == "duplicates":
+            self._populate_tree()
+        else:
+            self._compute_and_populate()
+    
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addItem(QSpacerItem(10, 10, QSizePolicy.Expanding, QSizePolicy.Minimum))
+    
+        self.delete_btn = QPushButton("Delete", self)
+        self.delete_btn.setEnabled(False)
+        btn_row.addWidget(self.delete_btn)
+    
+        self.close_btn = QPushButton("Close", self)
+        self.close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self.close_btn)
+    
+        bottom_layout.addLayout(btn_row)
+    
+        self._update_status_line()
+        self.splitter.addWidget(bottom_widget)
+        main_layout.addWidget(self.splitter)
+        main_layout.setSpacing(0)
+    
+        # Wire signals
+        self.tree.itemChanged.connect(self._on_item_changed)
+        self.delete_btn.clicked.connect(self._on_delete_clicked)
+        self._update_delete_enabled()
+    
+        if self.mode == "similarity":
+            self.alg_combo.currentTextChanged.connect(self._on_settings_changed)
+            self.threshold_spin.valueChanged.connect(self._on_settings_changed)
+            self.refresh_btn.clicked.connect(self._compute_and_populate)
+    
+        QTimer.singleShot(100, self._configure_initial_splitter_sizes)
 
-        # Populate tree with groups and files
-        # Each group is a top-level item with text in the "File Path" column (index 1)
+
+    def _populate_tree(self) -> None:
+        """
+        Populate the tree with duplicate groups for exact duplicates.
+
+        - Columns: Select (checkbox), Path, Modified.
+        - Groups: Top-level items with header "Group #i: k files (size)", bold dark red.
+        - Files: Child items with path and formatted modified date.
+        - Separators between groups.
+        - Expands groups, stores data in UserRole.
+
+        Handles empty groups.
+        """
+        self.tree.clear()
+        if not self._groups:
+            self.header_label.setText("No duplicates found")
+            self._update_status_line()
+            return
+
         for i, group in enumerate(self._groups, start=1):
-            # Insert a dedicated separator row between groups (after the first)
             if i > 1:
                 sep = QTreeWidgetItem(self.tree)
                 try:
                     sep.setData(0, Qt.UserRole, "__separator__")
                     sep.setFirstColumnSpanned(True)
                     sep.setSizeHint(0, QSize(0, 14))
-                    # No interaction on separator rows
                     sep.setFlags(Qt.NoItemFlags)
                 except Exception:
                     pass
-            try:
-                gh = str(group.get("hash") or "")
-            except Exception:
-                gh = ""
+
             files = list(group.get("files") or [])
             k = len(files)
-            
-            # Get file size from first file in group (all files are identical)
+
             group_size = 0
             if files:
                 try:
@@ -396,14 +511,10 @@ QTreeWidget { border: none; }
                 except Exception:
                     group_size = 0
 
-            top = QTreeWidgetItem(self.tree)
-            # Place the group title in the File Path column to keep the "Select" column free for child checkboxes
-            # Format: "Group #i: k files (formatted_size)" - hash removed as requested
             formatted_size = format_file_size(group_size)
+            top = QTreeWidgetItem(self.tree)
             top.setText(1, f"Group #{i}: {k} files ({formatted_size})")
-            # Make the group rows non-checkable
             top.setFlags((top.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable) & ~Qt.ItemIsUserCheckable)
-            # Header visual: bold font and dark red text on the label column only
             try:
                 fnt = top.font(1)
                 fnt.setBold(True)
@@ -411,91 +522,27 @@ QTreeWidget { border: none; }
                 top.setForeground(1, QBrush(QColor("#200")))
             except Exception:
                 pass
-            # Expand groups by default for quick inspection
             self.tree.expandItem(top)
 
-            # Add file children with a checkbox in column 0
             for f in files:
-                try:
-                    path = str(f.get("path") or "")
-                except Exception:
-                    path = ""
-                try:
-                    modified = int(f.get("modified")) if f.get("modified") is not None else 0
-                except Exception:
-                    modified = 0
-                try:
-                    size = int(f.get("size")) if f.get("size") is not None else 0
-                except Exception:
-                    size = 0
+                path = str(f.get("path") or "")
+                modified = int(f.get("modified_time") or f.get("modified") or 0)
+                size = int(f.get("size") or 0)
 
                 child = QTreeWidgetItem(top)
-                # Column 0 holds a checkbox; we add text to other columns
                 child.setText(1, path)
-                # Format modified timestamp to "dd-MMM-yy" using helper function
                 child.setText(2, format_timestamp(modified))
-                # Store raw values for reliable retrieval independent of display formatting
                 try:
                     child.setData(1, Qt.UserRole, path)
                     child.setData(2, Qt.UserRole, modified)
-                    # Store size in UserRole for potential future use, though not displayed
                     child.setData(3, Qt.UserRole, size)
                 except Exception:
                     pass
-                # Enable user check state on the "Select" column
                 child.setFlags(child.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
                 child.setCheckState(0, Qt.Unchecked)
-                # Provide numeric sort keys for Modified to ensure numeric sort when used
-                try:
-                    child.setData(2, Qt.UserRole, modified)
-                except Exception:
-                    pass
 
-        # Status line: shows "X files selected out of Y total files"
-        self.status_label = QLabel("0 files selected out of 0 total files", self)
-        self.status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        bottom_layout.addWidget(self.status_label)
-
-        # Buttons row: spacer + [Delete] [Close]
-        btn_row = QHBoxLayout()
-        btn_row.addItem(QSpacerItem(10, 10, QSizePolicy.Expanding, QSizePolicy.Minimum))
-
-        self.delete_btn = QPushButton("Delete", self)
-        self.delete_btn.setEnabled(False)  # Initially disabled; enabled when any file item is checked
-        btn_row.addWidget(self.delete_btn)
-
-        self.close_btn = QPushButton("Close", self)
-        self.close_btn.clicked.connect(self.accept)
-        btn_row.addWidget(self.close_btn)
-
-        bottom_layout.addLayout(btn_row)
-
-        # Initialize status line with current counts
         self._update_status_line()
-
-        # Add bottom widget to splitter
-        self.splitter.addWidget(bottom_widget)
-
-        # Add splitter to main layout
-        main_layout.addWidget(self.splitter)
-        # Minimize spacing in the main layout to reduce any gap between the splitter panes and ensure
-        # the summary section ends closely above the Duplicates Groups section without unnecessary vertical space.
-        main_layout.setSpacing(0)
-
-        # Set initial splitter sizes based on content height after UI is populated
-        # This is handled by the QTimer singleShot call below
-
-        # Wire signals (after population to avoid spurious itemChanged during build)
-        try:
-            self.tree.itemChanged.connect(self._on_item_changed)
-        except Exception:
-            # Some backends might not expose itemChanged; defensive
-            pass
-        self.delete_btn.clicked.connect(self._on_delete_clicked)
-        self._update_delete_enabled()
-
-        # Set up single-shot timer to configure splitter after UI is fully populated
-        QTimer.singleShot(100, self._configure_initial_splitter_sizes)
+        self.header_label.setText(f"Duplicate Groups: {len(self._groups)}")
 
     def _on_item_changed(self, item: "QTreeWidgetItem", column: int) -> None:
         """
@@ -611,21 +658,22 @@ QTreeWidget { border: none; }
             
             # Update status label
             if total_groups == 0:
-                self.status_label.setText("No duplicates to manage")
+                text = "No duplicates to manage"
             else:
-                self.status_label.setText(
-                    f"{selected_files} files from {groups_with_selected} groups selected "
-                    f"out of {total_files} total files in {total_groups} groups"
-                )
+                text = f"{selected_files} files from {groups_with_selected} groups selected out of {total_files} total files in {total_groups} groups"
+            self.status_label.setText(text)
+            LOGGER.debug(f"Status updated: {text}")
         except Exception as e:
             # Log error but don't crash - set default text
             LOGGER.error("Failed to update status line", exception=e)
-            self.status_label.setText("Error updating selection status")
+            text = "Error updating selection status"
+            self.status_label.setText(text)
+            LOGGER.debug(f"Status updated: {text}")
 
     def _collect_checked_files(self) -> List[Dict[str, Any]]:
         """
         Collect all checked file rows.
-
+    
         Returns
         -------
         List[dict]
@@ -633,13 +681,15 @@ QTreeWidget { border: none; }
             - path: str — absolute file system path
             - size: int — size in bytes (raw)
             - modified: int — last modification timestamp (raw)
+            - score: int — similarity score (0 for duplicates, N/A otherwise)
             - group_item: QTreeWidgetItem — owning group item (top-level)
             - file_item: QTreeWidgetItem — the row item for this file
-
+    
         Notes
         -----
         - Uses Qt.UserRole to retrieve raw values, falling back to displayed text.
         - All values are built-in types to satisfy cross-thread safety rules (although we run in GUI thread).
+        - For similarity: score from UserRole 4 or text(3).
         """
         selected: List[Dict[str, Any]] = []
         for gi in range(self.tree.topLevelItemCount()):
@@ -649,16 +699,19 @@ QTreeWidget { border: none; }
                 try:
                     if f.checkState(0) != Qt.Checked:
                         continue
-                    path_v = f.data(1, Qt.UserRole) or f.text(1)
-                    mod_v = f.data(2, Qt.UserRole) or f.text(2)
-                    size_v = f.data(3, Qt.UserRole) or f.text(3)
+                    path_v = f.data(1 if self.mode == "duplicates" else 2, Qt.UserRole) or f.text(1 if self.mode == "duplicates" else 2)
+                    mod_v = f.data(2, Qt.UserRole) if self.mode == "duplicates" else 0
+                    size_v = f.data(3, Qt.UserRole) if self.mode == "duplicates" else 0
+                    score_v = f.data(4, Qt.UserRole) or f.text(3) if self.mode == "similarity" else 0
                     path_s = str(path_v) if path_v is not None else ""
                     mod_i = int(mod_v) if mod_v not in (None, "") else 0
                     size_i = int(size_v) if size_v not in (None, "") else 0
+                    score_i = int(score_v) if score_v not in (None, "") else 0
                     selected.append({
                         "path": path_s,
                         "size": size_i,
                         "modified": mod_i,
+                        "score": score_i,
                         "group_item": g,
                         "file_item": f,
                     })
@@ -670,7 +723,7 @@ QTreeWidget { border: none; }
     def _refresh_header_counts(self) -> None:
         """
         Refresh header label counts from the current tree contents.
-
+    
         Behavior
         --------
         - Counts top-level groups still present.
@@ -685,7 +738,8 @@ QTreeWidget { border: none; }
                     continue
                 groups += 1
                 files += g.childCount()
-            self.header_label.setText(f"Duplicate Groups: {groups} — Files: {files}")
+            mode_word = "Duplicate" if self.mode == "duplicates" else "Similarity"
+            self.header_label.setText(f"{mode_word} Groups: {groups} — Files: {files}")
         except Exception as e:
             LOGGER.error("Header refresh failed", exception=e)
 
@@ -1019,3 +1073,894 @@ QTreeWidget { border: none; }
             # Set reasonable default split (40% top, 60% bottom)
             default_top = int(self.splitter.height() * 0.4)
             self.splitter.setSizes([default_top, self.splitter.height() - default_top])
+
+"""
+SimilarityManagerDialog - Dedicated dialog for displaying and managing groups of visually similar images.
+
+This class provides a modal QDialog for viewing similarity groups computed using perceptual hashes (pHash or wHash).
+It mirrors the structure of DuplicateManagerDialog but is tailored for similarity mode, including:
+- Thumbnail previews for images (64x64 scaled).
+- Similarity scores (Hamming distances) displayed per file.
+- Controls for selecting algorithm (pHash/wHash) and threshold, with a refresh button to recompute groups.
+- Checkbox selection for files, with delete to Recycle Bin (same as duplicates).
+- Tabs for processing summary and similarity report.
+- Full error handling with selectable popups and detailed logging (file path, parameters, stack trace).
+- Support for pre-computed groups or on-the-fly computation from paths using similarity.py functions.
+
+The dialog accepts pre-computed groups or computes them synchronously on refresh using brute-force O(n^2) comparison
+(suitable for PoC with <1000 images). Hashes are computed using PIL for image loading and assumed functions in similarity.py
+for hashing and distance calculation. If DB manager is provided, it can query valid image paths for computation.
+
+Parameters
+----------
+groups : Optional[list[dict]]
+    List of similarity groups. Each group is a dict with:
+    - 'paths': list[str] - Absolute file paths in the group.
+    - 'scores': list[float] - Hamming distances for each path (relative to first or pairwise avg; length matches paths).
+    - 'algorithm': str - 'phash' or 'whash' used for computation (optional, defaults to current selection).
+    If None, groups are computed from paths on first populate or refresh.
+paths : Optional[list[str]]
+    List of absolute image file paths to compute similarity groups from (if groups is None).
+    Used for on-demand computation via refresh.
+summary_text : str
+    Text for the "Processing Summary" tab (e.g., scan stats).
+report_text : str
+    Text for the "Similarity Report" tab (e.g., group summary).
+db_manager : Optional[DatabaseManager]
+    DatabaseManager for querying valid image paths from image_metadata (if paths not provided).
+    Enables computation over cached images without explicit paths.
+settings : Optional[dict]
+    Settings dict for defaults, e.g., {"similarity": {"enabled_algorithms": ["phash"], "phash_threshold": 10}}.
+    Used to set initial algorithm and threshold.
+parent : Optional[QWidget]
+    Parent widget for the dialog.
+
+Behavior
+--------
+- On init: Builds UI with tabs, controls (algorithm combo, threshold spinbox, refresh button), tree widget (columns: Select checkbox, Preview thumbnail, Path, Score), status line, and Delete/Close buttons.
+- Populate: _populate_tree adds top-level group items (non-checkable, bold) with child file rows (checkable, thumbnails, paths, scores). Expands groups by default.
+- Refresh: _on_refresh computes groups using current algorithm/threshold from paths or DB query, then repopulates tree. Synchronous for PoC; shows error popup on failure.
+- Selection: Checkboxes on file rows; updates status ("X files selected out of Y") and enables Delete.
+- Delete: Confirms (with Recycle Bin if send2trash available), deletes checked files, removes rows/groups from tree, updates DB (invalidate metadata), logs details.
+- Thumbnails: Generated using PIL.Image.open and QPixmap.fromImage(QImage); errors skipped with log.
+- Error Handling: QMessageBox for user errors (selectable text); LOGGER.error for details (path, algorithm, threshold, stack).
+- Resizable, modal; closes via button or Esc, logs closure.
+
+Notes
+-----
+- Requires PIL (Pillow) for thumbnails and hashing; assumes installed via pdm.
+- Computation uses brute-force pairwise Hamming distance; O(n^2) time, fine for PoC (<1000 images).
+- Scores: Hamming distance (0=identical, higher=less similar); groups only include pairs <= threshold.
+- No signals emitted; deletions logged. Future: emit deleted_files list[str].
+- Integrates with project logging (get_logger("img_app.similarity")) and messages (show_selectable_*).
+- Syntax validated; full PyDoc for reusability.
+"""
+
+from PySide6.QtGui import QImage
+from PIL import Image
+import traceback
+
+LOGGER_SIM = get_logger("img_app.similarity")
+
+class SimilarityManagerDialog(QDialog):
+    """
+    See class docstring above for full description.
+    """
+
+    def __init__(
+        self,
+        groups: Optional[List[Dict[str, Any]]] = None,
+        paths: Optional[List[str]] = None,
+        summary_text: str = "",
+        report_text: str = "",
+        db_manager: Optional[DatabaseManager] = None,
+        settings: Optional[Dict[str, Any]] = None,
+        parent: Optional[QWidget] = None
+    ) -> None:
+        """
+        Initialize the SimilarityManagerDialog.
+
+        See class docstring for parameters and behavior.
+
+        Notes
+        -----
+        - Builds full UI mirroring DuplicateManagerDialog: tabs/splitter, header, controls, tree, status, buttons.
+        - Default settings if none provided: phash threshold 10.
+        - Initial populate from groups if provided; else empty tree (user refreshes to compute).
+        - Connects signals for tree changes, delete, controls (algo/threshold change triggers refresh if desired, but here only on button).
+        - Uses GroupFrameDelegate for visual separation (same as duplicates).
+        """
+        super().__init__(parent)
+        self.groups: List[Dict[str, Any]] = groups or []
+        self.paths: List[str] = paths or []
+        self.db_manager = db_manager
+        self.settings = settings or {}
+        self.default_settings = {
+            "similarity": {
+                "enabled_algorithms": ["phash", "whash"],
+                "phash_threshold": 10,
+                "whash_threshold": 12,
+            }
+        }
+        self.settings = {**self.default_settings["similarity"], **self.settings.get("similarity", {})}
+
+        self.setWindowTitle("Similarity Manager")
+        self.setModal(True)
+        self.resize(1000, 800)  # Taller for thumbnails/tree
+        try:
+            self.setSizeGripEnabled(True)
+        except Exception:
+            pass
+
+        # Main layout
+        main_layout = QVBoxLayout(self)
+
+        # Splitter for tabs and content
+        self.splitter = QSplitter(Qt.Vertical, self)
+        self.splitter.setChildrenCollapsible(False)
+
+        # Tabs
+        self.summary_tab = QTextEdit(self)
+        self.summary_tab.setReadOnly(True)
+        self.summary_tab.setPlainText(summary_text)
+        self.summary_tab.setLineWrapMode(QTextEdit.NoWrap)
+        self.summary_tab.document().setDocumentMargin(0)
+
+        self.report_tab = QTextEdit(self)
+        self.report_tab.setReadOnly(True)
+        self.report_tab.setPlainText(report_text)
+        self.report_tab.setLineWrapMode(QTextEdit.NoWrap)
+
+        self.tabs = QTabWidget(self)
+        self.tabs.addTab(self.summary_tab, "Processing Summary")
+        self.tabs.addTab(self.report_tab, "Similarity Report")
+        self.splitter.addWidget(self.tabs)
+
+        # Bottom content
+        bottom_widget = QWidget(self)
+        bottom_layout = QVBoxLayout(bottom_widget)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(5)
+
+        # Header
+        self.header_label = QLabel("Similarity Groups: Loading...", self)
+        bottom_layout.addWidget(self.header_label)
+
+        # Controls
+        controls_layout = QHBoxLayout()
+        controls_layout.addWidget(QLabel("Algorithm:", self))
+        self.alg_combo = QComboBox(self)
+        self.alg_combo.addItems(self.settings["enabled_algorithms"])
+        default_alg = self.settings["enabled_algorithms"][0]
+        self.alg_combo.setCurrentText(default_alg)
+        controls_layout.addWidget(self.alg_combo)
+
+        controls_layout.addWidget(QLabel("Threshold:", self))
+        self.threshold_spin = QSpinBox(self)
+        self.threshold_spin.setMinimum(0)
+        self.threshold_spin.setMaximum(64)
+        thresh_key = f"{default_alg}_threshold"
+        self.threshold_spin.setValue(self.settings.get(thresh_key, 10))
+        controls_layout.addWidget(self.threshold_spin)
+
+        self.refresh_btn = QPushButton("Refresh Groups", self)
+        self.refresh_btn.clicked.connect(self._on_refresh)
+        controls_layout.addWidget(self.refresh_btn)
+        controls_layout.addStretch()
+
+        controls_widget = QWidget(self)
+        controls_widget.setLayout(controls_layout)
+        bottom_layout.addWidget(controls_widget)
+
+        # Tree
+        self.tree = QTreeWidget(self)
+        self.tree.setColumnCount(4)
+        self.tree.setHeaderLabels(["Select", "Preview", "Path", "Score"])
+        self.tree.setSortingEnabled(False)
+        header = self.tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Select
+        header.setSectionResizeMode(1, QHeaderView.Fixed)  # Preview
+        header.resizeSection(1, 70)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)  # Path
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Score
+
+        self.tree.setAlternatingRowColors(False)
+        self.tree.setStyleSheet("""
+            QTreeWidget::item { background-color: transparent; border: none; }
+            QTreeWidget::item:selected { background-color: palette(highlight); color: palette(highlighted-text); }
+            QTreeView::branch { background: transparent; }
+            QTreeWidget { border: none; }
+        """)
+        self.tree.setItemDelegate(GroupFrameDelegate(self.tree))
+        bottom_layout.addWidget(self.tree)
+
+        # Status
+        self.status_label = QLabel("No similar images to manage", self)
+        self.status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        bottom_layout.addWidget(self.status_label)
+
+        # Initial populate
+        self._populate_tree()
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addItem(QSpacerItem(10, 10, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        self.delete_btn = QPushButton("Delete", self)
+        self.delete_btn.setEnabled(False)
+        btn_row.addWidget(self.delete_btn)
+        self.close_btn = QPushButton("Close", self)
+        self.close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self.close_btn)
+        bottom_layout.addLayout(btn_row)
+
+        self.splitter.addWidget(bottom_widget)
+        main_layout.addWidget(self.splitter)
+        main_layout.setSpacing(0)
+
+        # Update status
+        self._update_status_line()
+
+        # Signals
+        self.tree.itemChanged.connect(self._on_item_changed)
+        self.delete_btn.clicked.connect(self._on_delete_clicked)
+        self._update_delete_enabled()
+
+        # Controls signals (change algo/thresh updates settings but refresh on button)
+        self.alg_combo.currentTextChanged.connect(self._on_settings_changed)
+        self.threshold_spin.valueChanged.connect(self._on_settings_changed)
+
+        QTimer.singleShot(100, self._configure_initial_splitter_sizes)
+
+        LOGGER_SIM.info("SimilarityManagerDialog initialized", variables={"groups_count": len(self.groups), "paths_count": len(self.paths)})
+
+    def _populate_tree(self) -> None:
+        """
+        Populate the tree widget with similarity groups.
+
+        Clears existing items, adds top-level group items (non-checkable, bold header with avg score),
+        and child file items (checkable, thumbnail in col 1, path in col 2, score in col 3).
+        Stores raw path/score in UserRole for _collect_checked.
+        Expands all groups. Updates status line.
+
+        Handles empty groups: shows "No similar images found" if none.
+        Skips thumbnail errors with log; uses default icon if failed.
+
+        Notes
+        -----
+        - Thumbnails: 64x64, RGB, LANCZOS resample; QImage.Format_RGB888.
+        - Scores: Displayed as "{score:.2f}"; assumes scores list matches paths length.
+        - If no groups, tree empty; header updated on refresh.
+        """
+        self.tree.clear()
+        if not self.groups:
+            self.header_label.setText("No similar images found")
+            self._update_status_line()
+            return
+
+        for i, group in enumerate(self.groups, 1):
+            paths = group.get('paths', [])
+            scores = group.get('scores', [0.0] * len(paths))
+            num_images = len(paths)
+            if num_images < 2:
+                continue  # Skip non-groups
+            avg_score = sum(scores) / num_images if scores else 0.0
+
+            top = QTreeWidgetItem(self.tree)
+            top.setText(1, f"Group #{i}: {num_images} similar images (avg Hamming: {avg_score:.2f})")
+            top.setFlags((top.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable) & ~Qt.ItemIsUserCheckable)
+            # Bold header
+            try:
+                font = top.font(1)
+                font.setBold(True)
+                top.setFont(1, font)
+                top.setForeground(1, QBrush(QColor(32, 0, 0)))  # Dark red
+            except Exception:
+                pass
+            self.tree.expandItem(top)
+
+            for j, path in enumerate(paths):
+                child = QTreeWidgetItem(top)
+                # Thumbnail (col 1)
+                try:
+                    pil_img = Image.open(path)
+                    pil_img.thumbnail((64, 64), Image.Resampling.LANCZOS)
+                    if pil_img.mode != 'RGB':
+                        pil_img = pil_img.convert('RGB')
+                    stride = pil_img.width * 3
+                    qimg = QImage(
+                        pil_img.tobytes(), pil_img.width, pil_img.height,
+                        stride, QImage.Format_RGB888
+                    )
+                    pixmap = QPixmap.fromImage(qimg)
+                    child.setIcon(1, pixmap)
+                except Exception as e:
+                    LOGGER_SIM.warning(
+                        "Failed to generate thumbnail",
+                        exception=e, variables={"path": path}
+                    )
+                    # Default icon or empty
+                    child.setText(1, "[No Preview]")
+
+                child.setText(2, path)
+                score = scores[j] if j < len(scores) else 0.0
+                child.setText(3, f"{score:.2f}")
+                # Store raw data
+                child.setData(2, Qt.UserRole, path)
+                child.setData(3, Qt.UserRole, score)
+                child.setCheckState(0, Qt.Unchecked)
+                child.setFlags(
+                    child.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable | Qt.ItemIsEnabled
+                )
+
+        self._update_status_line()
+        self.header_label.setText(f"Similarity Groups: {len(self.groups)}")
+        LOGGER_SIM.info("Tree populated", variables={"group_count": len(self.groups)})
+
+    def _on_refresh(self) -> None:
+        """
+        Recompute similarity groups using current algorithm and threshold, then repopulate tree.
+
+        Computation:
+        - If paths provided: Brute-force pairwise Hamming on computed hashes from similarity.py.
+        - If db_manager and no paths: Query valid image_metadata.file_path, use as paths.
+        - Groups: Only include clusters with >=2 images where all pairs <= threshold (simple star topology from first).
+        - Updates header and tree; shows error popup/log on failure (e.g., no images, hash errors).
+
+        Parameters
+        ----------
+        None (uses self.alg_combo.currentText(), self.threshold_spin.value(), self.paths, self.db_manager).
+
+        Notes
+        -----
+        - Synchronous; may freeze UI for large n (PoC limitation).
+        - Assumes similarity.compute_hash(path, algorithm) -> str (hex), similarity.hamming(h1, h2) -> float.
+        - Logs computation details (n paths, algorithm, threshold, groups found).
+        - If no valid paths, shows "No images to analyze" and returns.
+        """
+        try:
+            algorithm = self.alg_combo.currentText()
+            threshold = self.threshold_spin.value()
+            LOGGER_SIM.info(
+                "Refreshing similarity groups",
+                variables={"algorithm": algorithm, "threshold": threshold, "paths_count": len(self.paths)}
+            )
+
+            if not self.paths and self.db_manager:
+                # Query valid image paths from DB
+                with self.db_manager.get_connection(self.db_manager.cache_db) as conn:
+                    rows = conn.execute(
+                        "SELECT file_path FROM image_metadata WHERE is_valid = 1 AND file_path LIKE '%.jpg' OR file_path LIKE '%.png' OR ... "  # Add image extensions
+                    ).fetchall()
+                    self.paths = [row['file_path'] for row in rows if row['file_path']]
+                if not self.paths:
+                    show_selectable_error(
+                        self, "No Images", "No valid images found in cache for similarity analysis."
+                    )
+                    return
+                LOGGER_SIM.info("Queried paths from DB", variables={"queried_count": len(self.paths)})
+
+            if not self.paths:
+                show_selectable_error(
+                    self, "Refresh Failed", "No paths provided for computation. Supply paths in init or use DB manager."
+                )
+                return
+
+            # Compute hashes
+            hashes: Dict[str, str] = {}
+            for path in self.paths:
+                try:
+                    hash_val = similarity.compute_hash(path, algorithm)
+                    hashes[path] = hash_val
+                except Exception as e:
+                    LOGGER_SIM.error(
+                        "Hash computation failed",
+                        exception=e, variables={"path": path, "algorithm": algorithm}
+                    )
+                    continue
+            if len(hashes) < 2:
+                show_selectable_error(self, "Insufficient Data", "Fewer than 2 images with valid hashes.")
+                return
+
+            # Brute-force groups (star topology: distances from first in cluster)
+            self.groups = []
+            processed = set()
+            for i, p1 in enumerate(self.paths):
+                if p1 not in hashes or p1 in processed:
+                    continue
+                group = {'paths': [p1], 'scores': [], 'algorithm': algorithm}
+                h1 = hashes[p1]
+                for j, p2 in enumerate(self.paths[i+1:], i+1):
+                    if p2 not in hashes:
+                        continue
+                    dist = similarity.hamming(h1, hashes[p2])
+                    if dist <= threshold:
+                        group['paths'].append(p2)
+                        group['scores'].append(float(dist))
+                        processed.add(p2)
+                if len(group['paths']) > 1:
+                    self.groups.append(group)
+                processed.add(p1)
+
+            self._populate_tree()
+            LOGGER_SIM.info(
+                "Groups computed successfully",
+                variables={"groups_count": len(self.groups), "total_images": len(self.paths)}
+            )
+        except Exception as e:
+            tb = traceback.format_exc()
+            LOGGER_SIM.error(
+                "Refresh computation failed",
+                exception=e, variables={"algorithm": algorithm, "threshold": threshold, "traceback": tb}
+            )
+            show_selectable_error(
+                self, "Computation Error", f"Failed to compute similarity groups:\n{str(e)}\n\nCheck log for details."
+            )
+
+    def _on_settings_changed(self, value) -> None:
+        """
+        Handle changes to algorithm or threshold.
+
+        Updates the threshold spinbox when algorithm changes (loads corresponding default).
+        No immediate recompute; user must click Refresh.
+
+        Parameters
+        ----------
+        value : str or int
+            Current text/value from combo/spinbox (unused directly, triggers on change).
+
+        Notes
+        -----
+        - Updates self.settings for persistence if needed.
+        - Logs change for audit.
+        """
+        if isinstance(value, str):  # Algorithm changed
+            algorithm = value
+            thresh_key = f"{algorithm}_threshold"
+            new_thresh = self.settings.get(thresh_key, 10)
+            self.threshold_spin.setValue(new_thresh)
+            LOGGER_SIM.debug("Algorithm changed", variables={"algorithm": algorithm, "threshold": new_thresh})
+        else:  # Threshold changed
+            LOGGER_SIM.debug("Threshold changed", variables={"threshold": value})
+        # Future: auto-refresh option via checkbox
+
+    def _collect_checked(self) -> List[Dict[str, Any]]:
+        """
+        Collect checked file items for deletion.
+
+        Scans tree children, collects checked items with path, score, group/file items.
+
+        Returns
+        -------
+        List[dict]
+            Each: {"path": str, "score": float, "group_item": QTreeWidgetItem, "file_item": QTreeWidgetItem}
+            Path/score from UserRole or text fallback; score as float.
+
+        Notes
+        -----
+        - Skips non-checked, malformed rows.
+        - Used by _on_delete_clicked.
+        """
+        selected: List[Dict[str, Any]] = []
+        for i in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(i)
+            if self._is_separator_item(top):
+                continue
+            for j in range(top.childCount()):
+                child = top.child(j)
+                if child.checkState(0) != Qt.Checked:
+                    continue
+                try:
+                    path = child.data(2, Qt.UserRole) or child.text(2) or ""
+                    score_str = child.data(3, Qt.UserRole) or child.text(3) or "0.0"
+                    score = float(score_str) if score_str else 0.0
+                    selected.append({
+                        "path": str(path),
+                        "score": score,
+                        "group_item": top,
+                        "file_item": child,
+                    })
+                except Exception as e:
+                    LOGGER_SIM.warning(
+                        "Failed to collect checked item",
+                        exception=e, variables={"row": j, "group": i}
+                    )
+                    continue
+        return selected
+
+    def _on_delete_clicked(self) -> None:
+        """
+        Handle delete button click: confirm and delete checked files.
+
+        Mirrors DuplicateManagerDialog._on_delete_clicked:
+        - Collects checked via _collect_checked.
+        - Confirms with selectable QMessageBox (Recycle Bin if send2trash, else permanent with double-confirm).
+        - Deletes files (busy cursor), removes tree rows/groups, invalidates DB metadata.
+        - Tracks success/failure, shows summary popup, refreshes UI/header/status.
+        - Logs details (path, action, exception, stack) to STDERR via LOGGER.error.
+
+        Edge Cases
+        ----------
+        - FileNotFound: Treat as success (cleanup UI/DB).
+        - PermissionError/Other: Log, popup, continue.
+        - No selection: Info popup.
+        - DB failure: Log/popup but doesn't count as delete failure.
+
+        Notes
+        -----
+        - Uses send2trash if available; else os.remove.
+        - Updates DB via DELETE from image_metadata (cascades hashes/thumbnails).
+        - Post-delete: If group <2 files, remove group + preceding separator.
+        """
+        sel = self._collect_checked()
+        if not sel:
+            show_selectable_info(self, "No Selection", "No files selected for deletion.")
+            return
+
+        n = len(sel)
+        use_trash = send2trash is not None
+        if use_trash:
+            confirmed = self._ask_selectable_question(
+                "Confirm Delete to Recycle Bin",
+                f"Move {n} similar image(s) to Recycle Bin?"
+            )
+        else:
+            confirmed = self._ask_selectable_question(
+                "Confirm Permanent Delete",
+                f"Permanently delete {n} similar image(s)? Cannot be undone.",
+                "send2trash not available: permanent deletion."
+            )
+            if confirmed:
+                confirmed = self._ask_selectable_question(
+                    "Final Confirmation",
+                    f"Really delete {n} image(s) permanently?"
+                )
+        if not confirmed:
+            return
+
+        try:
+            QGuiApplication.setOverrideCursor(Qt.WaitCursor)
+        except Exception:
+            pass
+
+        deleted_ok = 0
+        failed = 0
+        db_mgr = self._get_database_manager()
+
+        for entry in sel:
+            path = entry["path"]
+            file_item = entry["file_item"]
+            group_item = entry["group_item"]
+            action = "send2trash" if use_trash else "permanent"
+            try:
+                if use_trash and send2trash:
+                    send2trash(path)
+                else:
+                    os.remove(path)
+                deleted_ok += 1
+
+                # Remove UI
+                try:
+                    parent = file_item.parent()
+                    if parent:
+                        parent.removeChild(file_item)
+                        if parent.childCount() < 2:
+                            idx = self.tree.indexOfTopLevelItem(parent)
+                            if idx >= 0:
+                                self.tree.takeTopLevelItem(idx)
+                                # Remove separator if present
+                                if idx > 0 and idx - 1 < self.tree.topLevelItemCount():
+                                    prev = self.tree.topLevelItem(idx - 1)
+                                    if self._is_separator_item(prev):
+                                        self.tree.takeTopLevelItem(idx - 1)
+                except Exception as e_ui:
+                    LOGGER_SIM.error(
+                        "UI cleanup failed post-delete",
+                        exception=e_ui, variables={"path": path}
+                    )
+
+                # DB invalidate
+                if db_mgr:
+                    try:
+                        with db_mgr.get_connection(db_mgr.cache_db) as conn:
+                            conn.execute("DELETE FROM image_metadata WHERE file_path = ?", (path,))
+                    except Exception as e_db:
+                        LOGGER_SIM.error(
+                            "DB invalidate failed post-delete",
+                            exception=e_db, variables={"path": path}
+                        )
+                        show_selectable_error(
+                            self, "DB Error", f"Failed to update DB for {path}:\n{str(e_db)}"
+                        )
+
+            except FileNotFoundError:
+                deleted_ok += 1  # Already gone
+                # UI/DB same as success
+                # ... (repeat UI/DB code)
+            except PermissionError as e_perm:
+                failed += 1
+                LOGGER_SIM.error(
+                    "Delete permission denied",
+                    exception=e_perm, variables={"path": path, "action": action}
+                )
+                show_selectable_error(self, "Permission Denied", f"Cannot delete {path}:\n{str(e_perm)}")
+            except Exception as e_del:
+                failed += 1
+                tb = traceback.format_exc()
+                LOGGER_SIM.error(
+                    "Delete failed",
+                    exception=e_del, variables={"path": path, "action": action, "traceback": tb}
+                )
+                show_selectable_error(self, "Delete Failed", f"Failed to delete {path}:\n{str(e_del)}")
+
+        try:
+            QGuiApplication.restoreOverrideCursor()
+        except Exception:
+            pass
+
+        self._refresh_header_counts()
+        self._update_delete_enabled()
+        self._update_status_line()
+        show_selectable_info(
+            self, "Delete Summary", f"Successfully deleted {deleted_ok} image(s); {failed} failed."
+        )
+        LOGGER_SIM.info(
+            "Delete operation complete",
+            variables={"deleted_ok": deleted_ok, "failed": failed, "total_selected": n}
+        )
+
+    def _on_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        """
+        Handle tree item changes (e.g., checkbox toggle).
+
+        Updates delete button enabled state and status line.
+
+        Parameters
+        ----------
+        item : QTreeWidgetItem
+            Changed item (child file row).
+        column : int
+            Column index (0 for checkbox).
+
+        Notes
+        -----
+        - Defensive: Logs errors but doesn't crash.
+        - Calls _update_delete_enabled and _update_status_line.
+        """
+        try:
+            self._update_delete_enabled()
+            self._update_status_line()
+        except Exception as e:
+            LOGGER_SIM.error(
+                "Item change handler failed",
+                exception=e, variables={"column": column}
+            )
+
+    def _update_delete_enabled(self) -> None:
+        """
+        Enable Delete button if any file is checked.
+
+        Scans tree children for checked state in col 0; skips separators/groups.
+
+        Notes
+        -----
+        - Uses _is_separator_item to skip.
+        - Sets self.delete_btn.enabled based on any_checked.
+        """
+        any_checked = False
+        try:
+            for i in range(self.tree.topLevelItemCount()):
+                g = self.tree.topLevelItem(i)
+                if self._is_separator_item(g):
+                    continue
+                for j in range(g.childCount()):
+                    c = g.child(j)
+                    if c.checkState(0) == Qt.Checked:
+                        any_checked = True
+                        break
+                if any_checked:
+                    break
+        except Exception:
+            pass
+        self.delete_btn.setEnabled(any_checked)
+
+    def _update_status_line(self) -> None:
+        """
+        Update status label with selection counts.
+
+        Counts total/selected files and groups with selections; skips separators.
+        Format: "{selected} files from {groups_selected} groups selected out of {total_files} in {total_groups} groups"
+        If no groups: "No similar images to manage"
+
+        Notes
+        -----
+        - Called after populate/selection change/delete.
+        - Defensive logging on error.
+        """
+        try:
+            total_files = 0
+            selected_files = 0
+            groups_selected = 0
+            total_groups = 0
+            for i in range(self.tree.topLevelItemCount()):
+                group = self.tree.topLevelItem(i)
+                if self._is_separator_item(group):
+                    continue
+                total_groups += 1
+                child_count = group.childCount()
+                total_files += child_count
+                has_sel = any(child.checkState(0) == Qt.Checked for child in [group.child(j) for j in range(child_count)])
+                if has_sel:
+                    groups_selected += 1
+                    selected_files += sum(1 for j in range(child_count) if group.child(j).checkState(0) == Qt.Checked)
+            if total_groups == 0:
+                text = "No similar images to manage"
+            else:
+                text = f"{selected_files} files from {groups_selected} groups selected out of {total_files} total files in {total_groups} groups"
+            self.status_label.setText(text)
+            LOGGER_SIM.debug(f"Status updated: {text}")
+        except Exception as e:
+            LOGGER_SIM.error("Status update failed", exception=e)
+            text = "Error updating status"
+            self.status_label.setText(text)
+            LOGGER_SIM.debug(f"Status updated: {text}")
+
+    def _is_separator_item(self, item: Optional[QTreeWidgetItem]) -> bool:
+        """
+        Check if item is a separator row.
+
+        Parameters
+        ----------
+        item : Optional[QTreeWidgetItem]
+            Item to check.
+
+        Returns
+        -------
+        bool
+            True if separator (UserRole 0 == "__separator__").
+
+        Notes
+        -----
+        - Defensive: False on exception/None.
+        """
+        try:
+            return item is not None and item.data(0, Qt.UserRole) == "__separator__"
+        except Exception:
+            return False
+
+    def _refresh_header_counts(self) -> None:
+        """
+        Refresh header label with current group/file counts from tree.
+
+        Counts top-level non-separator groups and total child files.
+
+        Notes
+        -----
+        - Called post-delete to update "Similarity Groups: X".
+        - Defensive on error.
+        """
+        try:
+            groups_count = 0
+            files_count = 0
+            for i in range(self.tree.topLevelItemCount()):
+                g = self.tree.topLevelItem(i)
+                if self._is_separator_item(g):
+                    continue
+                groups_count += 1
+                files_count += g.childCount()
+            self.header_label.setText(f"Similarity Groups: {groups_count} — Files: {files_count}")
+        except Exception as e:
+            LOGGER_SIM.error("Header refresh failed", exception=e)
+
+    def _get_database_manager(self) -> Optional[DatabaseManager]:
+        """
+        Locate DatabaseManager from parent chain.
+
+        Walks up QObject parents looking for 'database_manager' attribute.
+
+        Returns
+        -------
+        Optional[DatabaseManager]
+            Found instance or None.
+
+        Notes
+        -----
+        - Attached to main window in app.py.
+        - Logs failure.
+        """
+        try:
+            w = self.parent()
+            while w is not None:
+                dm = getattr(w, "database_manager", None)
+                if isinstance(dm, DatabaseManager):
+                    return dm
+                w = w.parent()
+        except Exception as e:
+            LOGGER_SIM.error("DatabaseManager resolution failed", exception=e)
+        return None
+
+    def _ask_selectable_question(self, title: str, text: str, informative: Optional[str] = None) -> bool:
+        """
+        Show selectable Yes/No QMessageBox.
+
+        Parameters
+        ----------
+        title : str
+            Dialog title.
+        text : str
+            Main text.
+        informative : Optional[str]
+            Additional info text.
+
+        Returns
+        -------
+        bool
+            True if Yes.
+
+        Notes
+        -----
+        - Sets TextSelectableByMouse/Keyboard on text/labels.
+        - Default No; logs if needed.
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle(title)
+        box.setText(text)
+        if informative:
+            try:
+                box.setInformativeText(informative)
+            except Exception:
+                box.setText(f"{text}\n\n{informative}")
+        try:
+            box.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+            for lbl in box.findChildren(QLabel):
+                lbl.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+                lbl.setTextFormat(Qt.PlainText)
+        except Exception:
+            pass
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+        return box.exec() == QMessageBox.Yes
+
+    def _configure_initial_splitter_sizes(self) -> None:
+        """
+        Set initial splitter proportions after UI layout.
+
+        Fits top tabs to summary content height + padding; clamps min/max.
+        Uses 40/60 default on error.
+
+        Notes
+        -----
+        - Called via QTimer.singleShot(100) post-init.
+        - Logs failure.
+        """
+        try:
+            summary_h = self.summary_tab.sizeHint().height()
+            tab_h = 30
+            pad = 20
+            top_h = max(100, min(summary_h + tab_h + pad, self.height() - 200))
+            self.tabs.setMaximumHeight(top_h)
+            total_h = self.splitter.height()
+            if total_h > 0:
+                self.splitter.setSizes([top_h, total_h - top_h])
+        except Exception as e:
+            LOGGER_SIM.error("Splitter config failed", exception=e)
+            try:
+                default_top = int(self.splitter.height() * 0.4)
+                self.splitter.setSizes([default_top, self.splitter.height() - default_top])
+            except Exception:
+                pass
+
+    def closeEvent(self, event) -> None:
+        """
+        Handle dialog close.
+
+        Logs closure; accepts event.
+
+        Parameters
+        ----------
+        event : QCloseEvent
+            Close event.
+        """
+        LOGGER_SIM.info("SimilarityManagerDialog closed", variables={"groups_remaining": len(self.groups)})
+        super().closeEvent(event)

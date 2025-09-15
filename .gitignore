@@ -21,7 +21,7 @@ __pycache__/
 .cache/
 .venv/
 .pdm-python
-
+htmlcov/
 
 
 # IDE - VSCode

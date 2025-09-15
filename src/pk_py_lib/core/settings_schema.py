@@ -40,6 +40,21 @@ SETTINGS_PROFILE_SCHEMA = {
         "updated_at": {"type": "string", "format": "date-time"},
         "schema_version": {"type": "string", "default": "1.0"},
 
+        "similarity": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "phash_threshold": {"type": "integer", "minimum": 0, "maximum": 64, "default": 10},
+                "whash_threshold": {"type": "integer", "minimum": 0, "maximum": 64, "default": 12},
+                "enabled_algorithms": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["phash", "whash"]},
+                    "default": ["phash"]
+                },
+                "max_distance": {"type": "integer", "minimum": 0, "maximum": 64, "default": 15}
+            }
+        },
+
         "pools": {
             "type": "object",
             "additionalProperties": False,
@@ -350,6 +365,13 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     normalized.setdefault("schema_version", "1.0")
     normalized.setdefault("mode", "duplicates")
     
+    # Ensure similarity section
+    similarity = normalized.setdefault("similarity", {})
+    similarity.setdefault("phash_threshold", 10)
+    similarity.setdefault("whash_threshold", 12)
+    similarity.setdefault("enabled_algorithms", ["phash"])
+    similarity.setdefault("max_distance", 15)
+    
     # Ensure pools exist
     pools = normalized.setdefault("pools", {})
     pool_a = pools.setdefault("A", {})
@@ -436,6 +458,12 @@ def create_default_profile(name: str, description: Optional[str] = None) -> Dict
         "schema_version": "1.0",
         "created_at": now,
         "updated_at": now,
+        "similarity": {
+            "phash_threshold": 10,
+            "whash_threshold": 12,
+            "enabled_algorithms": ["phash"],
+            "max_distance": 15
+        },
         "pools": {
             "A": {
                 "paths": [str(Path.home())],  # Default to user's home directory

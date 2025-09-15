@@ -167,5 +167,37 @@
     "risk": "medium",
     "last_updated": "2025-08-14",
     "notes": "Trade-offs documented in suggested-changes"
+  },
+  {
+    "id": "similarity_detection",
+    "title": "Image Similarity Detection",
+    "status": "implemented",
+    "description": "pHash/wHash for similar images, integrated in traversal and GUI",
+    "dependencies": ["duplicates"],
+    "tests": "unit/smoke",
+    "spec_refs": [
+      "docs/roo/img-similarity-details.md",
+      "docs/roo/img-app-specification.md"
+    ],
+    "code_refs": [
+      "src/pk_py_lib/core/image/similarity.py",
+      "src/pk_py_lib/core/filesystem/traversal.py",
+      "img_app/img_app/widgets/duplicate_manager.py"
+    ],
+    "test_refs": [
+      "tests/test_image_similarity.py",
+      "tests/test_filesystem_traversal_hashes.py",
+      "tests/test_duplicate_manager_similarity.py"
+    ],
+    "acceptance": [
+      "pHash and wHash computation with caching",
+      "Hamming distance and grouping with thresholds",
+      "Integration in scan_directory for hash computation and DB storage",
+      "GUI mode='similarity' with controls and tree population",
+      "Edge cases: invalid images, empty scans, high thresholds"
+    ],
+    "risk": "low",
+    "last_updated": "2025-09-14",
+    "notes": "Full implementation with unit/smoke tests; no performance tests per PoC guidelines"
   }
 ]

@@ -35,6 +35,86 @@ from typing import Optional, Dict, Any
 logger = logging.getLogger("pk_py_lib.core.cache")
 
 
+class HashCache:
+    """
+    Simple in-memory cache for image hashes with TTL support.
+    
+    This class manages a dictionary-based cache where keys are strings
+    (e.g., f"{image_path}:{algorithm}") and values are hex hash strings.
+    Expired entries are automatically removed on access.
+    
+    Design:
+    - Uses time.time() for expiration checks.
+    - No persistence; purely in-memory for fast access during scans.
+    - Integrated into CacheManager for unified caching.
+    
+    Args:
+        ttl_default (int): Default TTL in seconds (3600 = 1 hour).
+    
+    Raises:
+        ValueError: If TTL is negative.
+    """
+    def __init__(self, ttl_default: int = 3600):
+        if ttl_default < 0:
+            raise ValueError("TTL must be non-negative")
+        self._cache: Dict[str, Tuple[str, float]] = {}
+        self.ttl_default = ttl_default
+    
+    def set(self, key: str, value: str, ttl: Optional[int] = None) -> None:
+        """
+        Store a hash value with optional TTL.
+        
+        Args:
+            key (str): Cache key, e.g., "path/to/image.jpg:phash".
+            value (str): Hex hash string (e.g., 16 chars for 64-bit).
+            ttl (Optional[int]): Time-to-live in seconds; uses default if None.
+        
+        Raises:
+            ValueError: If value is not a string or key is invalid.
+        """
+        if not isinstance(key, str) or not key:
+            raise ValueError("Key must be a non-empty string")
+        if not isinstance(value, str):
+            raise ValueError("Value must be a string (hex hash)")
+        expiry = time.time() + (ttl or self.ttl_default)
+        self._cache[key] = (value, expiry)
+    
+    def get(self, key: str) -> Optional[str]:
+        """
+        Retrieve a hash value if not expired.
+        
+        Args:
+            key (str): Cache key to lookup.
+        
+        Returns:
+            Optional[str]: Hash value if valid, None if expired or missing.
+        
+        Raises:
+            ValueError: If key is invalid.
+        """
+        if not isinstance(key, str) or not key:
+            raise ValueError("Key must be a non-empty string")
+        if key not in self._cache:
+            return None
+        value, expiry = self._cache[key]
+        if time.time() > expiry:
+            del self._cache[key]
+            return None
+        return value
+    
+    def clear(self) -> None:
+        """Clear all cached hashes."""
+        self._cache.clear()
+    
+    def size(self) -> int:
+        """Return current cache size (active entries only)."""
+        now = time.time()
+        expired = [k for k, (_, exp) in self._cache.items() if now > exp]
+        for k in expired:
+            del self._cache[k]
+        return len(self._cache)
+
+
 class CacheManager:
     """
     Manage a simple file-backed thumbnail cache with LRU eviction.
@@ -61,7 +141,7 @@ class CacheManager:
     def __init__(self, cache_dir: Path, max_size_mb: int = DEFAULT_MAX_SIZE_MB, jpeg_quality: int = 85):
         """
         Initialize CacheManager.
-
+        
         Parameters
         ----------
         cache_dir : Path
@@ -75,6 +155,9 @@ class CacheManager:
         self.thumb_base = self.cache_dir / "thumbnails"
         self.max_size_bytes = int(max_size_mb * 1024 * 1024)
         self.jpeg_quality = int(jpeg_quality)
+        
+        # In-memory cache for image hashes (perceptual similarity)
+        self._hash_cache = HashCache(ttl_default=3600)
 
         # Ensure directories exist
         try:
@@ -186,12 +269,12 @@ class CacheManager:
     def clear_cache(self, older_than: Optional[timedelta] = None) -> int:
         """
         Clear cached thumbnails optionally older than a given age.
-
+        
         Parameters
         ----------
         older_than : Optional[timedelta]
             If provided, only delete thumbnails older than this duration (based on metadata created_at).
-
+        
         Returns
         -------
         int
@@ -215,7 +298,68 @@ class CacheManager:
             except Exception:
                 # continue with best-effort deletions
                 continue
+        
+        # Clear in-memory hash cache if requested
+        if older_than is not None:
+            # Approximate: clear if older_than < default TTL
+            if older_than.total_seconds() < 3600:
+                self._hash_cache.clear()
+                deleted += self._hash_cache.size()
+        
         return deleted
+    
+    def set_hash(self, key: str, value: str, ttl: int = 3600) -> None:
+        """
+        Store an image hash in the in-memory cache with TTL.
+        
+        Args:
+            key (str): Cache key, typically f"{image_path}:{algorithm}".
+            value (str): Hexadecimal hash value (e.g., 16 chars for 64-bit).
+            ttl (int): Time-to-live in seconds (default: 3600).
+        
+        Raises:
+            ValueError: If key or value is invalid.
+            TypeError: If ttl is not an int.
+        """
+        self._hash_cache.set(key, value, ttl)
+    
+    def get_hash(self, key: str) -> Optional[str]:
+        """
+        Retrieve an image hash from the in-memory cache if not expired.
+        
+        Args:
+            key (str): Cache key to lookup.
+        
+        Returns:
+            Optional[str]: Hash value if present and valid, else None.
+        
+        Raises:
+            ValueError: If key is invalid.
+        """
+        return self._hash_cache.get(key)
+    
+    def clear_hashes(self) -> int:
+        """
+        Clear all cached hashes.
+        
+        Returns:
+            int: Number of hashes cleared.
+        """
+        count = self._hash_cache.size()
+        self._hash_cache.clear()
+        return count
+    
+    def get_hash_cache_info(self) -> Dict[str, Any]:
+        """
+        Get statistics for the hash cache.
+        
+        Returns:
+            Dict[str, Any]: {"size": int, "ttl_default": int}.
+        """
+        return {
+            "size": self._hash_cache.size(),
+            "ttl_default": self._hash_cache.ttl_default,
+        }
 
     # ----------------------------
     # Internal helpers

@@ -32,11 +32,17 @@ from pathlib import Path
 from src.pk_py_lib.gui.utils.messages import show_selectable_info, show_selectable_error, gui_error_handler, gui_error_context
 from src.pk_py_lib.core.database import CACHE_SCHEMA
 from src.pk_py_lib.core.filesystem.paths import PathOperations
-from src.pk_py_lib.core.filesystem.traversal import DirectoryTraversal
+from src.pk_py_lib.core.filesystem.traversal import DirectoryTraversal, IMAGE_EXTENSIONS
 from src.pk_py_lib.core.filesystem.identity import get_inode_device, compute_sha256
 from datetime import datetime
 import traceback
 from src.pk_py_lib.core.logging.logger import get_logger
+
+from .widgets.duplicate_manager import SimilarityManagerDialog, DuplicateManagerDialog
+
+import logging
+from collections import defaultdict
+logger = logging.getLogger(__name__)
 
 # Module-level logger for scan workflow; ERROR+ routes to STDERR via console output
 LOGGER = get_logger("img_app.scan")
@@ -136,10 +142,10 @@ class ScanWorker(QThread):
     error = Signal(str)
     finished = Signal(str, dict)
 
-    def __init__(self, db_manager, profile_json: dict, algorithm: str = "sha256", profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
+    def __init__(self, db_manager, profile_json: dict, algorithm: str = "sha256", mode: str = 'duplicates', compute_hashes: bool = False, profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
         """
         Initialize worker.
-
+     
         Parameters
         ----------
         db_manager : DatabaseManager
@@ -148,6 +154,10 @@ class ScanWorker(QThread):
             Structured Settings Profile (Option A) JSON object.
         algorithm : str
             Hash algorithm token to ensure in image_hashes (default 'sha256').
+        mode : str
+            Scan mode ('duplicates' or 'similarity').
+        compute_hashes : bool
+            Whether to compute perceptual hashes for similarity (renamed mentally to perceptual_hashes).
         profile_name : Optional[str]
             Human-friendly profile name used for this scan; emitted with the finished signal
             to ensure reporting uses the exact profile that initiated the scan.
@@ -158,6 +168,9 @@ class ScanWorker(QThread):
         self.db_manager = db_manager
         self.profile = profile_json or {}
         self.algorithm = (algorithm or "sha256").lower().strip()
+        self.mode = mode
+        self.compute_hashes = compute_hashes
+        self.exact_grouping = (mode == 'duplicates')
         # Capture the profile name used for this run (best effort)
         try:
             self.profile_name = str(profile_name or (self.profile.get("name") if isinstance(self.profile, dict) else "") or "")
@@ -205,174 +218,92 @@ class ScanWorker(QThread):
 
     def _gather_files(self) -> list[Path]:
         """
-        Gather files to process from profile pools A/B and record pool membership per file.
+        Gather valid directory roots from profile pools A/B to pass to scan_directory.
 
-        Behavior
-        --------
-        - duplicates mode: include ALL files (no extension filtering)
-        - similarity mode: include ONLY image files (extension-based filtering)
-        - Records pool label ('A' or 'B') for each discovered file in self._file_pool_map
-        - For single_pool usage (only Pool A provided), all files are labeled 'A'
+        This method collects all raw paths from pools A and B, converts them to Path objects,
+        and filters to only include directories using pathlib.Path(root).is_dir(). Files or
+        invalid paths are skipped with a warning log to prevent passing non-directories as roots
+        to scan_directory, which expects directories to traverse. This resolves the error
+        "No valid root directories provided" in duplicates mode when profile paths include files
+        (e.g., [WindowsPath('V:/Cache/03_crop.jpg'), ...]).
+
+        After filtering, roots are normalized using PathOperations.normalize_paths() and
+        deduplicated by removing contained paths with PathOperations.remove_contained_paths().
+
+        For duplicates mode, scan_directory will traverse these directories with patterns=None
+        to include all files. For similarity mode, patterns will filter to images during traversal.
+
+        Behavior notes:
+        - Pool-specific traversal options (recurse, max_depth, etc.) are handled by scan_directory
+          via the passed self.profile settings.
+        - No file gathering or pool mapping here; files are obtained from scan_result['files'],
+          and pool mapping is set post-scan (all 'A' for single-pool duplicates).
+        - If no valid directories found after filtering, raises ValueError in run() to abort scan.
 
         Returns
         -------
         list[Path]
-            Sorted, de-duplicated absolute file paths (Path objects).
+            Sorted list of unique, valid absolute directory paths (Path objects) to scan.
+            Empty if no valid roots, triggering abort.
         """
         pools = self.profile.get("pools", {}) if isinstance(self.profile, dict) else {}
-        mode_str = str((self.profile.get("mode") if isinstance(self.profile, dict) else "duplicates") or "duplicates").strip().lower()
-        filter_images_only = (mode_str == "similarity")
-
-        file_set: set[Path] = set()
-        # Reset and build pool map anew each run
-        self._file_pool_map = {}
-
-        # Build extension whitelist only for similarity mode
-        ext_union: set[str] = set()
-        if filter_images_only:
-            for label in ("A", "B"):
-                cfg = pools.get(label) or {}
-                ext_union |= self._normalize_exts(cfg.get("type_filters"))
-            if not ext_union:
-                ext_union = self._normalize_exts(None)
-
-        # Debug: mode and filter summary
-        try:
-            if filter_images_only:
-                print(f"[ScanWorker] Mode: {mode_str} — using image extensions: {sorted(ext_union)}")
-            else:
-                print(f"[ScanWorker] Mode: {mode_str} — including all file types (no extension filtering)")
-        except Exception:
-            pass
-
-        def _posix(p: Path) -> str:
-            try:
-                return p.as_posix()
-            except Exception:
-                return str(p)
-
+        all_raw_paths = []
         for label in ("A", "B"):
             cfg = pools.get(label)
             if not cfg:
                 continue
-
             raw_paths = cfg.get("paths") or []
-            roots = [Path(p) for p in raw_paths if p]
-            # Normalize and remove contained paths for efficiency
-            roots = PathOperations.normalize_paths(roots)
-            roots = PathOperations.remove_contained_paths(roots)
+            all_raw_paths.extend(raw_paths)
 
-            # Traversal options (Balanced defaults honored)
-            recurse = bool(cfg.get("recurse", True))
-            max_depth = cfg.get("max_depth", 0)
-            include_hidden = bool(cfg.get("include_hidden", False))
-            follow_symlinks = bool(cfg.get("follow_symlinks", False))
-
-            # DirectoryTraversal.walk_files uses Optional[int] max_depth:
-            # - None = unlimited
-            # - N>=1 = limited depth
-            # Our schema: max_depth 0 => unlimited, recurse False => only direct children.
-            depth_param = None if (recurse and (max_depth in (None, 0))) else (1 if not recurse else int(max_depth or 0))
-
-            # Debug: pool traversal settings
+        # Convert to Path and filter to directories only
+        roots = [Path(p) for p in all_raw_paths if p]
+        valid_roots = []
+        for root in roots:
             try:
-                print(f"[ScanWorker] Pool {label}: roots={len(roots)}, recurse={recurse}, max_depth={max_depth}, depth_param={depth_param}, follow_symlinks={follow_symlinks}, include_hidden={include_hidden}")
-                for r in roots[:5]:
-                    print(f"[ScanWorker]   root: {r}")
-                if len(roots) > 5:
-                    print(f"[ScanWorker]   ... and {len(roots)-5} more roots")
-            except Exception:
-                pass
+                if root.is_dir():
+                    valid_roots.append(root)
+                else:
+                    # Log warning for files or invalid paths (e.g., non-existent)
+                    LOGGER.warning(
+                        f"Skipping invalid root (not a directory) in profile pools for {self.mode} mode: {root}. "
+                        f"Ensure profile paths are directories like 'V:\\D4', 'V:\\Cache'; files like 'V:/Cache/03_crop.jpg' are invalid roots."
+                    )
+            except Exception as e:
+                LOGGER.warning(f"Error validating root '{root}' in profile pools: {e}")
 
-            for root in roots:
-                try:
-                    if not root.exists():
-                        try:
-                            print(f"[ScanWorker] Pool {label}: root does not exist, skipping: {root}")
-                        except Exception:
-                            pass
-                        continue
+        # Normalize paths (resolve symlinks, make absolute) and remove contained paths for efficiency
+        roots = PathOperations.normalize_paths(valid_roots)
+        roots = PathOperations.remove_contained_paths(roots)
 
-                    before_count = len(file_set)
-
-                    if root.is_file():
-                        # Single file root
-                        if (not filter_images_only) or (root.suffix.lower() in ext_union):
-                            try:
-                                rp = root.resolve()
-                            except Exception:
-                                rp = root
-                            file_set.add(rp)
-                            # Record pool if not already set (first-wins)
-                            k = _posix(rp)
-                            if k not in self._file_pool_map:
-                                self._file_pool_map[k] = label
-                        else:
-                            try:
-                                print(f"[ScanWorker] Skipping file (extension filtered in similarity mode): {root}")
-                            except Exception:
-                                pass
-                    else:
-                        # Directory case
-                        for p in DirectoryTraversal.walk_files(
-                            root,
-                            patterns=None,             # MVP: ignore complex include globs for now
-                            exclude_patterns=None,     # MVP: ignore exclude globs for now
-                            follow_symlinks=follow_symlinks,
-                            max_depth=depth_param,
-                            include_hidden=include_hidden,
-                        ):
-                            try:
-                                if (not filter_images_only) or (p.suffix.lower() in ext_union):
-                                    try:
-                                        rp = p.resolve()
-                                    except Exception:
-                                        rp = p
-                                    file_set.add(rp)
-                                    k = _posix(rp)
-                                    if k not in self._file_pool_map:
-                                        self._file_pool_map[k] = label
-                            except Exception:
-                                continue
-
-                    # Debug per-root delta
-                    try:
-                        delta = len(file_set) - before_count
-                        print(f"[ScanWorker] Pool {label}: +{delta} files from root {root}")
-                    except Exception:
-                        pass
-
-                except Exception:
-                    # Conservative: skip problematic roots silently
-                    continue
-
-        files = sorted(file_set)
+        # Debug: summary of valid roots
         try:
-            print(f"[ScanWorker] Gathered {len(files)} files total (post-dedup)")
+            print(f"[ScanWorker] Mode: {self.mode} — gathered {len(roots)} valid directory roots (post-validation, normalization, and dedup)")
+            for r in roots[:3]:  # Show first few for verification
+                print(f"[ScanWorker]   root: {r}")
+            if len(roots) > 3:
+                print(f"[ScanWorker]   ... and {len(roots)-3} more roots")
         except Exception:
             pass
-        return files
+
+        return roots
 
     def run(self) -> None:
         """
         Execute scanning and cache validation/refresh.
-
+        
         Workflow
         --------
-        1) Enumerate files from profile pools (A/B) with minimal filters
-        2) Ensure cache schema exists (defensive)
-        3) For each file:
-           - Lookup image_metadata by absolute path
-           - Validate against current os.stat (size + mtime_ns/mtime)
-             - If mismatch: DELETE row (cascades thumbnails/hashes)
-           - If missing or invalidated: INSERT fresh metadata row
-           - Ensure image_hashes row exists for algorithm; compute and store if absent
-        4) Emit progress signals throughout; error signals for non-fatal per-file issues
-        5) Emit finished(summary) with counts
+        1) Gather roots from profile pools (A/B), flattened/normalized
+        2) Call scan_directory(roots, patterns=None for duplicates/all files, image for similarity, exact_grouping=(mode=='duplicates'), compute_hashes=(mode=='similarity'))
+        3) Extract files/groups from result; populate pool map from files
+        4) Ensure cache schema; but now handled in scan_directory
+        5) Emit progress (post-scan, simulate or from scan_directory if extended); errors
+        6) Emit finished(summary) with groups_data if duplicates
         """
         import os
         from datetime import datetime
-
+        import traceback
+        
         stats = {
             "found": 0,
             "processed": 0,
@@ -382,272 +313,95 @@ class ScanWorker(QThread):
             "errors": 0,
             "error_details": [],  # Collect structured per-error details for post-scan reporting
         }
-
+        
         try:
-            files = self._gather_files()
+            roots = self._gather_files()
+            if not roots:
+                raise ValueError("No valid roots to scan")
+            
+            # Determine patterns
+            image_exts = [f"*{ext}" for ext in IMAGE_EXTENSIONS]
+            patterns = image_exts if self.mode == 'similarity' else None
+            
+            # Call extended scan_directory
+            # Changed to absolute import from the pk_py_lib library to resolve ModuleNotFoundError.
+            # The traversal module is implemented in src/pk_py_lib/core/filesystem/traversal.py,
+            # not locally in img_app/img_app/.
+            from pk_py_lib.core.filesystem.traversal import scan_directory
+            # Compute hashes for both similarity (perceptual) and duplicates (exact SHA256) modes to enable grouping
+            effective_compute_hashes = self.compute_hashes or self.exact_grouping
+            scan_result = scan_directory(
+                roots=roots,
+                patterns=patterns,
+                compute_hashes=effective_compute_hashes,
+                exact_grouping=self.exact_grouping,
+                algorithms=self.profile.get('similarity', {}).get('enabled_algorithms', ['phash']) if effective_compute_hashes else None,
+                db_manager=self.db_manager,
+                cache_manager=None,  # Not used here
+                settings=self.profile,
+                follow_symlinks=False,  # Default; can add from profile if needed
+                include_hidden=False,
+            )
+            
+            files = scan_result['files']
+            # Add 'files' to summary for post-scan duplicate grouping
+            stats['files'] = scan_result['files']
+            if self.exact_grouping:
+                stats['groups_data'] = scan_result.get('groups', {})
+            
             total = len(files)
             stats["found"] = total
-            # Record current run file set and provenance to restrict reporting to this run
+            # Record current run file set
             try:
-                run_paths = [p.as_posix() for p in files]
+                run_paths = [f['path'] for f in files]
             except Exception:
-                run_paths = [str(p) for p in files]
+                run_paths = []
             stats["run_paths"] = run_paths
             stats["algorithm"] = self.algorithm
             if getattr(self, "profile_id", None):
                 stats["profile_id"] = self.profile_id
-
-            # Ensure cache DB exists and has schema (defensive)
-            cache_path = self.db_manager.cache_db
-            with self.db_manager.get_connection(cache_path) as conn:
-                try:
-                    conn.executescript(CACHE_SCHEMA)
-                except Exception:
-                    # Non-fatal if already present
-                    pass
-                # Ensure 'pool' column exists for upgrades from older cache schemas
-                try:
-                    cur = conn.execute("PRAGMA table_info(image_metadata)")
-                    cols = [str(r["name"]).lower() for r in cur.fetchall()]
-                    if "pool" not in cols:
-                        conn.execute("ALTER TABLE image_metadata ADD COLUMN pool TEXT DEFAULT 'A'")
-                        conn.execute("UPDATE image_metadata SET pool = 'A' WHERE pool IS NULL")
-                        # Best-effort schema version bump for cache
-                        try:
-                            if conn.execute("SELECT 1 FROM meta WHERE key='schema_version'").fetchone():
-                                conn.execute(
-                                    "UPDATE meta SET value = '1.1.0', notes = 'Add pool column to image_metadata', updated_at = CURRENT_TIMESTAMP WHERE key='schema_version'"
-                                )
-                            else:
-                                conn.execute(
-                                    "INSERT INTO meta (key, value, notes) VALUES ('schema_version', '1.1.0', 'Add pool column to image_metadata')"
-                                )
-                        except Exception:
-                            pass
-                except Exception:
-                    # Non-fatal — schema will be recreated by Clear Cache if needed
-                    pass
-
-            # Process files within a single transaction scope for simplicity
-            with self.db_manager.get_connection(cache_path) as conn:
-                for idx, path in enumerate(files, start=1):
-                    if self._stop:
-                        break
-
-                    current_path = path.as_posix()
-                    # Determine current pool label for this file (default 'A' for single-pool)
-                    pool_label = self._file_pool_map.get(current_path, "A")
-                    # Inform start of work on this item
-                    self.progress.emit(stats["processed"], total, current_path, "Processing")
-
-                    try:
-                        # Track the last executed SQL and parameters for per-error diagnostics.
-                        # These are updated immediately before each write (DELETE/UPDATE/INSERT).
-                        last_sql = None
-                        last_params = None
-
-                        st = os.stat(path)
-                    except OSError as e_stat:
-                        if e_stat.errno == getattr(os, "ENOENT", 2):  # No such file or directory
-                            # Delete the stale cache row if it exists
-                            cur = conn.execute(
-                                "SELECT id FROM image_metadata WHERE file_path = ? AND is_valid = 1",
-                                (current_path,)
-                            )
-                            row = cur.fetchone()
-                            if row:
-                                last_sql = "DELETE FROM image_metadata WHERE id = ?"
-                                last_params = (int(row["id"]),)
-                                conn.execute(last_sql, last_params)
-                                stats["invalidated"] += 1
-                            # Log the cleanup
-                            try:
-                                LOGGER.info("ScanWorker cleaned missing file", variables={"path": current_path, "pool": pool_label})
-                            except Exception:
-                                pass
-                            continue  # Skip insertion and processing
-                        else:
-                            # Other stat errors (permission, etc.)
-                            self.error.emit(f"{current_path}: stat failed {e_stat}")
-                            continue
-                        size_now = int(st.st_size)
-                        mtime_ns_now = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
-                        mtime_s_now = int(st.st_mtime)
-                        file_name = path.name
-                        inode, device, _, _ = get_inode_device(path)
-
-                        # Get existing metadata row
-                        cur = conn.execute(
-                            "SELECT id, file_size, mtime_ns, file_modified, pool FROM image_metadata WHERE file_path = ? AND is_valid = 1",
-                            (current_path,),
-                        )
-                        row = cur.fetchone()
-
-                        def _to_int_or_none(val):
-                            try:
-                                return int(val)
-                            except Exception:
-                                return None
-
-                        image_id = None
-                        if row:
-                            image_id = int(row["id"])
-                            size_db = _to_int_or_none(row["file_size"])
-                            mtime_ns_db = _to_int_or_none(row["mtime_ns"])
-                            if mtime_ns_db is None:
-                                # Fallback: compare seconds if ns absent
-                                mtime_s_db = _to_int_or_none(row["file_modified"])
-                                mtime_match = (mtime_s_db is not None) and (abs(mtime_s_now - mtime_s_db) <= 1)
-                            else:
-                                mtime_match = (mtime_ns_now == mtime_ns_db)
-                            size_match = (size_db == size_now)
-                            try:
-                                pool_db = str(row["pool"])
-                            except Exception:
-                                pool_db = None
-    
-                            if not Path(current_path).exists():
-                                # File missing: invalidate cache row
-                                last_sql = "DELETE FROM image_metadata WHERE id = ?"
-                                last_params = (image_id,)
-                                conn.execute(last_sql, last_params)
-                                stats["invalidated"] += 1
-                                image_id = None
-                            elif not (size_match and mtime_match):
-                                # File exists but stats changed: invalidate cache row
-                                last_sql = "DELETE FROM image_metadata WHERE id = ?"
-                                last_params = (image_id,)
-                                conn.execute(last_sql, last_params)
-                                stats["invalidated"] += 1
-                                image_id = None
-                            else:
-                                # Existing row remains valid; ensure current pool label reflects this run's selection
-                                if pool_db != pool_label:
-                                    # Track last executed SQL for diagnostics
-                                    last_sql = "UPDATE image_metadata SET pool = ? WHERE id = ?"
-                                    last_params = (pool_label, image_id)
-                                    conn.execute(last_sql, last_params)
-
-                        if image_id is None:
-                            # Create fresh metadata record
-                            # Determine pool label for this file; default to 'A' for single-pool
-                            pool_label = self._file_pool_map.get(current_path, "A")
-                            # Prepare SQL and parameters explicitly so we can capture them on error
-                            last_sql = """
-                                INSERT INTO image_metadata (
-                                    file_path, file_name, file_size, file_modified, file_created,
-                                    pool,
-                                    file_hash_sha256, partial_hash_sha256, file_inode, file_device,
-                                    hash_computed_at, width, height, format, color_mode, bit_depth,
-                                    exif_data, camera_make, camera_model, lens_model, date_taken,
-                                    gps_latitude, gps_longitude, last_scanned, scan_version, is_valid, mtime_ns
-                                ) VALUES (
-                                    ?, ?, ?, ?, ?,
-                                    ?,
-                                    NULL, NULL, ?, ?,
-                                    NULL, NULL, NULL, NULL, NULL,
-                                    NULL, NULL, NULL, NULL, NULL,
-                                    NULL, NULL, NULL, CURRENT_TIMESTAMP, NULL, 1, ?
-                                )
-                            """
-                            last_params = (
-                                current_path,
-                                file_name,
-                                size_now,
-                                mtime_s_now,
-                                int(getattr(st, "st_ctime", mtime_s_now)),
-                                pool_label,
-                                int(inode) if inode is not None else None,
-                                int(device) if device is not None else None,
-                                mtime_ns_now,
-                            )
-                            conn.execute(last_sql, last_params)
-                            image_id = int(
-                                conn.execute(
-                                    "SELECT id FROM image_metadata WHERE file_path = ?",
-                                    (current_path,),
-                                ).fetchone()["id"]
-                            )
-                            stats["inserted"] += 1
-
-                        # Ensure desired hash exists
-                        algo = self.algorithm
-                        have_hash = conn.execute(
-                            "SELECT id FROM image_hashes WHERE image_id = ? AND algorithm = ?",
-                            (image_id, algo),
-                        ).fetchone()
-
-                        if not have_hash:
-                            sha = compute_sha256(path)
-                            # Record executed SQL for diagnostics
-                            last_sql = "INSERT INTO image_hashes (image_id, algorithm, hash_value, hash_size) VALUES (?, ?, ?, NULL)"
-                            last_params = (image_id, algo, sha)
-                            conn.execute(last_sql, last_params)
-
-                            last_sql = "UPDATE image_metadata SET file_hash_sha256 = ?, hash_computed_at = CURRENT_TIMESTAMP WHERE id = ?"
-                            last_params = (sha, image_id)
-                            conn.execute(last_sql, last_params)
-                            stats["hashes_computed"] += 1
-
-                        stats["processed"] += 1
-                        # Report after finishing this item
-                        self.progress.emit(stats["processed"], total, current_path, "Processed")
-
-                    except Exception as e:
-                        # Record structured error details with only built-in types for Qt-signal safety
-                        try:
-                            tb = traceback.format_exc()
-                        except Exception:
-                            tb = f"{type(e).__name__}: {e}"
-                        # Compute SQL diagnostics for better error analysis
-                        try:
-                            placeholder_count = (last_sql.count("?") if isinstance(last_sql, str) else None)
-                        except Exception:
-                            placeholder_count = None
-                        try:
-                            param_count = (len(last_params) if hasattr(last_params, "__len__") else (0 if last_params is None else None))
-                        except Exception:
-                            param_count = None
-
-                        # Build context with only built-in types to ensure Qt-signal safety
-                        ctx = {
-                            "profile_id": getattr(self, "profile_id", None),
-                            "algorithm": getattr(self, "algorithm", None),
-                            "sql": last_sql,
-                            "params": (list(last_params) if isinstance(last_params, (list, tuple)) else last_params),
-                            "placeholder_count": placeholder_count,
-                            "param_count": param_count,
-                        }
-
-                        error_detail = {
-                            "timestamp": datetime.now().isoformat(timespec="seconds"),
-                            "operation": "scan",
-                            "path": current_path,
-                            "exception_type": type(e).__name__,
-                            "message": str(e),
-                            "traceback": tb,
-                            "context": ctx,
-                        }
-                        stats["errors"] += 1
-                        try:
-                            stats.setdefault("error_details", []).append(error_detail)
-                        except Exception:
-                            stats["error_details"] = [error_detail]
-                        # Keep existing behavior for incremental UI updates
-                        self.error.emit(f"{current_path}: {e}")
-                        # Emit structured logger entry at ERROR level to STDERR
-                        try:
-                            LOGGER.error("ScanWorker error", exception=e, variables=error_detail)
-                        except Exception:
-                            # Never let logging crash the worker loop
-                            pass
-
+            
+            # Populate pool map post-scan (from metadata if available, else from roots)
+            self._file_pool_map = {}
+            for f in files:
+                path = f.get('path', '')
+                # Default to 'A' for single-pool; can enhance with DB pool later
+                self._file_pool_map[path] = 'A'
+            
+            # For duplicates, include groups_data in summary
+            # groups_data is computed post-scan in main_window._on_scan_finished via _compute_duplicate_groups_from_files
+            if self.exact_grouping:
+                stats['groups_data'] = []
+                # Note: scan_result.get('groups', {}) already set earlier; this ensures empty list if no pre-computed groups
+                logger.debug(f"Exact groups included in summary: {len(stats['groups_data'])} groups")
+            
+            # Collect errors from scan_result
+            stats["error_details"] = scan_result.get('error_details', [])
+            stats["errors"] = len(stats["error_details"])
+            
+            # Simulate progress (since scan_directory is sync; future: extend with callback)
+            for idx in range(1, total + 1):
+                if self._stop:
+                    break
+                current_path = files[idx-1]['path'] if idx <= total else ''
+                self.progress.emit(idx, total, current_path, "Processed")
+            
+            stats["processed"] = total  # All files processed by scan_directory
+            
         except Exception as e:
             # Top-level fatal error
             self.error.emit(str(e))
-
+            stats["error_details"].append({
+                'path': 'scan_run',
+                'error': str(e),
+                'traceback': traceback.format_exc()
+            })
+            stats["errors"] = len(stats["error_details"])
+        
         # Emit summary at the end (even on partial stop)
         print(f"[ScanWorker] Emitting finished signal with profile_name={self.profile_name}, stats={stats}", file=sys.stderr)
+        stats['mode'] = self.mode
+        stats['compute_hashes'] = self.compute_hashes
         self.finished.emit(self.profile_name, stats)
 class MainWindow(QMainWindow):
     """
@@ -707,6 +461,7 @@ class MainWindow(QMainWindow):
         # Initialize start time for progress simulation
         import time
         self.start_time = time.time()
+        self.logger = get_logger(__name__)
 
     def _setup_profile_toolbar(self) -> None:
         """
@@ -1243,10 +998,16 @@ class MainWindow(QMainWindow):
         except Exception:
             prof_name = str(self.active_profile.get("name")) if getattr(self, "active_profile", None) else ""
 
+        mode = payload.get('mode', 'duplicates')
+        self._current_scan_mode = mode
+        compute_hashes = mode == 'similarity'
+
         self._scan_worker = ScanWorker(
             db_manager=db_mgr,
             profile_json=payload,
             algorithm="sha256",
+            mode=mode,
+            compute_hashes=compute_hashes,
             profile_name=prof_name,
             profile_id=(self.active_profile.get('id') if self.active_profile else None),
             parent=self
@@ -1305,7 +1066,7 @@ class MainWindow(QMainWindow):
     def _on_scan_finished(self, profile_name: str, summary: dict) -> None:
         """
         Finalize UI and present summary, textual reports, and the Duplicate Manager dialog.
-
+ 
         This function restores a clean structure with a single try/except for the
         report-building section, fixes previous indentation errors, and preserves
         the enhanced debug logging added during diagnosis.
@@ -1333,13 +1094,16 @@ class MainWindow(QMainWindow):
         inserted = int(summary.get("inserted", 0) or 0)
         invalidated = int(summary.get("invalidated", 0) or 0)
         hashes = int(summary.get("hashes_computed", 0) or 0)
-        errors = int(summary.get("errors", 0) or 0)
-        try:
-            additional = len(getattr(self, "_scan_errors", []))
-            if additional > errors:
-                errors = additional
-        except Exception:
-            pass
+        error_details = summary.get('error_details', [])
+        errors = len(error_details)
+        scan_errors = getattr(self, '_scan_errors', [])
+        for err_msg in scan_errors:
+            error_details.append({
+                'path': 'worker',
+                'error': err_msg,
+                'traceback': None
+            })
+        errors = len(error_details)
 
         # Initial mode state and run context
         two_pool = False
@@ -1464,6 +1228,11 @@ class MainWindow(QMainWindow):
             f"Hashes computed: {hashes}\n"
             f"Errors: {errors}"
         )
+        if errors > 0:
+            error_summary = "\n".join([f"{d.get('path', 'unknown')}: {d['error']}" for d in error_details])
+            text += f"\nErrors: {errors}\n{error_summary}"
+            logger.error(f"Scan errors: {len(error_details)}", extra={'errors': error_details})
+
         try:
             self.statusBar().showMessage(
                 f"Processed {processed}/{found}; invalidated {invalidated}; inserted {inserted}; hashes {hashes}; errors {errors}",
@@ -1471,6 +1240,13 @@ class MainWindow(QMainWindow):
             )
         except Exception:
             pass
+
+        # Log errors
+        for d in error_details:
+            if 'traceback' in d and d['traceback']:
+                LOGGER.error(f"Error processing {d['path']}: {d['error']}", exc_info=True)
+            else:
+                LOGGER.error(f"Error processing {d['path']}: {d['error']}")
 
         # Optional detailed error report
         try:
@@ -1728,32 +1504,78 @@ class MainWindow(QMainWindow):
                     pass
             return
 
-        # Single-pool: open Duplicate Manager (even if empty)
-        try:
-            groups_data = (groups_data_prepared or self._get_duplicate_groups_single_pool() or groups_data_fallback)
-        except Exception:
-            groups_data = groups_data_fallback
+        # Determine mode from profile
+        mode_val = (payload_for_mode.get("mode") if isinstance(payload_for_mode, dict) else "?") or "?"
 
+        # Single-pool: open appropriate dialog based on mode (even if empty)
+        is_similarity = ('similarity' in payload_for_mode and payload_for_mode['similarity'].get('enabled_algorithms')) or summary.get('compute_hashes', False) or 'hashes' in summary
+        logger.debug(f"Profile similarity: {payload_for_mode.get('similarity', {})} , scan compute_hashes: {summary.get('compute_hashes')}, is_similarity: {is_similarity}")
+        if not is_similarity:
+            logger.warning("Mode detection failed; defaulting to duplicates mode.")
         try:
-            from .widgets import DuplicateManagerDialog
-            dlg = DuplicateManagerDialog(groups=groups_data or [], summary_text=text, report_text=report_text, parent=self)
+            if is_similarity:
+                # Compute perceptual hash groups for similarity mode
+                threshold = payload_for_mode.get('similarity', {}).get('phash_threshold', 10)
+                similarity_groups = self._get_similarity_groups_from_db(threshold, 'pHash', db_mgr) or self._compute_similarity_groups(payload_for_mode, run_paths, db_mgr)
+                groups_data = summary.get('groups_data', []) or self._format_similarity_groups(similarity_groups, db_mgr)
+                logger.info(f"Groups data prepared: {len(groups_data)} groups")
+                settings_sim = payload_for_mode.get('similarity', {}) if isinstance(payload_for_mode, dict) else {}
+                dlg = SimilarityManagerDialog(
+                    groups=groups_data,
+                    summary_text=text,
+                    report_text=report_text,
+                    mode='similarity',
+                    db_manager=db_mgr,
+                    settings=settings_sim,
+                    parent=self
+                )
+                logger.info(f"Created dialog for mode '{self._current_scan_mode or 'duplicates'}': {type(dlg).__name__} with {len(groups_data)} groups")
+            else:
+                # Use groups_data from scan if available, else fallback
+                groups_data = summary.get('groups_data', [])
+                if len(groups_data) == 0:
+                    groups_data = self._compute_duplicate_groups_from_files(summary['files'])
+                groups_data = groups_data or (groups_data_prepared or self._get_duplicate_groups_single_pool() or groups_data_fallback)
+                logger.info(f"Groups data prepared: {len(groups_data)} groups")
+                text += f"\nDuplicates: {len(groups_data)} groups"
+                dlg = DuplicateManagerDialog(groups=groups_data or [], summary_text=text, report_text=report_text, parent=self)
+                logger.info(f"Created dialog for mode '{self._current_scan_mode or 'duplicates'}': {type(dlg).__name__} with {len(groups_data)} groups")
+       
             ret = dlg.exec()
-            print(f"[DEBUG _on_scan_finished] DuplicateManagerDialog exec() returned: {ret}", file=sys.stderr)
-            LOGGER.info("DuplicateManagerDialog executed", variables={
+            print(f"[DEBUG _on_scan_finished] Dialog exec() returned: {ret}", file=sys.stderr)
+            LOGGER.info("Dialog executed", variables={
                 "return_code": ret,
-                "dialog_created": True,
-                "groups_passed": len(groups_data or [])
+                "dialog_type": "SimilarityManagerDialog" if is_similarity else "DuplicateManagerDialog",
+                "groups_passed": len(groups_data)
             })
         except Exception as e:
             try:
-                print(f"[DEBUG _on_scan_finished] Exception creating DuplicateManagerDialog: {e}", file=sys.stderr)
+                print(f"[DEBUG _on_scan_finished] Exception creating dialog: {e}", file=sys.stderr)
                 traceback.print_exc(file=sys.stderr)
-                LOGGER.error("dups.dialog.failed", exception=e, variables={
-                    "groups_count": len(groups_data or [])
-                })
+                if mode_val == "similarity":
+                    LOGGER.error("similarity.dialog.failed", exception=e, variables={"groups_count": len(groups_data or [])})
+                else:
+                    LOGGER.error("dups.dialog.failed", exception=e, variables={"groups_count": len(groups_data or [])})
+ 
+                # Show basic QDialog with summary on error
+                try:
+                    basic_dlg = QDialog(self)
+                    basic_dlg.setWindowTitle("Scan Summary - Error")
+                    layout = QVBoxLayout(basic_dlg)
+                    text_edit = QTextEdit()
+                    text_edit.setPlainText(text)
+                    text_edit.setReadOnly(True)
+                    layout.addWidget(text_edit)
+                    btns = QDialogButtonBox(QDialogButtonBox.Ok)
+                    btns.accepted.connect(basic_dlg.accept)
+                    layout.addWidget(btns)
+                    basic_dlg.resize(600, 400)
+                    basic_dlg.exec()
+                except Exception:
+                    pass  # Fail silently if basic dialog creation fails
             except Exception:
                 pass
-
+ 
         try:
             self.statusBar().showMessage(f"Duplicate groups: {groups}; duplicate files: {total_dups}", 10000)
         except Exception:
@@ -1915,6 +1737,128 @@ class MainWindow(QMainWindow):
         except Exception:
             # Defensive: never crash caller; empty means "no groups"
             return []
+
+    def _compute_duplicate_groups_from_files(self, files: list[dict]) -> list[dict]:
+        """
+        Compute groups of exact duplicate files based on their SHA256 hashes.
+
+        This method groups files by their hash values from the provided list of file dictionaries
+        (typically from scan_directory). It uses a dictionary to efficiently collect paths sharing
+        the same hash. Files without a valid 'hash' (None, empty, or missing) are skipped with a
+        warning log. Only groups containing 2 or more files are included in the result, as single
+        files are not duplicates.
+
+        The method handles edge cases like empty input, all files without hashes (e.g., if
+        compute_hashes=False during scan), and processing errors per file. It logs warnings for
+        skipped files and an overall warning if no valid hashes are present, indicating empty
+        groups may result from scan configuration.
+
+        Parameters
+        ----------
+        files : list[dict]
+            List of file dictionaries from scan_directory. Each dict must include:
+            - 'path' (str): Absolute file path.
+            - 'hash' (str or None): SHA256 hash value (None if not computed).
+
+            Optional keys like 'size', 'modified' are ignored here.
+
+        Returns
+        -------
+        list[dict]
+            List of duplicate group dictionaries, sorted by hash. Each group is:
+            {
+                'hash': str,          # The shared SHA256 hash
+                'files': list[dict],  # List of file info dicts, each {'path': str}
+                'count': int          # Number of files (>= 2)
+            }
+
+            Returns empty list if no duplicates found, input is empty, or all files lack hashes.
+
+        Examples
+        --------
+        Assume a scan with some duplicates:
+
+        >>> files = [
+        ...     {'path': '/img1.jpg', 'hash': 'abc123'},
+        ...     {'path': '/img2.jpg', 'hash': 'abc123'},  # Duplicate
+        ...     {'path': '/img3.png', 'hash': 'def456'},
+        ...     {'path': '/img4.jpg', 'hash': None}       # Skipped
+        ... ]
+        >>> groups = self._compute_duplicate_groups_from_files(files)
+        >>> len(groups)
+        1
+        >>> groups[0]
+        {'hash': 'abc123', 'files': [{'path': '/img1.jpg'}, {'path': '/img2.jpg'}], 'count': 2}
+
+        If no hashes computed (compute_hashes=False):
+        >>> files = [{'path': '/img1.jpg', 'hash': None}]
+        >>> groups = self._compute_duplicate_groups_from_files(files)
+        >>> groups
+        []  # Warns: No hashes found
+
+        Raises
+        ------
+        None: Logs warnings for issues; always returns a valid list (possibly empty).
+
+        Notes
+        -----
+        - Time complexity: O(n), where n = len(files), using dict grouping.
+        - If compute_hashes was False in the scan summary, all 'hash' will be None, triggering
+          a warning and returning []. For duplicates mode, ensure compute_hashes=True in profile.
+        - Paths are appended in input order; no sorting applied.
+        - Follows project guidelines: skips invalid files, logs informatively, no exceptions
+          propagated to caller for GUI resilience.
+        """
+        groups = defaultdict(list)
+        skipped = 0
+        has_valid_hashes = False
+
+        for file_dict in files:
+            try:
+                path = file_dict.get('path')
+                hash_val = file_dict.get('hash')
+                if not path or not hash_val:
+                    self.logger.warning(
+                        f"Skipping file without valid path or hash: path={path or 'missing'}, "
+                        f"hash={hash_val}"
+                    )
+                    skipped += 1
+                    continue
+                # Mark that at least one valid hash exists
+                has_valid_hashes = True
+                groups[hash_val].append({'path': path})
+            except Exception as e:
+                self.logger.warning(
+                    f"Error processing file dict {file_dict.get('path', 'unknown')}: {e}"
+                )
+                skipped += 1
+                continue
+
+        if skipped > 0:
+            self.logger.warning(f"Skipped {skipped} out of {len(files)} files due to missing data or errors")
+
+        # Warn if no hashes were computed (covers compute_hashes=False case)
+        if not has_valid_hashes:
+            self.logger.warning(
+                "No valid hashes in files list; returning empty groups. "
+                "For duplicates mode, ensure compute_hashes=True in scan profile."
+            )
+
+        # Filter and format groups with >=2 files
+        duplicate_groups = []
+        for hash_val, file_list in groups.items():
+            if len(file_list) > 1:
+                duplicate_groups.append({
+                    'hash': hash_val,
+                    'files': file_list,  # Already list of {'path': str}
+                    'count': len(file_list)
+                })
+
+        self.logger.info(
+            f"Computed {len(duplicate_groups)} duplicate groups from {len(files)} files "
+            f"(skipped {skipped})"
+        )
+        return duplicate_groups
 
     def _simulate_operation(self) -> None:
         """
@@ -2614,3 +2558,130 @@ class MainWindow(QMainWindow):
         action = QAction(text, self)
         action.triggered.connect(lambda: None)
         return action
+
+    def _compute_similarity_groups(self, profile_payload: dict, run_paths: list[str], db_mgr) -> list[list[str]]:
+        """
+        Compute perceptual hash similarity groups for the scanned paths.
+
+        Fetches image paths from the current run, computes pHashes using compute_phash_batch,
+        filters valid hashes, and groups similar images using find_similar_phash with threshold
+        from profile_payload['similarity']['phash_threshold'] or default 10.
+
+        Args:
+            profile_payload (dict): The profile JSON data containing 'similarity' settings.
+            run_paths (list[str]): List of absolute paths from the scan run.
+            db_mgr: DatabaseManager instance for cache access (if needed for validation).
+
+        Returns:
+            list[list[str]]: List of similarity groups, each a list of similar image paths.
+                             Empty list if no groups found or computation fails.
+
+        Raises:
+            None: Returns empty list on any error for GUI resilience.
+        """
+        try:
+            from src.pk_py_lib.core.image.similarity import compute_phash_batch, find_similar_phash
+            from src.pk_py_lib.core.cache import CacheManager
+
+            # Use cache if available via db_mgr (assuming db_mgr has cache_db path)
+            cache_mgr = CacheManager(Path(db_mgr.cache_db).parent) if db_mgr else None
+
+            settings = profile_payload.get('similarity', {}) if isinstance(profile_payload, dict) else {}
+            hash_size = settings.get('phash_hash_size', 8)
+            threshold = settings.get('phash_threshold', 10)
+
+            # Compute pHashes for run paths
+            phash_results = compute_phash_batch(
+                paths=run_paths,
+                hash_size=hash_size,
+                settings={'criteria': {'phash': {'hash_size': hash_size}}},
+                cache_manager=cache_mgr
+            )
+
+            # Filter to valid hashes
+            valid_hashes = [
+                {'path': path, 'hash': phash}
+                for path, phash in phash_results.items()
+                if phash is not None
+            ]
+
+            if not valid_hashes:
+                return []
+
+            # Group similar images
+            groups = find_similar_phash(
+                hashes=valid_hashes,
+                threshold=threshold,
+                settings={'similarity': {'phash_threshold': threshold}}
+            )
+
+            LOGGER.info(f"Computed {len(groups)} similarity groups (threshold={threshold}, valid_images={len(valid_hashes)})")
+            return groups
+
+        except Exception as e:
+            LOGGER.error("Similarity groups computation failed", exception=e)
+            return []
+
+    def _format_similarity_groups(self, groups: list[list[str]], db_mgr) -> list[dict]:
+        """
+        Format similarity path groups into the standard groups_data structure for dialogs.
+
+        For each group of paths, queries the DB for file metadata (size, modified) and formats
+        as {"hash": "perceptual_group_X", "count": int, "files": [{"path": str, "size": int, "modified": int, "pool": str}, ...]}.
+        Uses pool='A' for single-pool similarity. Groups with <2 paths are filtered out.
+
+        Args:
+            groups (list[list[str]]): List of path groups from find_similar_phash.
+            db_mgr: DatabaseManager for querying image_metadata.
+
+        Returns:
+            list[dict]: Formatted groups_data list, empty if no valid groups or DB error.
+        """
+        if not groups or not db_mgr:
+            return []
+
+        try:
+            with db_mgr.get_connection(db_mgr.cache_db) as conn:
+                # Create temp table for current run paths (reuse logic from _get_duplicate_groups_single_pool)
+                conn.execute("CREATE TEMP TABLE IF NOT EXISTS temp_run_files (file_path TEXT PRIMARY KEY)")
+                conn.execute("DELETE FROM temp_run_files")
+                conn.executemany("INSERT OR IGNORE INTO temp_run_files(file_path) VALUES (?)", [(p,) for p in groups[0]])  # All paths in groups are from run_paths
+
+                formatted_groups = []
+                for idx, group_paths in enumerate(groups, 1):
+                    if len(group_paths) < 2:
+                        continue
+
+                    # Query metadata for paths in this group
+                    placeholders = ",".join("?" for _ in group_paths)
+                    sql = f"""
+                        SELECT file_path, file_size, file_modified, pool
+                        FROM image_metadata
+                        JOIN temp_run_files ON file_path = temp_run_files.file_path
+                        WHERE file_path IN ({placeholders})
+                        ORDER BY file_path
+                    """
+                    rows = conn.execute(sql, group_paths).fetchall()
+
+                    files = []
+                    for row in rows:
+                        path = str(row["file_path"])
+                        size = int(row["file_size"] or 0)
+                        modified = int(row["file_modified"] or 0)
+                        pool = str(row["pool"] or "A")
+                        files.append({"path": path, "size": size, "modified": modified, "pool": pool})
+
+                    if len(files) >= 2:
+                        group_dict = {
+                            "hash": f"perceptual_group_{idx}",
+                            "count": len(files),
+                            "files": files
+                        }
+                        formatted_groups.append(group_dict)
+
+            LOGGER.debug(f"Formatted {len(formatted_groups)} similarity groups from {len(groups)} raw groups")
+            return formatted_groups
+
+        except Exception as e:
+            LOGGER.error("Formatting similarity groups failed", exception=e)
+            return []
