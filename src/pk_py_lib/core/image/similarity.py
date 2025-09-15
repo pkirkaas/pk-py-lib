@@ -445,7 +445,10 @@ def compute_phash_batch(
             logger.warning(f"Batch failed for {path} ({i}/{total}): {e}")
             results[path] = None
 
-        logger.info(f"Batch progress: {i}/{total} - {path}")
+        # Log progress every 50 files or at completion to reduce verbosity
+        if i % 50 == 0 or i == total:
+            progress_pct = (i / total) * 100
+            logger.info(f"Batch progress: {i}/{total} ({progress_pct:.1f}%)")
 
     success_count = sum(1 for v in results.values() if v is not None)
     logger.info(f"Batch complete: {success_count}/{total} successful")
@@ -819,7 +822,10 @@ def compute_whash_batch(
             logger.warning(f"Batch failed for {path} ({i}/{total}): {e}")
             results[path] = None
 
-        logger.info(f"Batch progress: {i}/{total} - {path}")
+        # Log progress every 50 files or at completion to reduce verbosity
+        if i % 50 == 0 or i == total:
+            progress_pct = (i / total) * 100
+            logger.info(f"Batch progress: {i}/{total} ({progress_pct:.1f}%)")
 
     success_count = sum(1 for v in results.values() if v is not None)
     logger.info(f"Batch complete: {success_count}/{total} successful")

@@ -1173,6 +1173,9 @@ class SimilarityManagerDialog(QDialog):
         """
         super().__init__(parent)
         self.groups: List[Dict[str, Any]] = groups or []
+        # Normalize incoming groups to the internal shape {'paths': [...], 'scores': [...]}
+        # This allows the dialog to auto-populate when results are passed from MainWindow without requiring manual Refresh.
+        self.groups = self._normalize_groups_input(self.groups)
         self.paths: List[str] = paths or []
         self.db_manager = db_manager
         self.settings = settings or {}
@@ -1313,7 +1316,113 @@ class SimilarityManagerDialog(QDialog):
 
         QTimer.singleShot(100, self._configure_initial_splitter_sizes)
 
+        # Automatically compute and populate if no pre-computed groups provided
+        if not self.groups:
+            def auto_refresh():
+                """
+                Automatically trigger refresh to populate groups on dialog open if none pre-computed.
+                
+                This ensures the groups pane populates immediately after similarity search results
+                are available in the DB/cache, without requiring manual "Refresh Groups" click.
+                
+                Errors are caught and logged with full details (path, algorithm, threshold, stack trace)
+                to stderr via LOGGER_SIM; user sees selectable error dialog for feedback.
+                
+                Preserves manual refresh button for re-computation.
+                """
+                try:
+                    self._on_refresh()
+                except Exception as e:
+                    import traceback
+                    tb = traceback.format_exc()
+                    LOGGER_SIM.error(
+                        "Automatic population failed on dialog init",
+                        exception=e,
+                        variables={
+                            "algorithm": self.alg_combo.currentText(),
+                            "threshold": self.threshold_spin.value(),
+                            "paths_count": len(getattr(self, "paths", [])),
+                            "traceback": tb
+                        }
+                    )
+                    from src.pk_py_lib.gui.utils.messages import show_selectable_error
+                    show_selectable_error(
+                        self,
+                        "Initialization Error",
+                        f"Failed to automatically load similarity groups:\n\n{str(e)}\n\n"
+                        f"Algorithm: {self.alg_combo.currentText()}\n"
+                        f"Threshold: {self.threshold_spin.value()}\n\n"
+                        f"Check logs for details. You can still use 'Refresh Groups' manually."
+                    )
+
+            QTimer.singleShot(0, auto_refresh)
+
         LOGGER_SIM.info("SimilarityManagerDialog initialized", variables={"groups_count": len(self.groups), "paths_count": len(self.paths)})
+
+    def _normalize_groups_input(self, raw_groups: Optional[List[Any]]) -> List[Dict[str, Any]]:
+        """
+        Normalize incoming groups into the internal shape expected by this dialog.
+
+        Acceptable inputs:
+        - [{'paths': [...], 'scores': [...]}]  # already normalized
+        - [{'files': [{'path': ...}, ...], 'count': int, ...}]  # groups_data from MainWindow
+        - [[path1, path2, ...], ...]  # legacy simple list-of-paths groups
+
+        Returns a list of dicts with:
+        - 'paths': list[str]
+        - 'scores': list[float]  (Hamming distances; default 0.0 when unknown)
+        - 'algorithm': str       (best-effort; defaults to 'phash')
+        """
+        normalized: List[Dict[str, Any]] = []
+        try:
+            for g in (raw_groups or []):
+                # Case 1: dict with 'paths' (preferred)
+                if isinstance(g, dict) and isinstance(g.get('paths'), list):
+                    paths = [str(p) for p in (g.get('paths') or []) if p]
+                    raw_scores = g.get('scores') or []
+                    scores: List[float] = []
+                    if isinstance(raw_scores, list):
+                        for i in range(len(paths)):
+                            try:
+                                scores.append(float(raw_scores[i]) if i < len(raw_scores) and raw_scores[i] is not None else 0.0)
+                            except Exception:
+                                scores.append(0.0)
+                    else:
+                        scores = [0.0 for _ in paths]
+                    normalized.append({
+                        'paths': paths,
+                        'scores': scores,
+                        'algorithm': str(g.get('algorithm') or 'phash')
+                    })
+                    continue
+
+                # Case 2: dict with 'files' (MainWindow._format_similarity_groups result)
+                if isinstance(g, dict) and isinstance(g.get('files'), list):
+                    files_list = g.get('files') or []
+                    paths = [str(f.get('path')) for f in files_list if isinstance(f, dict) and f.get('path')]
+                    scores = [0.0 for _ in paths]  # distance unknown at this stage
+                    normalized.append({
+                        'paths': paths,
+                        'scores': scores,
+                        'algorithm': str(g.get('algorithm') or 'phash')
+                    })
+                    continue
+
+                # Case 3: legacy list of path strings
+                if isinstance(g, list):
+                    paths = [str(p) for p in g if p]
+                    scores = [0.0 for _ in paths]
+                    normalized.append({
+                        'paths': paths,
+                        'scores': scores,
+                        'algorithm': 'phash'
+                    })
+                    continue
+            return normalized
+        except Exception as e:
+            LOGGER_SIM.error("Failed to normalize similarity groups", exception=e)
+            # Fallback: if normalization failed, return empty to trigger refresh or safe UI state
+            return []
 
     def _populate_tree(self) -> None:
         """
