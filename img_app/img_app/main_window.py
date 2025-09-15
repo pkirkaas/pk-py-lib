@@ -1516,7 +1516,7 @@ class MainWindow(QMainWindow):
             if is_similarity:
                 # Compute perceptual hash groups for similarity mode
                 threshold = payload_for_mode.get('similarity', {}).get('phash_threshold', 10)
-                similarity_groups = self._get_similarity_groups_from_db(threshold, 'pHash', db_mgr) or self._compute_similarity_groups(payload_for_mode, run_paths, db_mgr)
+                similarity_groups = self._compute_similarity_groups(payload_for_mode, run_paths, db_mgr)
                 groups_data = summary.get('groups_data', []) or self._format_similarity_groups(similarity_groups, db_mgr)
                 logger.info(f"Groups data prepared: {len(groups_data)} groups")
                 settings_sim = payload_for_mode.get('similarity', {}) if isinstance(payload_for_mode, dict) else {}
@@ -1524,7 +1524,6 @@ class MainWindow(QMainWindow):
                     groups=groups_data,
                     summary_text=text,
                     report_text=report_text,
-                    mode='similarity',
                     db_manager=db_mgr,
                     settings=settings_sim,
                     parent=self
@@ -2650,7 +2649,6 @@ class MainWindow(QMainWindow):
                     sql = f"""
                         SELECT file_path, file_size, file_modified, pool
                         FROM image_metadata
-                        JOIN temp_run_files ON file_path = temp_run_files.file_path
                         WHERE file_path IN ({placeholders})
                         ORDER BY file_path
                     """

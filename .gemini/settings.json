@@ -1,0 +1,14 @@
+{
+  "general": {
+    "vimMode": true,
+    "preferredEditor": "code"
+  },
+    "context": {
+    "fileName": ["README.md"],
+    "includeDirectories": ["docs","docs/roo", ".roo/rules"],
+    "loadFromIncludeDirectories": true,
+    "fileFiltering": {
+      "respectGitIgnore": false
+    }
+  }
+}

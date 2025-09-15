@@ -27,6 +27,7 @@ from src.pk_py_lib.gui.utils.messages import show_selectable_info, show_selectab
 from src.pk_py_lib.core.logging import get_logger
 from src.pk_py_lib.core.database import DatabaseManager
 from src.pk_py_lib.core.image import similarity
+from src.pk_py_lib.core.filesystem.traversal import IMAGE_EXTENSIONS
 from PySide6.QtWidgets import QComboBox, QSpinBox, QHBoxLayout
 from PySide6.QtGui import QPixmap, QIcon
 
@@ -1429,8 +1430,14 @@ class SimilarityManagerDialog(QDialog):
             if not self.paths and self.db_manager:
                 # Query valid image paths from DB
                 with self.db_manager.get_connection(self.db_manager.cache_db) as conn:
+                    ext_conditions = " OR ".join([f"im.file_path LIKE '%{ext}'" for ext in IMAGE_EXTENSIONS])
+
                     rows = conn.execute(
-                        "SELECT file_path FROM image_metadata WHERE is_valid = 1 AND file_path LIKE '%.jpg' OR file_path LIKE '%.png' OR ... "  # Add image extensions
+                        f"""
+                        SELECT im.file_path
+                        FROM image_metadata im
+                        WHERE im.is_valid = 1 AND ({ext_conditions})
+                        """
                     ).fetchall()
                     self.paths = [row['file_path'] for row in rows if row['file_path']]
                 if not self.paths:
@@ -1450,7 +1457,7 @@ class SimilarityManagerDialog(QDialog):
             hashes: Dict[str, str] = {}
             for path in self.paths:
                 try:
-                    hash_val = similarity.compute_hash(path, algorithm)
+                    hash_val = similarity.compute_phash(path, hash_size=8) # FIXME: Algorithm not used
                     hashes[path] = hash_val
                 except Exception as e:
                     LOGGER_SIM.error(
@@ -1473,7 +1480,7 @@ class SimilarityManagerDialog(QDialog):
                 for j, p2 in enumerate(self.paths[i+1:], i+1):
                     if p2 not in hashes:
                         continue
-                    dist = similarity.hamming(h1, hashes[p2])
+                    dist = similarity.hamming_distance(h1, hashes[p2])
                     if dist <= threshold:
                         group['paths'].append(p2)
                         group['scores'].append(float(dist))

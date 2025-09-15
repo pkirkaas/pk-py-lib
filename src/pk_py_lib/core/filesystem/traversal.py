@@ -822,7 +822,7 @@ def scan_directory(
                             first_alg = next(iter(result['hashes']))
                             primary_hash = result['hashes'][first_alg]
                             primary_alg = first_alg
-                            log.debug(f"Using perceptual hash {primary_alg} for {path}")
+                            log.debug(f"Using perceptual hash for {path}")
 
                         # Single upsert to image_metadata with unified hash/algorithm
                         conn.execute("""
@@ -832,7 +832,7 @@ def scan_directory(
                             ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 1)
                         """, (str(path), path.name, file_info.extension, file_info.size, file_info.modified_time,
                               primary_hash, primary_alg))
-                        log.debug(f"Stored metadata for {path} with algorithm='{primary_alg}', hash={primary_hash[:8]}...")
+                        log.debug(f"Stored metadata for {path}")
                 except Exception as e_db:
                     log.error(f"DB storage failed for {path}: {e_db}", exc_info=True)
                     error_details.append({
