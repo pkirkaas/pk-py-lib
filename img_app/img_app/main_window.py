@@ -38,7 +38,7 @@ from datetime import datetime
 import traceback
 from src.pk_py_lib.core.logging.logger import get_logger
 
-from .widgets.duplicate_manager import SimilarityManagerDialog, DuplicateManagerDialog
+from .widgets.duplicate_manager import ImageSimilarityManagerDialog
 
 import logging
 from collections import defaultdict
@@ -1513,6 +1513,8 @@ class MainWindow(QMainWindow):
         if not is_similarity:
             logger.warning("Mode detection failed; defaulting to duplicates mode.")
         try:
+            # Use unified dialog with mode
+            mode = 'similarity' if is_similarity else 'duplicates'
             if is_similarity:
                 # Compute perceptual hash groups for similarity mode
                 threshold = payload_for_mode.get('similarity', {}).get('phash_threshold', 10)
@@ -1520,16 +1522,7 @@ class MainWindow(QMainWindow):
                 groups_data = similarity_groups
                 logger.info(f"Groups data prepared: {len(groups_data)} groups")
                 settings_sim = payload_for_mode.get('similarity', {}) if isinstance(payload_for_mode, dict) else {}
-                dlg = SimilarityManagerDialog(
-                    groups=groups_data,
-                    paths=run_paths,
-                    summary_text=text,
-                    report_text=report_text,
-                    db_manager=db_mgr,
-                    settings=settings_sim,
-                    parent=self
-                )
-                logger.info(f"Created dialog for mode '{self._current_scan_mode or 'duplicates'}': {type(dlg).__name__} with {len(groups_data)} groups")
+                settings = settings_sim
             else:
                 # Diagnostics: summarize shape of file entries before grouping
                 try:
@@ -1569,9 +1562,19 @@ class MainWindow(QMainWindow):
                     groups_data = self._compute_duplicate_groups_from_files(summary['files'])
                 groups_data = groups_data or (groups_data_prepared or self._get_duplicate_groups_single_pool() or groups_data_fallback)
                 logger.info(f"Groups data prepared: {len(groups_data)} groups")
-                text += f"\nDuplicates: {len(groups_data)} groups"
-                dlg = DuplicateManagerDialog(groups=groups_data or [], summary_text=text, report_text=report_text, parent=self)
-                logger.info(f"Created dialog for mode '{self._current_scan_mode or 'duplicates'}': {type(dlg).__name__} with {len(groups_data)} groups")
+                settings = {}
+            text += f"\nDuplicates: {len(groups_data)} groups"
+            dlg = ImageSimilarityManagerDialog(
+                mode=mode,
+                groups=groups_data or [],
+                summary_text=text,
+                report_text=report_text,
+                db_manager=db_mgr,
+                settings=settings,
+                paths=run_paths if mode == 'similarity' else None,
+                parent=self
+            )
+            logger.info(f"Created dialog for mode '{self._current_scan_mode or 'duplicates'}': {type(dlg).__name__} with {len(groups_data)} groups")
        
             ret = dlg.exec()
             print(f"[DEBUG _on_scan_finished] Dialog exec() returned: {ret}", file=sys.stderr)

@@ -228,3 +228,43 @@ Extensibility:
 - **Scalability**: For millions, consider approximate nearest neighbors (e.g., Annoy/FAISS) for distance queries instead of brute-force.
 
 This design ensures reusability (e.g., `compute_phash` callable standalone) and flexibility for PoC evolution.
+
+### Group Model and Metadata Processing
+
+To support hierarchical GUI display and rich statistics, new dataclasses are introduced in [src/pk_py_lib/gui/models.py](src/pk_py_lib/gui/models.py):
+
+- **ImageData**: Holds individual image details for tree child items.
+  - `path` (str): Full file path.
+  - `size` (int): File size in bytes.
+  - `resolution` (str): Dimensions "WxH" (from PIL.Image.size).
+  - `mod_date` (str): Formatted date "dd-MMM-yy" (from os.stat.st_mtime).
+  - `score` (float): Normalized similarity (0.0-1.0) to group reference.
+  - `thumb` (QPixmap | None): Optional pre-rendered thumbnail; generated on-demand in delegate.
+
+- **Stats**: Group aggregates.
+  - `min_score` / `max_score` / `avg_score` (float): Score range/average.
+  - `total_size` (int): Sum of image sizes.
+
+- **Group**: Cluster representation.
+  - `id` (int): Sequential identifier.
+  - `images` (List[ImageData]): Member images.
+  - `stats` (Stats): Computed aggregates.
+  - `ref_path` (str): Reference path for group header thumbnail.
+
+**Metadata Fetching**: `get_image_metadata(path)` uses os.stat for size/date, PIL for resolution, `format_timestamp` for date formatting. Errors logged, "Unknown" fallback.
+
+**Stats Computation**: `compute_group_stats(images)` calculates min/max/avg scores (list comprehension), total_size as sum.
+
+**Updated Functions**: `find_similar_phash` and `find_similar_whash` now return `List[Group]`:
+- After union-find clustering, for each group (2+ paths):
+  - Sort paths, ref_path = first.
+  - For each path: fetch metadata, compute dist = hamming_distance(ref_hash, path_hash), score = 1 - (dist / 64.0).
+  - Create ImageData, collect in list.
+  - Compute Stats, create Group, append.
+- For exact duplicates (`find_exact_duplicates`): Group by hash equality, score=1.0, stats min/max/avg=1.0.
+
+**Dispatcher**: `find_similar_images(algorithm: str, hashes: List[Dict], threshold: int, settings: Dict) -> List[Group]` routes to exact/phash/whash.
+
+**Batch Integration**: `compute_phash_batch` / `compute_whash_batch` return {path: hash or None}, used to build hashes list for grouping. Progress logged every 50 files.
+
+**GUI Integration**: In [duplicate_manager.py](img_app/img_app/widgets/duplicate_manager.py), populate QTreeWidget with Group data: top item for group stats/thumb, children for ImageData (checkbox, thumb via delegate). Post-delete filters groups, recomputes stats.

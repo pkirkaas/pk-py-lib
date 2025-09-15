@@ -257,3 +257,50 @@ Acceptance checklist (UI)
 - **Streamlined Workflow**: Users proceed directly from scan initiation to result interaction without modal interruptions.
 - **Improved Usability**: Tabbed interface allows easy switching between summary statistics and detailed reports.
 - **Enhanced Data Accessibility**: Selectable text facilitates copying of results for external use or documentation.
+
+### Unified ImageSimilarityManagerDialog
+
+The previous separate DuplicateManagerDialog and SimilarityManagerDialog are merged into a single ImageSimilarityManagerDialog supporting both modes via parameter.
+
+**UI Structure**:
+- **Tabs**: "Processing Summary" and "Mode Report" (QTextEdit, selectable text).
+- **Vertical Splitter**:
+  - **Controls Row**: Mode label. For similarity: Algorithm QComboBox ('phash'/'whash'), Threshold QSpinBox (0-64), "Compute Groups" QPushButton.
+  - **Horizontal Splitter**: QTreeWidget (left, 2/3 width) | QScrollArea with ImageGrid preview (right, 1/3).
+  - **Status Label**: Counts groups/files/selected.
+  - **Buttons**: "Delete Selected" (enabled if checked), "Close".
+- **Tree Columns**: Select (checkbox, children only), Thumbnail (64px via QStyledItemDelegate from path), Name (basename/group ID), Size (formatted), Resolution ("WxH"), Date ("dd-MMM-yy"), Score ("% or 100.0%"; hidden for duplicates).
+
+**Group Display** (top items, bold, no checkbox):
+- Name: "Group ID: count images"
+- Thumbnail: Reference image (from Group.ref_path).
+- Size: Total size.
+- Resolution: N/A.
+- Date: N/A.
+- Score: For similarity: "min% - max%"; for duplicates: "Exact Matches".
+- Savings: Total - min size.
+
+**Image Display** (child items):
+- Checkbox: Select for delete.
+- Thumbnail: Individual image.
+- Name: Basename.
+- Size: Formatted size.
+- Resolution: "WxH" or "Unknown".
+- Date: Formatted mod date.
+- Score: "%" for similarity, "100.0%" for duplicates.
+
+**Behavior**:
+- **Compute (similarity only)**: Queries image_hashes for algorithm, calls find_similar_images, populates tree. Status label for progress (sync PoC).
+- **Preview**: On selection, update ImageGrid with scaled pixmaps (4 cols, max 16).
+- **Delete Selected**: Confirmation dialog, send2trash or os.remove, refresh groups (filter deleted, recompute stats).
+- **Context Menu**: On child: "Delete This Image" (single delete).
+- **Mode Support**: Hide score column for duplicates; set fixed "Exact Matches"/"100.0%".
+- **Error Handling**: show_selectable_error for compute/delete errors, log to stderr with traceback.
+- **Reusability**: Configurable via settings (threshold, columns); thumb delegate reusable.
+
+**Integration**:
+- Called from main_window._on_scan_finished with mode from profile, groups from _compute_*_groups (updated to return List[Group]).
+- For duplicates: Groups with score=1.0, no compute button.
+- Text selectable in tabs, status, errors.
+
+This unified design supports mode-based computation/display, hierarchical view, and safe deletion with UI feedback.

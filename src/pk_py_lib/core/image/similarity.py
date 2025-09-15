@@ -12,12 +12,15 @@ Note: Syntax validation performed per project rules using Python ast.
 from __future__ import annotations
 
 import logging
+import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict
 from PIL import Image
 import imagehash
 from pk_py_lib.core.cache import CacheManager
 from pk_py_lib.core.logging.logger import get_logger
+from pk_py_lib.gui.models import ImageData, Group, Stats
 
 
 class InvalidImageError(Exception):
@@ -52,6 +55,115 @@ class SimilarityError(Exception):
 
 
 logger = get_logger(__name__)
+
+
+def format_timestamp(ts: float) -> str:
+    """
+    Format Unix timestamp to human-readable date string.
+
+    Args:
+        ts (float): Unix timestamp (seconds since epoch).
+
+    Returns:
+        str: Formatted date as "dd-MMM-yy" (e.g., "15-Sep-25").
+
+    Example:
+        >>> print(format_timestamp(1726400000.0))
+        15-Sep-25
+    """
+    try:
+        dt = datetime.fromtimestamp(ts)
+        return dt.strftime("%d-%b-%y")
+    except (ValueError, OSError):
+        return "Unknown"
+
+
+def get_resolution(path: str) -> str:
+    """
+    Get image resolution (width x height) using PIL.
+
+    Args:
+        path (str): Path to the image file.
+
+    Returns:
+        str: Resolution string (e.g., "1920x1080") or "Unknown" on failure.
+
+    Raises:
+        InvalidImageError: If image cannot be loaded.
+
+    Example:
+        >>> res = get_resolution("/path/to/img.jpg")
+        >>> print(res)
+        1920x1080
+    """
+    try:
+        with Image.open(path) as img:
+            w, h = img.size
+            return f"{w}x{h}"
+    except Exception as e:
+        logger.warning(f"Failed to get resolution for {path}: {e}")
+        return "Unknown"
+
+
+def get_image_metadata(path: str) -> Dict[str, any]:
+    """
+    Fetch basic metadata for an image: size, resolution, modification date.
+
+    Args:
+        path (str): Path to the image file.
+
+    Returns:
+        Dict[str, any]: {'size': int, 'resolution': str, 'mod_date': str}
+
+    Raises:
+        IOError: For file access errors.
+        InvalidImageError: For image loading issues.
+
+    Example:
+        >>> meta = get_image_metadata("/path/to/img.jpg")
+        >>> print(meta['size'])
+        524288
+    """
+    try:
+        stat = os.stat(path)
+        size = stat.st_size
+        mod_ts = stat.st_mtime
+        mod_date = format_timestamp(mod_ts)
+        resolution = get_resolution(path)
+        return {'size': size, 'resolution': resolution, 'mod_date': mod_date}
+    except IOError as e:
+        raise IOError(f"Failed to access file {path}: {e}")
+    except Exception as e:
+        raise InvalidImageError(path, f"Metadata extraction failed: {e}")
+
+
+def compute_group_stats(images: List[ImageData]) -> Stats:
+    """
+    Compute aggregate statistics for a group of images.
+
+    Args:
+        images (List[ImageData]): List of ImageData objects.
+
+    Returns:
+        Stats: Aggregated min/max/avg score and total size.
+
+    Example:
+        >>> stats = compute_group_stats([img1, img2])
+        >>> print(stats.avg_score)
+        0.9
+    """
+    if not images:
+        return Stats()
+
+    scores = [img.score for img in images]
+    sizes = [img.size for img in images]
+
+    min_score = min(scores)
+    max_score = max(scores)
+    avg_score = sum(scores) / len(scores)
+    total_size = sum(sizes)
+
+    return Stats(min_score=min_score, max_score=max_score, avg_score=avg_score, total_size=total_size)
 
 
 def compute_phash(
@@ -285,7 +397,7 @@ def find_similar_phash(
     hashes: List[Dict[str, str]],
     threshold: Optional[int] = None,
     settings: Optional[Dict] = None
-) -> List[List[str]]:
+) -> List[Group]:
     """
     Find groups of visually similar images using pHash Hamming distances.
 
@@ -304,9 +416,13 @@ def find_similar_phash(
             settings['similarity']['phash_threshold'] (default 10).
 
     Returns:
-        List[List[str]]: List of groups, each a list of similar image paths
-            (e.g., [['/img1.jpg', '/img2.jpg'], ['/img3.jpg', '/img4.jpg']]).
-            Singletons omitted; order preserved from input.
+        List[Group]: List of groups, each a Group with:
+        - id (int): Unique group identifier
+        - images (List[ImageData]): ImageData objects with path, metadata, and normalized score (1 - hamming_dist / 64)
+        - stats (Stats): Aggregated min/max/avg score and total_size
+        - ref_path (str): Path to reference image
+        Singletons omitted; images sorted by path.
+        Example: groups[0].images[0].score → 0.95 (95% similarity)
 
     Raises:
         ValueError: If hashes list is empty, invalid dict structure, or invalid hashes.
@@ -377,15 +493,53 @@ def find_similar_phash(
                 logger.warning(f"Skipping invalid pair ({i}, {j}): {e}")
                 continue
 
-    # Build groups
+    # Build groups using indices to preserve hashes
     from collections import defaultdict
-    group_dict: Dict[int, List[str]] = defaultdict(list)
+    group_dict: Dict[int, List[int]] = defaultdict(list)
     for i in range(n):
         root = find(i)
-        group_dict[root].append(hashes[i]['path'])
+        group_dict[root].append(i)
 
-    # Filter groups with 2+ items, sort paths for consistency
-    groups = [sorted(g) for g in group_dict.values() if len(g) >= 2]
+    groups: List[Group] = []
+    group_id = 1
+    for root, indices in group_dict.items():
+        if len(indices) < 2:
+            continue
+        group_hashes = [hashes[i] for i in indices]
+        group_hashes.sort(key=lambda d: d['path'])
+        ref_hash_dict = group_hashes[0]
+        ref_path = ref_hash_dict['path']
+        ref_hash = ref_hash_dict['hash']
+        images: List[ImageData] = []
+        valid_count = 0
+        for h_dict in group_hashes:
+            try:
+                dist = hamming_distance(ref_hash, h_dict['hash'])
+                score = 1.0 - (dist / 64.0)
+                meta = get_image_metadata(h_dict['path'])
+                img_data = ImageData(
+                    path=h_dict['path'],
+                    size=meta['size'],
+                    resolution=meta['resolution'],
+                    mod_date=meta['mod_date'],
+                    score=score
+                )
+                images.append(img_data)
+                valid_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to create ImageData for {h_dict['path']}: {e}")
+                continue
+        if valid_count < 2:
+            continue
+        stats = compute_group_stats(images)
+        group_obj = Group(
+            id=group_id,
+            images=images,
+            stats=stats,
+            ref_path=ref_path
+        )
+        groups.append(group_obj)
+        group_id += 1
 
     logger.info(f"Found {len(groups)} similar pHash groups (threshold={threshold}, n={n})")
     return groups
@@ -658,7 +812,7 @@ def find_similar_whash(
     hashes: List[Dict[str, str]],
     threshold: Optional[int] = None,
     settings: Optional[Dict] = None
-) -> List[List[str]]:
+) -> List[Group]:
     """
     Find groups of visually similar images using wHash Hamming distances.
 
@@ -677,9 +831,13 @@ def find_similar_whash(
             settings['similarity']['whash_threshold'] (default 12).
 
     Returns:
-        List[List[str]]: List of groups, each a list of similar image paths
-            (e.g., [['/img1.jpg', '/img2.jpg'], ['/img3.jpg', '/img4.jpg']]).
-            Singletons omitted; order preserved from input.
+        List[Group]: List of groups, each a Group with:
+        - id (int): Unique group identifier
+        - images (List[ImageData]): ImageData objects with path, metadata, and normalized score (1 - hamming_dist / 64)
+        - stats (Stats): Aggregated min/max/avg score and total_size
+        - ref_path (str): Path to reference image
+        Singletons omitted; images sorted by path.
+        Example: groups[0].images[0].score → 0.95 (95% similarity)
 
     Raises:
         ValueError: If hashes list is empty, invalid dict structure, or invalid hashes.
@@ -750,15 +908,53 @@ def find_similar_whash(
                 logger.warning(f"Skipping invalid pair ({i}, {j}): {e}")
                 continue
 
-    # Build groups
+    # Build groups using indices to preserve hashes
     from collections import defaultdict
-    group_dict: Dict[int, List[str]] = defaultdict(list)
+    group_dict: Dict[int, List[int]] = defaultdict(list)
     for i in range(n):
         root = find(i)
-        group_dict[root].append(hashes[i]['path'])
+        group_dict[root].append(i)
 
-    # Filter groups with 2+ items, sort paths for consistency
-    groups = [sorted(g) for g in group_dict.values() if len(g) >= 2]
+    groups: List[Group] = []
+    group_id = 1
+    for root, indices in group_dict.items():
+        if len(indices) < 2:
+            continue
+        group_hashes = [hashes[i] for i in indices]
+        group_hashes.sort(key=lambda d: d['path'])
+        ref_hash_dict = group_hashes[0]
+        ref_path = ref_hash_dict['path']
+        ref_hash = ref_hash_dict['hash']
+        images: List[ImageData] = []
+        valid_count = 0
+        for h_dict in group_hashes:
+            try:
+                dist = hamming_distance(ref_hash, h_dict['hash'])
+                score = 1.0 - (dist / 64.0)
+                meta = get_image_metadata(h_dict['path'])
+                img_data = ImageData(
+                    path=h_dict['path'],
+                    size=meta['size'],
+                    resolution=meta['resolution'],
+                    mod_date=meta['mod_date'],
+                    score=score
+                )
+                images.append(img_data)
+                valid_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to create ImageData for {h_dict['path']}: {e}")
+                continue
+        if valid_count < 2:
+            continue
+        stats = compute_group_stats(images)
+        group_obj = Group(
+            id=group_id,
+            images=images,
+            stats=stats,
+            ref_path=ref_path
+        )
+        groups.append(group_obj)
+        group_id += 1
 
     logger.info(f"Found {len(groups)} similar wHash groups (threshold={threshold}, n={n})")
     return groups
@@ -833,29 +1029,161 @@ def compute_whash_batch(
     return results
 
 
+def find_exact_duplicates(
+    hashes: List[Dict[str, str]]
+) -> List[Group]:
+    """
+    Find groups of exact duplicate images based on content hash equality.
+
+    Groups paths with identical hash values. Fetches metadata for each, sets score=1.0
+    for all, and computes stats. Suitable for BLAKE3 or SHA-256 hashes.
+
+    Args:
+        hashes (List[Dict[str, str]]): List of {'path': str, 'hash': str} where 'hash' is
+            content hash (e.g., BLAKE3 hex). From DB or computed.
+
+    Returns:
+        List[Group]: List of duplicate groups with ImageData (score=1.0), stats.
+
+    Raises:
+        ValueError: If hashes empty or invalid.
+        InvalidImageError: For metadata fetch failures.
+
+    Example:
+        >>> sample_hashes = [
+        ...     {'path': '/img1.jpg', 'hash': 'abc123'},
+        ...     {'path': '/img2.jpg', 'hash': 'abc123'},
+        ...     {'path': '/img3.jpg', 'hash': 'def456'}
+        ... ]
+        >>> groups = find_exact_duplicates(sample_hashes)
+        >>> print(len(groups))  # 1 group
+        1
+    """
+    if not hashes:
+        raise ValueError("hashes list cannot be empty")
+
+    from collections import defaultdict
+
+    hash_to_paths = defaultdict(list)
+    for h in hashes:
+        if 'path' not in h or 'hash' not in h or not isinstance(h['path'], str):
+            raise ValueError("Invalid hash dict: missing 'path' or 'hash'")
+        hash_to_paths[h['hash']].append(h['path'])
+
+    groups: List[Group] = []
+    group_id = 1
+    for hash_val, paths in hash_to_paths.items():
+        if len(paths) < 2:
+            continue
+        paths.sort()
+        ref_path = paths[0]
+
+        images: List[ImageData] = []
+        for path in paths:
+            try:
+                meta = get_image_metadata(path)
+                score = 1.0
+                img_data = ImageData(
+                    path=path,
+                    size=meta['size'],
+                    resolution=meta['resolution'],
+                    mod_date=meta['mod_date'],
+                    score=score
+                )
+                images.append(img_data)
+            except Exception as e:
+                logger.error(f"Failed to process duplicate {path}: {e}")
+                continue
+
+        if len(images) < 2:
+            continue
+
+        stats = compute_group_stats(images)
+        # Override scores for exact
+        stats.min_score = 1.0
+        stats.max_score = 1.0
+        stats.avg_score = 1.0
+
+        group = Group(
+            id=group_id,
+            images=images,
+            stats=stats,
+            ref_path=ref_path
+        )
+        groups.append(group)
+        group_id += 1
+
+    logger.info(f"Found {len(groups)} exact duplicate groups (n={len(hashes)})")
+    return groups
+
+
+def find_similar_images(
+    hashes: List[Dict[str, str]],
+    algorithm: str = "phash",
+    threshold: Optional[int] = None,
+    settings: Optional[Dict] = None
+) -> List[Group]:
+    """
+    Dispatcher for finding similar or exact duplicate image groups.
+
+    Routes to exact, pHash, or wHash. For 'exact', ignores threshold/settings.
+    Returns enriched Group objects with metadata and normalized scores.
+
+    Args:
+        hashes (List[Dict[str, str]]): List of {'path': str, 'hash': str} records.
+            For 'exact': content hash (BLAKE3/SHA-256). For perceptual: phash/whash.
+        algorithm (str): 'exact', 'phash', or 'whash' (default 'phash').
+        threshold (Optional[int]): Max distance for perceptual (ignored for 'exact').
+        settings (Optional[Dict]): For perceptual threshold override.
+
+    Returns:
+        List[Group]: List of groups.
+
+    Raises:
+        ValueError: Unsupported algorithm or invalid input.
+
+    Example:
+        >>> groups = find_similar_images(hashes=sample_hashes, algorithm='exact')
+        >>> print(len(groups))
+        1
+    """
+    if algorithm == "exact":
+        return find_exact_duplicates(hashes)
+    elif algorithm == "phash":
+        return find_similar_phash(hashes, threshold, settings)
+    elif algorithm == "whash":
+        return find_similar_whash(hashes, threshold, settings)
+    else:
+        raise ValueError(f"Unsupported algorithm: {algorithm}")
+
+
 if __name__ == "__main__":
     """
-    Simple module test: Verify import and basic usage for pHash and wHash.
-    No sample image provided; runs smoke tests on compute_phash and compute_whash with dummy path
-    (will raise InvalidImageError, which is expected).
+    Simple module test: Verify imports and basic calls.
+    Uses dummy paths (raises InvalidImageError, expected).
     """
     print("Image similarity module loaded successfully.")
     try:
-        # Smoke test for pHash: Call with dummy path (expect error, but no syntax issues)
-        _ = compute_phash("dummy_nonexistent.jpg")
-        print("pHash basic function call succeeded (dummy path should fail gracefully).")
+        _ = compute_phash("dummy.jpg")
+        print("pHash call OK (dummy fails gracefully).")
     except InvalidImageError:
-        print("Expected InvalidImageError for pHash raised correctly.")
+        print("Expected pHash error.")
     except Exception as e:
-        print(f"Unexpected error in pHash smoke test: {e}")
+        print(f"pHash error: {e}")
     
     try:
-        # Smoke test for wHash
-        _ = compute_whash("dummy_nonexistent.jpg")
-        print("wHash basic function call succeeded (dummy path should fail gracefully).")
+        _ = compute_whash("dummy.jpg")
+        print("wHash call OK (dummy fails gracefully).")
     except InvalidImageError:
-        print("Expected InvalidImageError for wHash raised correctly.")
+        print("Expected wHash error.")
     except Exception as e:
-        print(f"Unexpected error in wHash smoke test: {e}")
+        print(f"wHash error: {e}")
     
-    print("Module verification complete.")
+    try:
+        sample = [{'path': 'a.jpg', 'hash': '0000'}, {'path': 'b.jpg', 'hash': '0000'}]
+        groups = find_exact_duplicates(sample)
+        print(f"Exact duplicates: {len(groups)} groups")
+    except Exception as e:
+        print(f"Exact test error: {e}")
+    
+    print("Verification complete.")
