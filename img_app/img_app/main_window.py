@@ -1531,6 +1531,38 @@ class MainWindow(QMainWindow):
                 )
                 logger.info(f"Created dialog for mode '{self._current_scan_mode or 'duplicates'}': {type(dlg).__name__} with {len(groups_data)} groups")
             else:
+                # Diagnostics: summarize shape of file entries before grouping
+                try:
+                    files_preview = summary.get('files') or []
+                    if isinstance(files_preview, list):
+                        c_hash = sum(1 for f in files_preview if isinstance(f, dict) and f.get('hash'))
+                        c_exact = sum(1 for f in files_preview if isinstance(f, dict) and f.get('exact_hash'))
+                        c_sha256_in_hashes = sum(
+                            1 for f in files_preview
+                            if isinstance(f, dict) and isinstance(f.get('hashes'), dict) and f['hashes'].get('sha256')
+                        )
+                        c_phash = sum(
+                            1 for f in files_preview
+                            if isinstance(f, dict) and isinstance(f.get('hashes'), dict) and f['hashes'].get('phash')
+                        )
+                        c_whash = sum(
+                            1 for f in files_preview
+                            if isinstance(f, dict) and isinstance(f.get('hashes'), dict) and f['hashes'].get('whash')
+                        )
+                        LOGGER.info(
+                            "scan.summary.files.shape",
+                            variables={
+                                "n": len(files_preview),
+                                "hash_top": c_hash,
+                                "exact_hash": c_exact,
+                                "hashes.sha256": c_sha256_in_hashes,
+                                "hashes.phash": c_phash,
+                                "hashes.whash": c_whash,
+                            }
+                        )
+                except Exception:
+                    pass
+    
                 # Use groups_data from scan if available, else fallback
                 groups_data = summary.get('groups_data', [])
                 if len(groups_data) == 0:
@@ -1741,122 +1773,83 @@ class MainWindow(QMainWindow):
     def _compute_duplicate_groups_from_files(self, files: list[dict]) -> list[dict]:
         """
         Compute groups of exact duplicate files based on their SHA256 hashes.
-
-        This method groups files by their hash values from the provided list of file dictionaries
-        (typically from scan_directory). It uses a dictionary to efficiently collect paths sharing
-        the same hash. Files without a valid 'hash' (None, empty, or missing) are skipped with a
-        warning log. Only groups containing 2 or more files are included in the result, as single
-        files are not duplicates.
-
-        The method handles edge cases like empty input, all files without hashes (e.g., if
-        compute_hashes=False during scan), and processing errors per file. It logs warnings for
-        skipped files and an overall warning if no valid hashes are present, indicating empty
-        groups may result from scan configuration.
-
+    
+        Input flexibility
+        - Accepts any of the following per-file keys for the identity hash:
+          • 'hash' (legacy callers)
+          • 'exact_hash' (preferred; produced by scan_directory)
+          • 'hashes' dict containing key 'sha256' (future compatibility)
+    
+        Behavior
+        - Groups by the resolved identity hash value.
+        - Skips entries missing a valid path or identity hash.
+        - Reduces log noise: aggregates skip counts; per-item issues are logged at DEBUG.
+    
         Parameters
         ----------
         files : list[dict]
-            List of file dictionaries from scan_directory. Each dict must include:
-            - 'path' (str): Absolute file path.
-            - 'hash' (str or None): SHA256 hash value (None if not computed).
-
-            Optional keys like 'size', 'modified' are ignored here.
-
+            File dicts from scan_directory; each should include at least:
+            - 'path': absolute file path (str)
+            - identity hash under 'exact_hash' or 'hash' or 'hashes.sha256'
+    
         Returns
         -------
         list[dict]
-            List of duplicate group dictionaries, sorted by hash. Each group is:
-            {
-                'hash': str,          # The shared SHA256 hash
-                'files': list[dict],  # List of file info dicts, each {'path': str}
-                'count': int          # Number of files (>= 2)
-            }
-
-            Returns empty list if no duplicates found, input is empty, or all files lack hashes.
-
-        Examples
-        --------
-        Assume a scan with some duplicates:
-
-        >>> files = [
-        ...     {'path': '/img1.jpg', 'hash': 'abc123'},
-        ...     {'path': '/img2.jpg', 'hash': 'abc123'},  # Duplicate
-        ...     {'path': '/img3.png', 'hash': 'def456'},
-        ...     {'path': '/img4.jpg', 'hash': None}       # Skipped
-        ... ]
-        >>> groups = self._compute_duplicate_groups_from_files(files)
-        >>> len(groups)
-        1
-        >>> groups[0]
-        {'hash': 'abc123', 'files': [{'path': '/img1.jpg'}, {'path': '/img2.jpg'}], 'count': 2}
-
-        If no hashes computed (compute_hashes=False):
-        >>> files = [{'path': '/img1.jpg', 'hash': None}]
-        >>> groups = self._compute_duplicate_groups_from_files(files)
-        >>> groups
-        []  # Warns: No hashes found
-
-        Raises
-        ------
-        None: Logs warnings for issues; always returns a valid list (possibly empty).
-
-        Notes
-        -----
-        - Time complexity: O(n), where n = len(files), using dict grouping.
-        - If compute_hashes was False in the scan summary, all 'hash' will be None, triggering
-          a warning and returning []. For duplicates mode, ensure compute_hashes=True in profile.
-        - Paths are appended in input order; no sorting applied.
-        - Follows project guidelines: skips invalid files, logs informatively, no exceptions
-          propagated to caller for GUI resilience.
+            [
+              { "hash": str, "files": [ { "path": str }, ... ], "count": int },
+              ...
+            ]
         """
         groups = defaultdict(list)
         skipped = 0
         has_valid_hashes = False
-
+    
         for file_dict in files:
             try:
                 path = file_dict.get('path')
-                hash_val = file_dict.get('hash')
+                hashes_dict = file_dict.get('hashes') if isinstance(file_dict.get('hashes'), dict) else {}
+                # Resolve identity hash in order of preference
+                hash_val = (
+                    file_dict.get('hash') or
+                    file_dict.get('exact_hash') or
+                    (hashes_dict.get('sha256') if hashes_dict else None)
+                )
                 if not path or not hash_val:
-                    self.logger.warning(
-                        f"Skipping file without valid path or hash: path={path or 'missing'}, "
-                        f"hash={hash_val}"
-                    )
                     skipped += 1
+                    # Per-item debug to avoid noisy warnings
+                    self.logger.debug(
+                        f"Skipping (missing path or identity hash). "
+                        f"path={path or 'missing'} keys={list(file_dict.keys())}"
+                    )
                     continue
-                # Mark that at least one valid hash exists
                 has_valid_hashes = True
                 groups[hash_val].append({'path': path})
             except Exception as e:
-                self.logger.warning(
-                    f"Error processing file dict {file_dict.get('path', 'unknown')}: {e}"
-                )
                 skipped += 1
+                self.logger.debug(f"Error processing file dict: {e}")
                 continue
-
+    
+        total = len(files)
         if skipped > 0:
-            self.logger.warning(f"Skipped {skipped} out of {len(files)} files due to missing data or errors")
-
-        # Warn if no hashes were computed (covers compute_hashes=False case)
+            self.logger.warning(f"Skipped {skipped} out of {total} files due to missing data or errors")
+    
         if not has_valid_hashes:
             self.logger.warning(
-                "No valid hashes in files list; returning empty groups. "
-                "For duplicates mode, ensure compute_hashes=True in scan profile."
+                "No valid identity hashes found in files; returning empty groups. "
+                "Expected 'exact_hash' from scan_directory."
             )
-
-        # Filter and format groups with >=2 files
-        duplicate_groups = []
+    
+        duplicate_groups: list[dict] = []
         for hash_val, file_list in groups.items():
             if len(file_list) > 1:
                 duplicate_groups.append({
                     'hash': hash_val,
-                    'files': file_list,  # Already list of {'path': str}
+                    'files': file_list,
                     'count': len(file_list)
                 })
-
+    
         self.logger.info(
-            f"Computed {len(duplicate_groups)} duplicate groups from {len(files)} files "
-            f"(skipped {skipped})"
+            f"Computed {len(duplicate_groups)} duplicate groups from {total} files (skipped {skipped})"
         )
         return duplicate_groups
 
