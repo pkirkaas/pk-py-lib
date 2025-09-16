@@ -34,9 +34,10 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem,
     QTreeWidgetItemIterator,
     QTabWidget, QTextEdit, QSplitter, QStyledItemDelegate, QWidget, QPushButton,
-    QComboBox, QSpinBox, QScrollArea, QGridLayout, QMessageBox, QMenu, QHeaderView
+    QComboBox, QSpinBox, QScrollArea, QGridLayout, QMessageBox, QMenu, QHeaderView,
+    QSizePolicy
 )
-from PySide6.QtGui import QPainter, QPixmap, QFont, QStandardItem, QAction
+from PySide6.QtGui import QPainter, QPixmap, QFont, QStandardItem, QAction, QColor
 from PySide6.QtWidgets import QStyleOptionViewItem
 from PySide6.QtCore import QModelIndex
 
@@ -102,42 +103,6 @@ def format_timestamp(ts: float) -> str:
         return "Unknown"
 
 
-class ThumbDelegate(QStyledItemDelegate):
-    """
-    Delegate for rendering thumbnails in tree cells.
-
-    Paints QPixmap scaled to 64x64 from path in UserRole for column 1.
-    """
-
-    THUMB_SIZE = 64
-
-    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
-        """
-        Paint thumbnail if column 1 and path in data.
-
-        Args:
-            painter (QPainter): Painter.
-            option (QStyleOptionViewItem): Style option.
-            index (QModelIndex): Index.
-
-        Returns:
-            None
-        """
-        if index.column() == 1:
-            path = index.data(Qt.UserRole)
-            if path and isinstance(path, str) and os.path.exists(path):
-                pixmap = QPixmap(path)
-                if not pixmap.isNull():
-                    scaled_pixmap = pixmap.scaled(
-                        self.THUMB_SIZE, self.THUMB_SIZE,
-                        Qt.KeepAspectRatio, Qt.SmoothTransformation
-                    )
-                    # Center in rect
-                    x = option.rect.x() + (option.rect.width() - self.THUMB_SIZE) // 2
-                    y = option.rect.y() + (option.rect.height() - self.THUMB_SIZE) // 2
-                    painter.drawPixmap(x, y, scaled_pixmap)
-                    return
-        super().paint(painter, option, index)
 
 
 class ImageGrid(QWidget):
@@ -230,13 +195,15 @@ class ImageSimilarityManagerDialog(QDialog):
         self.report_tab.setPlainText(report_text)
         self.tabs.addTab(self.summary_tab, "Processing Summary")
         self.tabs.addTab(self.report_tab, f"{self.mode.title()} Report")
+        self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         main_layout.addWidget(self.tabs)
 
-        # Vertical splitter for controls, tree, status, buttons
-        self.v_splitter = QSplitter(Qt.Vertical)
-        self.v_splitter.setChildrenCollapsible(False)
+        # Vertical splitter for controls, tree/preview, status, and buttons
+        v_splitter = QSplitter(Qt.Vertical)
+        v_splitter.setChildrenCollapsible(False)
+        main_layout.addWidget(v_splitter)
 
-        # Controls row
+        # --- Top Controls Pane ---
         controls_widget = QWidget()
         controls_layout = QHBoxLayout(controls_widget)
         self.mode_label = QLabel(f"Mode: {self.mode.title()}")
@@ -258,33 +225,46 @@ class ImageSimilarityManagerDialog(QDialog):
             self.compute_btn = QPushButton("Compute Groups")
             self.compute_btn.clicked.connect(self._compute_groups)
             controls_layout.addWidget(self.compute_btn)
+        
+        controls_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        v_splitter.addWidget(controls_widget)
 
-        self.v_splitter.addWidget(controls_widget)
-
-        # Tree widget for groups/images
+        # --- Middle Pane (Tree and Preview) ---
+        h_splitter = QSplitter(Qt.Horizontal)
         self.tree = QTreeWidget()
         self.tree.setColumnCount(7)
-        self.tree.setHeaderLabels(["Select", "Thumbnail", "Name", "Size", "Resolution", "Date", "Score"])
+        self.tree.setHeaderLabels(["Select", "Name", "Directory", "Size", "Resolution", "Date", "Score"])
         header = self.tree.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Fixed)
-        header.resizeSection(1, 80)  # Thumb width
-        header.setSectionResizeMode(2, QHeaderView.Stretch)
-        for i in range(3, 7):
-            header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-
-        self.tree.setItemDelegate(ThumbDelegate(self.tree))
+        # Make all columns user-resizable
+        for i in range(self.tree.columnCount()):
+            header.setSectionResizeMode(i, QHeaderView.Interactive)
+        self.tree.setStyleSheet("""
+            QTreeWidget::item {
+                border-bottom: 1px solid #e0e0e0;
+                padding: 2px 4px;
+            }
+        """)
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
-        self.v_splitter.addWidget(self.tree)
+        h_splitter.addWidget(self.tree)
 
-        # Status label
+        preview_scroll = QScrollArea(widgetResizable=True)
+        self.preview_grid = ImageGrid()
+        preview_scroll.setWidget(self.preview_grid)
+        h_splitter.addWidget(preview_scroll)
+        h_splitter.setSizes([800, 400])
+        # Let the h_splitter expand vertically
+        h_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        v_splitter.addWidget(h_splitter)
+
+        # --- Status Label ---
         self.status_label = QLabel("Ready to manage groups")
-        self.v_splitter.addWidget(self.status_label)
+        self.status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        v_splitter.addWidget(self.status_label)
 
-        # Buttons row
+        # --- Bottom Buttons Pane ---
         btn_widget = QWidget()
         btn_layout = QHBoxLayout(btn_widget)
         self.delete_btn = QPushButton("Delete Selected")
@@ -295,28 +275,8 @@ class ImageSimilarityManagerDialog(QDialog):
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
         btn_layout.addWidget(close_btn)
-        self.v_splitter.addWidget(btn_widget)
-
-        main_layout.addWidget(self.v_splitter)
-
-        # Horizontal splitter for tree and preview (initially tree only)
-        self.preview_splitter = QSplitter(Qt.Horizontal)
-        self.preview_splitter.addWidget(self.tree)  # Tree already added above? Wait, no, move tree to preview_splitter
-        # Wait, adjust: v_splitter for controls, status, buttons; preview_splitter for tree and preview_area
-
-        # Correct structure
-        # Main: tabs + v_splitter (controls + h_splitter (tree | preview) + status + buttons)
-
-        h_splitter = QSplitter(Qt.Horizontal)
-        h_splitter.addWidget(self.tree)
-
-        preview_scroll = QScrollArea(widgetResizable=True)
-        self.preview_grid = ImageGrid()
-        preview_scroll.setWidget(self.preview_grid)
-        h_splitter.addWidget(preview_scroll)
-        h_splitter.setSizes([800, 400])
-
-        self.v_splitter.addWidget(h_splitter)
+        btn_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        v_splitter.addWidget(btn_widget)
 
         # Hide score column for duplicates
         if self.mode == "duplicates":
@@ -409,7 +369,7 @@ class ImageSimilarityManagerDialog(QDialog):
         self.tree.clear()
         if not self.groups:
             item = QTreeWidgetItem(self.tree)
-            item.setText(2, "No groups to display")
+            item.setText(1, "No groups to display")
             return
     
     
@@ -422,7 +382,8 @@ class ImageSimilarityManagerDialog(QDialog):
                     LOGGER_SIM.error(error_msg)
                 continue
             top = QTreeWidgetItem(self.tree)
-            top.setText(2, f"Group {group.id}: {len(group.images)} images")
+            top.setText(1, f"Group {group.id}: {len(group.images)} images")
+            top.setText(2, "")  # Directory empty for group
             top.setText(3, format_file_size(group.stats.total_size))
             if self.mode == "similarity":
                 min_s = f"{group.stats.min_score * 100:.1f}%"
@@ -436,17 +397,24 @@ class ImageSimilarityManagerDialog(QDialog):
             min_size = min(img.size for img in group.images) if group.images else 0
             savings = group.stats.total_size - min_size
             top.setText(5, format_file_size(savings))
-            top.setData(1, Qt.UserRole, group.ref_path)  # Ref thumb
             top.setFlags(top.flags() & ~Qt.ItemIsUserCheckable)
-            font = top.font(2)
+            font = top.font(1)
             font.setBold(True)
-            top.setFont(2, font)
+            top.setFont(1, font)
+
+            # Style group header row with subtle light gray background and dark text for better readability
+            header_bg = QColor(245, 245, 245)  # #f5f5f5
+            header_fg = QColor(51, 51, 51)  # #333333
+            for col in range(self.tree.columnCount()):
+                top.setBackground(col, header_bg)
+                top.setForeground(col, header_fg)
     
-            for img in group.images:
+            for idx, img in enumerate(group.images):
                 child = QTreeWidgetItem(top)
                 child.setFlags(child.flags() | Qt.ItemIsUserCheckable)
                 child.setCheckState(0, Qt.Unchecked)
-                child.setText(2, os.path.basename(img.path))
+                child.setText(1, os.path.basename(img.path))
+                child.setText(2, os.path.dirname(img.path))  # Full directory path
                 child.setText(3, format_file_size(img.size))
                 child.setText(4, img.resolution)
                 child.setText(5, img.mod_date)
@@ -454,15 +422,19 @@ class ImageSimilarityManagerDialog(QDialog):
                     child.setText(6, f"{img.score * 100:.1f}%")
                 else:
                     child.setText(6, "100.0%")
-                child.setData(1, Qt.UserRole, img.path)  # Thumb
-                child.setData(0, Qt.UserRole, img.path)  # For delete
-                child.setData(7, Qt.UserRole, img)  # Full data if needed
+                child.setData(1, Qt.UserRole, img.path)  # For delete and preview
+                if idx % 2 == 0:
+                    bg_color = QColor(250, 251, 255)  # #fafbff
+                else:
+                    bg_color = QColor(249, 249, 249)  # #f9f9f9
+                for col in range(self.tree.columnCount()):
+                    child.setBackground(col, bg_color)
     
             self.tree.expandItem(top)
         
         if self.tree.topLevelItemCount() == 0 and self.groups:
             item = QTreeWidgetItem(self.tree)
-            item.setText(2, "No valid groups to display")
+            item.setText(1, "No valid groups to display")
         
         self._update_status_line()
 
@@ -526,7 +498,7 @@ class ImageSimilarityManagerDialog(QDialog):
         """
         item = self.tree.itemAt(position)
         if item and item.parent():  # Child
-            path = item.data(0, Qt.UserRole)
+            path = item.data(1, Qt.UserRole)
             if path:
                 menu = QMenu(self)
                 delete_action = QAction("Delete This Image", self)
@@ -543,7 +515,7 @@ class ImageSimilarityManagerDialog(QDialog):
         while iterator.value():
             item = iterator.value()
             if item.checkState(0) == Qt.Checked and item.parent():
-                path = item.data(0, Qt.UserRole)
+                path = item.data(1, Qt.UserRole)
                 if path:
                     checked_paths.append(path)
             iterator += 1
