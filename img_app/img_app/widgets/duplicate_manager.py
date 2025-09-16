@@ -33,11 +33,11 @@ from PySide6.QtCore import Qt, QRect
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem,
     QTreeWidgetItemIterator,
-    QTabWidget, QTextEdit, QSplitter, QStyledItemDelegate, QWidget, QPushButton,
+    QTabWidget, QTextEdit, QSplitter, QStyledItemDelegate, QStyle, QWidget, QPushButton,
     QComboBox, QSpinBox, QScrollArea, QGridLayout, QMessageBox, QMenu, QHeaderView,
     QSizePolicy
 )
-from PySide6.QtGui import QPainter, QPixmap, QFont, QStandardItem, QAction, QColor
+from PySide6.QtGui import QPainter, QPixmap, QFont, QStandardItem, QAction, QColor, QBrush, QPalette
 from PySide6.QtWidgets import QStyleOptionViewItem
 from PySide6.QtCore import QModelIndex
 
@@ -101,8 +101,74 @@ def format_timestamp(ts: float) -> str:
         return dt.strftime("%d-%b-%y")
     except (ValueError, OSError):
         return "Unknown"
+        
+        
+class GroupTreeDelegate(QStyledItemDelegate):
+    """
+    Custom delegate for styling QTreeWidget items in ImageSimilarityManagerDialog.
 
+    - Group headers (top-level): #fafafa background, #666666 text, bold font.
+    - Child items: Alternating #fafbff (even rows), #f9f9f9 (odd rows) backgrounds.
+    - Selection: #4a90e2 background, white text (bold for groups).
+    - Retains QSS borders and other styles via super().paint.
+    """
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        """
+        Override paint to apply custom backgrounds, fonts, and colors.
 
+        Args:
+            painter (QPainter): Painter for drawing.
+            option (QStyleOptionViewItem): Style option with rect, state, palette, font.
+            index (QModelIndex): Model index for the item.
+
+        Strategy:
+        - Explicitly fill the ENTIRE row width for every column paint so group headers
+          are unmistakably different from child rows, regardless of QSS or platform theme.
+        - Group rows (top-level): light gray (#f0f0f0). File rows: white (#ffffff).
+        - Selection uses the configured highlight color; do not overpaint it.
+        """
+        is_group = index.parent() == QModelIndex()
+        selected = bool(option.state & QStyle.State_Selected)
+
+        # Determine intended row background
+        group_bg = QColor(240, 240, 240)  # #f0f0f0
+        file_bg  = QColor(255, 255, 255)  # #ffffff
+        row_bg   = group_bg if is_group else file_bg
+
+        # Compute full-row rect (span entire viewport width at this y/height)
+        try:
+            view = self.parent()
+            viewport = view.viewport() if hasattr(view, "viewport") else None
+        except Exception:
+            viewport = None
+        full_rect = QRect(
+            0,
+            option.rect.y(),
+            (viewport.width() if viewport else option.rect.width()),
+            option.rect.height(),
+        )
+
+        # When not selected, fill full-row and also hint style with backgroundBrush
+        if not selected:
+            painter.save()
+            painter.fillRect(full_rect, row_bg)
+            painter.restore()
+            option.backgroundBrush = QBrush(row_bg)
+        else:
+            # Selected rows remain controlled by highlight rules (QSS/Style)
+            option.backgroundBrush = QBrush(QColor(74, 144, 226))  # #4a90e2
+            option.palette.setColor(QPalette.Text, Qt.white)
+
+        # Group header text/font styling (stronger emphasis when not selected)
+        if is_group:
+            font = QFont(option.font)
+            font.setBold(True)
+            option.font = font
+            if not selected:
+                option.palette.setColor(QPalette.Text, QColor(102, 102, 102))  # #666666
+
+        # Draw default content (text, focus rect, etc.)
+        super().paint(painter, option, index)
 
 
 class ImageGrid(QWidget):
@@ -232,6 +298,7 @@ class ImageSimilarityManagerDialog(QDialog):
         # --- Middle Pane (Tree and Preview) ---
         h_splitter = QSplitter(Qt.Horizontal)
         self.tree = QTreeWidget()
+        self.tree.setItemDelegate(GroupTreeDelegate(self.tree))
         self.tree.setColumnCount(7)
         self.tree.setHeaderLabels(["Select", "Name", "Directory", "Size", "Resolution", "Date", "Score"])
         header = self.tree.header()
@@ -243,7 +310,12 @@ class ImageSimilarityManagerDialog(QDialog):
                 border-bottom: 1px solid #e0e0e0;
                 padding: 2px 4px;
             }
+            QTreeWidget::item:selected {
+                background-color: #4a90e2;
+                color: #ffffff;
+            }
         """)
+        self.tree.setAlternatingRowColors(False)
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -398,16 +470,12 @@ class ImageSimilarityManagerDialog(QDialog):
             savings = group.stats.total_size - min_size
             top.setText(5, format_file_size(savings))
             top.setFlags(top.flags() & ~Qt.ItemIsUserCheckable)
-            font = top.font(1)
-            font.setBold(True)
-            top.setFont(1, font)
-
-            # Style group header row with subtle light gray background and dark text for better readability
-            header_bg = QColor(245, 245, 245)  # #f5f5f5
-            header_fg = QColor(51, 51, 51)  # #333333
+            bold_font = QFont()
+            bold_font.setBold(True)
             for col in range(self.tree.columnCount()):
-                top.setBackground(col, header_bg)
-                top.setForeground(col, header_fg)
+                top.setFont(col, bold_font)
+
+            # Group header styling handled by GroupTreeDelegate
     
             for idx, img in enumerate(group.images):
                 child = QTreeWidgetItem(top)
@@ -423,12 +491,7 @@ class ImageSimilarityManagerDialog(QDialog):
                 else:
                     child.setText(6, "100.0%")
                 child.setData(1, Qt.UserRole, img.path)  # For delete and preview
-                if idx % 2 == 0:
-                    bg_color = QColor(250, 251, 255)  # #fafbff
-                else:
-                    bg_color = QColor(249, 249, 249)  # #f9f9f9
-                for col in range(self.tree.columnCount()):
-                    child.setBackground(col, bg_color)
+                # Child row alternating backgrounds handled by GroupTreeDelegate
     
             self.tree.expandItem(top)
         
