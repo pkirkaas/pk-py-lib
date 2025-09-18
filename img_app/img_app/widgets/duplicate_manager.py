@@ -25,6 +25,7 @@ Syntax validation: ast.parse verified.
 from __future__ import annotations
 
 import os
+from PIL import Image
 from typing import Optional, List
 from pathlib import Path
 from datetime import datetime
@@ -35,9 +36,9 @@ from PySide6.QtWidgets import (
     QTreeWidgetItemIterator,
     QTabWidget, QTextEdit, QSplitter, QStyledItemDelegate, QStyle, QWidget, QPushButton,
     QComboBox, QSpinBox, QScrollArea, QGridLayout, QMessageBox, QMenu, QHeaderView,
-    QSizePolicy
+    QSizePolicy, QTableWidget, QTableWidgetItem, QAbstractItemView, QCheckBox
 )
-from PySide6.QtGui import QPainter, QPixmap, QFont, QStandardItem, QAction, QColor, QBrush, QPalette
+from PySide6.QtGui import QPainter, QPixmap, QFont, QStandardItem, QAction, QColor, QBrush, QPalette, QImage, QPen
 from PySide6.QtWidgets import QStyleOptionViewItem
 from PySide6.QtCore import QModelIndex
 
@@ -354,23 +355,32 @@ class ImageSimilarityManagerDialog(QDialog):
         
         # Disable alternating row colors as the delegate handles backgrounds
         self.tree.setAlternatingRowColors(False)
-        self.tree.itemChanged.connect(self._on_item_changed)
-        self.tree.itemSelectionChanged.connect(self._on_selection_changed)
+        # self.tree.itemChanged.connect(self._on_item_changed)  # Removed, no tree checkboxes
+        # self.tree.itemSelectionChanged.connect(self._on_selection_changed)  # Removed, use itemClicked for table
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
         h_splitter.addWidget(self.tree)
 
+        self.preview_table = QTableWidget()
+        self.preview_table.setColumnCount(5)
+        self.preview_table.setHorizontalHeaderLabels(["Select", "Preview", "Dimensions", "Size", "Path"])
+        self.preview_table.setSortingEnabled(False)
+        self.preview_table.setAlternatingRowColors(True)
+        self.preview_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+
         preview_scroll = QScrollArea(widgetResizable=True)
-        self.preview_grid = ImageGrid()
-        preview_scroll.setWidget(self.preview_grid)
+        preview_scroll.setWidget(self.preview_table)
         h_splitter.addWidget(preview_scroll)
         h_splitter.setSizes([800, 400])
         # Let the h_splitter expand vertically
         h_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         v_splitter.addWidget(h_splitter)
 
+        self.selected_images = set()
+        self.tree.itemClicked.connect(self._on_tree_item_clicked)
+
         # --- Status Label ---
-        self.status_label = QLabel("Ready to manage groups")
+        self.status_label = QLabel("0 files selected for deletion")
         self.status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         v_splitter.addWidget(self.status_label)
 
@@ -458,7 +468,6 @@ class ImageSimilarityManagerDialog(QDialog):
                 LOGGER_SIM.info("Output from find_similar_images: empty list")
     
             self._populate_tree()
-            self.status_label.setText(f"Computed {len(self.groups)} groups.")
             LOGGER_SIM.info(f"Computed {len(self.groups)} groups (algorithm={algorithm}, threshold={threshold})")
     
         except Exception as e:
@@ -511,8 +520,7 @@ class ImageSimilarityManagerDialog(QDialog):
 
             for idx, img in enumerate(group.images):
                 child = QTreeWidgetItem(top)
-                child.setFlags(child.flags() | Qt.ItemIsUserCheckable)
-                child.setCheckState(0, Qt.Unchecked)
+                child.setFlags(child.flags() & ~Qt.ItemIsUserCheckable)  # No checkboxes in tree
                 child.setText(1, os.path.basename(img.path))
                 child.setText(2, os.path.dirname(img.path))  # Full directory path
                 child.setText(3, format_file_size(img.size))
@@ -522,7 +530,7 @@ class ImageSimilarityManagerDialog(QDialog):
                     child.setText(6, f"{img.score * 100:.1f}%")
                 else:
                     child.setText(6, "100.0%")
-                child.setData(1, Qt.UserRole, img.path)  # For delete and preview
+                child.setData(1, Qt.UserRole, img.path)  # For preview and context delete
 
             self.tree.expandItem(top)
         
@@ -543,48 +551,11 @@ class ImageSimilarityManagerDialog(QDialog):
 
     def _update_delete_btn(self) -> None:
         """
-        Enable delete if any checked.
+        Enable delete if any selected in table.
         """
-        checked = False
-        iterator = QTreeWidgetItemIterator(self.tree, QTreeWidgetItemIterator.NoChildren)
-        while iterator.value():
-            if iterator.value().checkState(0) == Qt.Checked:
-                checked = True
-                break
-            iterator += 1
-        self.delete_btn.setEnabled(checked)
+        self.delete_btn.setEnabled(bool(self.selected_images))
 
-    def _on_selection_changed(self) -> None:
-        """
-        Update preview grid with selected children paths.
-        """
-        selected_paths = []
-        for i in range(self.tree.topLevelItemCount()):
-            top = self.tree.topLevelItem(i)
-            for j in range(top.childCount()):
-                child = top.child(j)
-                if child.isSelected():
-                    path = child.data(1, Qt.UserRole)
-                    if path:
-                        selected_paths.append(path)
-        self._update_preview(selected_paths)
 
-    def _update_preview(self, paths: List[str]) -> None:
-        """
-        Clear and add pixmaps to preview grid (limit 16).
-        """
-        self.preview_grid.clear()
-        cols = 4
-        for k, path in enumerate(set(paths[:16])):
-            try:
-                pix = QPixmap(path).scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                if not pix.isNull():
-                    self.preview_grid.add_image(pix, k // cols, k % cols)
-            except Exception as e:
-                if self.mode == "duplicates":
-                    LOGGER.error(f"Preview failed {path}: {e}")
-                else:
-                    LOGGER_SIM.error(f"Preview failed {path}: {e}")
 
     def _show_context_menu(self, position) -> None:
         """
@@ -600,64 +571,81 @@ class ImageSimilarityManagerDialog(QDialog):
                 menu.addAction(delete_action)
                 menu.exec(self.tree.viewport().mapToGlobal(position))
 
-    def _on_delete_clicked(self) -> None:
+    def _on_delete_clicked(self, paths: Optional[List[str]] = None) -> None:
         """
-        Delete checked images, refresh groups.
+        Delete selected images using table checkboxes or provided paths (e.g., context menu).
+        Confirms, deletes with os.remove, removes from groups if successful, refreshes UI.
         """
-        checked_paths = []
-        iterator = QTreeWidgetItemIterator(self.tree, QTreeWidgetItemIterator.NoChildren)
-        while iterator.value():
-            item = iterator.value()
-            if item.checkState(0) == Qt.Checked and item.parent():
-                path = item.data(1, Qt.UserRole)
-                if path:
-                    checked_paths.append(path)
-            iterator += 1
-
-        if not checked_paths:
+        if paths is None:
+            to_delete = sorted(list(self.selected_images))
+        else:
+            to_delete = sorted(paths)
+    
+        if not to_delete:
+            QMessageBox.warning(self, "Warning", "No images selected.")
             return
-
-        msg = f"Delete {len(checked_paths)} selected files?\nUses Recycle Bin if send2trash available."
+    
+        # List paths briefly
+        basenames = [os.path.basename(p) for p in to_delete]
+        paths_str = ",\n".join(basenames[:10])
+        if len(basenames) > 10:
+            paths_str += f"\n... and {len(basenames) - 10} more"
+    
+        msg = f"Delete {len(to_delete)} selected images?\n\nPaths:\n{paths_str}"
         reply = QMessageBox.question(self, "Confirm Delete", msg, QMessageBox.Yes | QMessageBox.No)
         if reply != QMessageBox.Yes:
             return
-
-        deleted = 0
+    
+        successful = []
         failed = []
-        for path in checked_paths:
+        for path in to_delete:
             try:
                 abs_path = str(Path(path).resolve())
-                if send2trash:
-                    send2trash(abs_path)
-                else:
-                    os.remove(abs_path)
+                os.remove(abs_path)
                 if not os.path.exists(abs_path):
-                    deleted += 1
+                    successful.append(path)
+                    # Remove from all groups immediately
+                    for group in self.groups[:]:
+                        group.images = [img for img in group.images if img.path != path]
+    
                     if self.mode == "duplicates":
-                        LOGGER.info(f"Deleted duplicate: {path}")
+                        LOGGER.info(f"Deleted: {path}")
                     else:
-                        LOGGER_SIM.info(f"Deleted similar: {path}")
+                        LOGGER_SIM.info(f"Deleted: {path}")
                 else:
-                    raise Exception("File still exists")
+                    raise Exception("File still exists after delete attempt")
             except Exception as e:
-                err_msg = f"{str(e)}\n{traceback.format_exc()}"
-                failed.append((path, err_msg))
+                failed.append((path, str(e)))
                 if self.mode == "duplicates":
-                    LOGGER.error(f"Delete failed {path}", exception=e)
+                    LOGGER.error(f"Delete failed for {path}: {e}")
                 else:
-                    LOGGER_SIM.error(f"Delete failed {path}", exception=e)
-
-        if failed:
-            err_text = "\n".join([f"{os.path.basename(p)}: {err}" for p, err in failed[:5]])
-            if len(failed) > 5:
-                err_text += f"\n... and {len(failed)-5} more"
-            show_selectable_error(self, "Partial Failure", f"Some deletions failed:\n{err_text}")
-
-        if deleted > 0:
-            self._refresh_groups()
-            show_selectable_info(self, "Delete Complete", f"Successfully deleted {deleted} file(s).")
-
-        self._update_preview([])
+                    LOGGER_SIM.error(f"Delete failed for {path}: {e}")
+    
+                # Per-file error message
+                show_selectable_error(self, f"Delete Failed: {os.path.basename(path)}", str(e))
+    
+        # Filter out groups with fewer than 2 images and update stats
+        self.groups = [g for g in self.groups if len(g.images) >= 2]
+        for g in self.groups:
+            g.stats = compute_group_stats(g.images)
+    
+        # Refresh tree
+        self._populate_tree()
+    
+        if successful:
+            show_selectable_info(self, "Delete Complete", f"Successfully deleted {len(successful)} file(s).")
+    
+        # Clear selections and table
+        self.selected_images.clear()
+        self._clear_table()
+    
+        # Repopulate table if a tree item is currently selected
+        current_item = self.tree.currentItem()
+        if current_item:
+            self._on_tree_item_clicked(current_item)
+    
+        self._update_status_line()
+        self._update_delete_btn()
 
     def _refresh_groups(self) -> None:
         """
@@ -674,6 +662,7 @@ class ImageSimilarityManagerDialog(QDialog):
         self._populate_tree()
         self._update_status_line()
         self._update_delete_btn()
+        self._clear_table()
 
     def _update_status_line(self) -> None:
         """
@@ -681,7 +670,154 @@ class ImageSimilarityManagerDialog(QDialog):
         """
         total_groups = len(self.groups)
         total_files = sum(len(g.images) for g in self.groups)
-        checked = sum(1 for i in range(self.tree.topLevelItemCount()) for j in range(self.tree.topLevelItem(i).childCount()) if self.tree.topLevelItem(i).child(j).checkState(0) == Qt.Checked)
-        self.status_label.setText(f"{total_groups} groups ({total_files} files), {checked} selected")
+        checked = len(self.selected_images)
+        self.status_label.setText(f"{total_groups} groups ({total_files} files), {checked} files selected for deletion")
+    
+    def _clear_table(self) -> None:
+        """
+        Clear the preview table and reset selections.
+        """
+        self.preview_table.setRowCount(0)
+        self.selected_images.clear()
+        self._update_delete_btn()
+        self._update_status_line()
+    
+    def _on_checkbox_toggled(self, checked: bool, path: str) -> None:
+        """
+        Handle checkbox state change in the preview table.
+        
+        Args:
+            checked (bool): Whether the checkbox is checked.
+            path (str): The image path associated with the checkbox.
+        """
+        if checked:
+            self.selected_images.add(path)
+        else:
+            self.selected_images.discard(path)
+        self._update_delete_btn()
+        self._update_status_line()
+    
+    def _on_tree_item_clicked(self, item: QTreeWidgetItem) -> None:
+        """
+        Handle tree item click to populate the preview table with images from group or single image.
+        
+        Args:
+            item (QTreeWidgetItem): The clicked tree item.
+        """
+        if item is None:
+            self._clear_table()
+            return
+    
+        paths = []
+    
+        if item.childCount() > 0:  # Group header
+            index = self.tree.indexOfTopLevelItem(item)
+            if 0 <= index < len(self.groups):
+                group = self.groups[index]
+                paths = [img.path for img in group.images]
+        else:  # Leaf item (single image)
+            path = item.data(1, Qt.UserRole)
+            if path:
+                paths = [path]
+    
+        if not paths:
+            self._clear_table()
+            return
+    
+        # Sort paths by basename
+        paths.sort(key=os.path.basename)
+    
+        # Clear existing content
+        self._clear_table()
+    
+        # Populate the table
+        for row, path in enumerate(paths):
+            self.preview_table.insertRow(row)
+    
+            # Column 0: Checkbox
+            checkbox = QCheckBox()
+            checkbox.toggled.connect(lambda checked, p=path: self._on_checkbox_toggled(checked, p))
+            self.preview_table.setCellWidget(row, 0, checkbox)
+    
+            # Column 1: Preview image
+            preview_label = QLabel()
+            orig_width, orig_height = 0, 0
+            size_bytes = 0
+            pixmap = None
+            try:
+                size_bytes = os.path.getsize(path)
+                with Image.open(path) as pil_img:
+                    orig_width, orig_height = pil_img.size
+                    # Convert PIL to QPixmap
+                    pil_img_rgb = pil_img.convert('RGB')
+                    stride = 3 * orig_width
+                    qimage = QImage(pil_img_rgb.tobytes(), orig_width, orig_height, stride, QImage.Format_RGB888)
+                    pixmap = QPixmap.fromImage(qimage).scaled(100, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            except Exception as e:
+                if self.mode == "similarity":
+                    LOGGER_SIM.warning(f"Failed to load preview for {path}: {e}")
+                else:
+                    LOGGER.warning(f"Failed to load preview for {path}: {e}")
+    
+                # Create placeholder pixmap (red X)
+                pixmap = QPixmap(100, 100)
+                pixmap.fill(Qt.transparent)
+                painter = QPainter(pixmap)
+                pen = QPen(QColor("red"), 3)
+                painter.setPen(pen)
+                painter.drawLine(10, 10, 90, 90)
+                painter.drawLine(90, 10, 10, 90)
+                painter.end()
+                orig_width, orig_height = 0, 0
+                size_bytes = 0
+    
+            preview_label.setPixmap(pixmap)
+            preview_label.setAlignment(Qt.AlignCenter)
+            self.preview_table.setCellWidget(row, 1, preview_label)
+    
+            # Column 2: Dimensions
+            dim_text = f"{orig_width}x{orig_height}" if orig_width and orig_height else "Load Error"
+            dim_item = QTableWidgetItem(dim_text)
+            dim_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.preview_table.setItem(row, 2, dim_item)
+    
+            # Column 3: File Size
+            size_text = format_file_size(size_bytes)
+            size_item = QTableWidgetItem(size_text)
+            size_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.preview_table.setItem(row, 3, size_item)
+    
+            # Column 4: Path
+            path_item = QTableWidgetItem(path)
+            path_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.preview_table.setItem(row, 4, path_item)
+    
+        # Adjust table appearance
+        self.preview_table.resizeColumnsToContents()
+        header = self.preview_table.horizontalHeader()
+        for i in range(self.preview_table.columnCount()):
+            header.setSectionResizeMode(i, QHeaderView.Interactive)
+    
+        self.preview_table.verticalHeader().setDefaultSectionSize(120)
+        self.preview_table.resizeRowsToContents()  # Ensure proper height
+        self._update_status_line()
 
 # Syntax validation complete.
+
+def compute_group_stats(images: List[ImageData]) -> Stats:
+    """
+    Compute stats for a group of images.
+    """
+    if not images:
+        return Stats(total_size=0, savings=0, min_score=0, max_score=0, avg_score=0)
+    total_size = sum(img.size for img in images)
+    min_size = min(img.size for img in images)
+    savings = total_size - min_size
+    if hasattr(images[0], 'score') and images[0].score is not None:
+        scores = [img.score for img in images]
+        min_score = min(scores)
+        max_score = max(scores)
+        avg_score = sum(scores) / len(scores)
+    else:
+        min_score = max_score = avg_score = 1.0
+    return Stats(total_size=total_size, savings=savings, min_score=min_score, max_score=max_score, avg_score=avg_score)
