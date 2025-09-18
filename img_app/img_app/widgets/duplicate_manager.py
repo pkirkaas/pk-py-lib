@@ -135,6 +135,12 @@ class GroupTreeDelegate(QStyledItemDelegate):
         opt.text = ""
         opt.displayAlignment = Qt.AlignLeft | Qt.AlignVCenter  # Reset alignment
         
+        # Set explicit background brush for light backgrounds
+        if is_group:
+            opt.backgroundBrush = QBrush(QColor(250, 250, 250))
+        else:
+            opt.backgroundBrush = QBrush(QColor(255, 255, 255))
+        
         # Let Qt draw the background, checkbox, etc. but not text
         super().paint(painter, opt, index)
 
@@ -306,6 +312,15 @@ class ImageSimilarityManagerDialog(QDialog):
         # --- Middle Pane (Tree and Preview) ---
         h_splitter = QSplitter(Qt.Horizontal)
         self.tree = QTreeWidget()
+        
+        # Fix A: Set light palette on viewport
+        viewport = self.tree.viewport()
+        viewport.setAutoFillBackground(True)
+        palette = QPalette()
+        palette.setColor(QPalette.Base, QColor(255, 255, 255))
+        palette.setColor(QPalette.Text, QColor(17, 17, 17))
+        viewport.setPalette(palette)
+        
         self.tree.setItemDelegate(GroupTreeDelegate(self.tree))
         self.tree.setColumnCount(7)
         self.tree.setHeaderLabels(["Select", "Name", "Directory", "Size", "Resolution", "Date", "Score"])
@@ -317,9 +332,17 @@ class ImageSimilarityManagerDialog(QDialog):
         # Simplified stylesheet - let the delegate handle colors
         # Only set structural styles like borders and padding
         self.tree.setStyleSheet("""
+            QTreeWidget, QTreeWidget::viewport {
+                background: #ffffff;
+                color: #111111;
+            }
             QTreeWidget::item {
                 border-bottom: 1px solid #e0e0e0;
                 padding: 2px 4px;
+            }
+            QTreeWidget::item:selected {
+                background: #4a90e2;
+                color: #ffffff;
             }
             QHeaderView::section {
                 background-color: #f5f5f5;
@@ -500,11 +523,6 @@ class ImageSimilarityManagerDialog(QDialog):
                 else:
                     child.setText(6, "100.0%")
                 child.setData(1, Qt.UserRole, img.path)  # For delete and preview
-                
-                # Force dark text color on all columns
-                dark_brush = QBrush(QColor(17, 17, 17))  # #111111
-                for col in range(self.tree.columnCount()):
-                    child.setForeground(col, dark_brush)
 
             self.tree.expandItem(top)
         
