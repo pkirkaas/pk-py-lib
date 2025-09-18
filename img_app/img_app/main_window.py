@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QIcon, QPalette, QColor
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtWidgets import (
     QMainWindow, QLabel, QWidget, QVBoxLayout, QMenuBar, QStatusBar,
@@ -457,6 +457,10 @@ class MainWindow(QMainWindow):
         self._setup_profile_toolbar()
         self._setup_progress_section()
         self._setup_central_widget()
+
+        # App-wide palette override for readable, dark non-selected text in item views (QTreeWidget, QTableView, etc.)
+        # This avoids dark-theme palettes forcing light/low-contrast text on light row backgrounds.
+        self._apply_app_palette_hack()
         
         # Initialize start time for progress simulation
         import time
@@ -588,6 +592,44 @@ class MainWindow(QMainWindow):
         """Configure basic window properties."""
         self.setWindowTitle("KDC Image Organizer")
         self.resize(1024, 720)
+
+    def _apply_app_palette_hack(self) -> None:
+        """
+        Apply an application-wide palette adjustment to guarantee dark text color
+        for non-selected items in item views, without disturbing label/window text.
+
+        Rationale
+        ---------
+        Some Windows dark themes supply a palette where QPalette.Text resolves to a
+        very light color. When our views use light row backgrounds (custom delegates
+        and stylesheets), that results in low-contrast text for non-selected cells.
+        We set QPalette.Text for Active/Inactive groups to a dark color (#111) while
+        leaving WindowText intact so labels/toolbars in dark areas remain readable.
+
+        This is intentionally conservative (Text only), and is complemented by the
+        dialog-level overrides in ImageSimilarityManagerDialog for complete assurance.
+        """
+        try:
+            app = QApplication.instance()
+            pal = app.palette() if app else self.palette()
+            dark = QColor(17, 17, 17)        # #111 (high-contrast on light rows)
+            # Keep Disabled readable but not identical
+            disabled = QColor(119, 119, 119) # #777
+
+            pal.setColor(QPalette.Active,   QPalette.Text, dark)
+            pal.setColor(QPalette.Inactive, QPalette.Text, dark)
+            pal.setColor(QPalette.Disabled, QPalette.Text, disabled)
+            # Do NOT touch WindowText here to avoid breaking dark-area labels
+            # Keep selected text white
+            pal.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+
+            if app:
+                app.setPalette(pal)
+            else:
+                self.setPalette(pal)
+        except Exception:
+            # Palette hacks should never crash the app; silently ignore on failure
+            pass
 
     def _setup_menu_bar(self) -> None:
         """Create a standard application menu bar with File, Cache, View, Help."""

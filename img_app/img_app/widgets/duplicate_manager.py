@@ -107,14 +107,14 @@ class GroupTreeDelegate(QStyledItemDelegate):
     """
     Custom delegate for styling QTreeWidget items in ImageSimilarityManagerDialog.
 
-    - Group headers (top-level): #fafafa background, #666666 text, bold font.
-    - Child items: Alternating #fafbff (even rows), #f9f9f9 (odd rows) backgrounds.
+    - Group headers (top-level): #fafafa background, #333333 text, bold font.
+    - Child items: White background with #111111 (dark) text for high contrast.
     - Selection: #4a90e2 background, white text (bold for groups).
-    - Retains QSS borders and other styles via super().paint.
+    - Directly draws text to ensure visibility across all themes.
     """
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         """
-        Override paint to apply custom backgrounds, fonts, and colors.
+        Override paint to apply custom backgrounds, fonts, and directly draw text for guaranteed visibility.
 
         Args:
             painter (QPainter): Painter for drawing.
@@ -122,53 +122,61 @@ class GroupTreeDelegate(QStyledItemDelegate):
             index (QModelIndex): Model index for the item.
 
         Strategy:
-        - Explicitly fill the ENTIRE row width for every column paint so group headers
-          are unmistakably different from child rows, regardless of QSS or platform theme.
-        - Group rows (top-level): light gray (#f0f0f0). File rows: white (#ffffff).
-        - Selection uses the configured highlight color; do not overpaint it.
+        - Create modified option that prevents Qt from drawing text
+        - Let Qt draw checkboxes and other decorations
+        - Then manually draw our text with explicit colors
+        - This ensures text is always visible regardless of theme or Qt internal handling
         """
         is_group = index.parent() == QModelIndex()
         selected = bool(option.state & QStyle.State_Selected)
 
-        # Determine intended row background
-        group_bg = QColor(240, 240, 240)  # #f0f0f0
-        file_bg  = QColor(255, 255, 255)  # #ffffff
-        row_bg   = group_bg if is_group else file_bg
+        # Clone the option and clear text/flags to prevent Qt from drawing text
+        opt = QStyleOptionViewItem(option)
+        opt.text = ""
+        opt.displayAlignment = Qt.AlignLeft | Qt.AlignVCenter  # Reset alignment
+        
+        # Let Qt draw the background, checkbox, etc. but not text
+        super().paint(painter, opt, index)
 
-        # Compute full-row rect (span entire viewport width at this y/height)
-        try:
-            view = self.parent()
-            viewport = view.viewport() if hasattr(view, "viewport") else None
-        except Exception:
-            viewport = None
-        full_rect = QRect(
-            0,
-            option.rect.y(),
-            (viewport.width() if viewport else option.rect.width()),
-            option.rect.height(),
-        )
+        # Determine colors
+        group_bg = QColor(250, 250, 250)  # #fafafa - light gray for groups
+        file_bg  = QColor(255, 255, 255)  # #ffffff - pure white for files
+        
+        # Text colors - explicitly defined
+        text_color = QColor(255, 255, 255) if selected else QColor(17, 17, 17)  # white if selected, dark if not
 
-        # When not selected, fill full-row and also hint style with backgroundBrush
-        if not selected:
-            painter.save()
-            painter.fillRect(full_rect, row_bg)
-            painter.restore()
-            option.backgroundBrush = QBrush(row_bg)
-        else:
-            # Selected rows remain controlled by highlight rules (QSS/Style)
-            option.backgroundBrush = QBrush(QColor(74, 144, 226))  # #4a90e2
-            option.palette.setColor(QPalette.Text, Qt.white)
-
-        # Group header text/font styling (stronger emphasis when not selected)
+        # Setup font
+        font = QFont(option.font)
         if is_group:
-            font = QFont(option.font)
             font.setBold(True)
-            option.font = font
-            if not selected:
-                option.palette.setColor(QPalette.Text, QColor(102, 102, 102))  # #666666
+        painter.setFont(font)
 
-        # Draw default content (text, focus rect, etc.)
-        super().paint(painter, option, index)
+        # Get the text to draw
+        text = index.data(Qt.DisplayRole)
+        if text:
+            # Set text color explicitly
+            painter.setPen(text_color)
+            
+            # Calculate text rect with padding (adjust for checkbox column)
+            column = index.column()
+            text_rect = QRect(option.rect)
+            if column == 0:  # Checkbox column - smaller text area
+                text_rect.adjust(20, 0, -4, 0)  # Leave space for checkbox
+            else:
+                text_rect.adjust(4, 0, -4, 0)
+            
+            # Draw the text directly
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, str(text))
+        
+        # Draw focus rect if needed
+        if option.state & QStyle.State_HasFocus:
+            focus_rect = QRect(option.rect)
+            focus_rect.adjust(1, 1, -1, -1)
+            painter.save()
+            painter.setPen(Qt.DotLine)
+            painter.setPen(QColor(100, 100, 100))
+            painter.drawRect(focus_rect)
+            painter.restore()
 
 
 class ImageGrid(QWidget):
@@ -305,16 +313,23 @@ class ImageSimilarityManagerDialog(QDialog):
         # Make all columns user-resizable
         for i in range(self.tree.columnCount()):
             header.setSectionResizeMode(i, QHeaderView.Interactive)
+        
+        # Simplified stylesheet - let the delegate handle colors
+        # Only set structural styles like borders and padding
         self.tree.setStyleSheet("""
             QTreeWidget::item {
                 border-bottom: 1px solid #e0e0e0;
                 padding: 2px 4px;
             }
-            QTreeWidget::item:selected {
-                background-color: #4a90e2;
-                color: #ffffff;
+            QHeaderView::section {
+                background-color: #f5f5f5;
+                border: 1px solid #e0e0e0;
+                padding: 5px;
+                font-weight: bold;
             }
         """)
+        
+        # Disable alternating row colors as the delegate handles backgrounds
         self.tree.setAlternatingRowColors(False)
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
@@ -470,13 +485,7 @@ class ImageSimilarityManagerDialog(QDialog):
             savings = group.stats.total_size - min_size
             top.setText(5, format_file_size(savings))
             top.setFlags(top.flags() & ~Qt.ItemIsUserCheckable)
-            bold_font = QFont()
-            bold_font.setBold(True)
-            for col in range(self.tree.columnCount()):
-                top.setFont(col, bold_font)
 
-            # Group header styling handled by GroupTreeDelegate
-    
             for idx, img in enumerate(group.images):
                 child = QTreeWidgetItem(top)
                 child.setFlags(child.flags() | Qt.ItemIsUserCheckable)
@@ -491,8 +500,12 @@ class ImageSimilarityManagerDialog(QDialog):
                 else:
                     child.setText(6, "100.0%")
                 child.setData(1, Qt.UserRole, img.path)  # For delete and preview
-                # Child row alternating backgrounds handled by GroupTreeDelegate
-    
+                
+                # Force dark text color on all columns
+                dark_brush = QBrush(QColor(17, 17, 17))  # #111111
+                for col in range(self.tree.columnCount()):
+                    child.setForeground(col, dark_brush)
+
             self.tree.expandItem(top)
         
         if self.tree.topLevelItemCount() == 0 and self.groups:
