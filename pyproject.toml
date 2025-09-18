@@ -18,6 +18,7 @@ dependencies = [
     "opencv-python>=4.8.0",     # Advanced image processing
     "scikit-image>=0.22.0",     # Image algorithms
     "imagehash>=4.3.1",         # Perceptual hashing (aHash, dHash, pHash)
+    "datasketch>=1.6.0",        # LSH indexing for efficient similarity search
     "PyWavelets>=1.5.0",        # Wavelet transforms for wHash
     "send2trash>=1.8.0",        # Safe file deletion to trash
     "exifread>=3.0.0",          # EXIF data reading
@@ -54,7 +55,6 @@ pk-showcase = "showcase.app:run_showcase"
 hi = "echo hello"
 show =  {call = "showcase.app:run_showcase"}
 imgapp = {call = "img_app.img_app.app:main"}
-
 
 
 

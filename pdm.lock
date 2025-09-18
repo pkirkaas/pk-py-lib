@@ -5,7 +5,7 @@
 groups = ["default"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:0094d6b2c936e9d6311bdc63d6193faec1ba53d148dc94fd77f118dea0ec678c"
+content_hash = "sha256:24019e54fbce14f1e96f433343798340f56269a039ce3ca3e68206c1d5c43669"
 
 [[metadata.targets]]
 requires_python = ">=3.13,<3.14"
@@ -45,6 +45,20 @@ marker = "platform_system == \"Windows\""
 files = [
     {file = "colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"},
     {file = "colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44"},
+]
+
+[[package]]
+name = "datasketch"
+version = "1.6.5"
+summary = "Probabilistic data structures for processing and searching very large datasets"
+groups = ["default"]
+dependencies = [
+    "numpy>=1.11",
+    "scipy>=1.0.0",
+]
+files = [
+    {file = "datasketch-1.6.5-py3-none-any.whl", hash = "sha256:59311b2925b2f37536e9f7c2f46bbc25e8e54379c8635a3fa7ca55d2abb66d1b"},
+    {file = "datasketch-1.6.5.tar.gz", hash = "sha256:ba2848cb74f23d6d3dd444cf24edcbc47b1c34a171b1803231793ed4d74d4fcf"},
 ]
 
 [[package]]

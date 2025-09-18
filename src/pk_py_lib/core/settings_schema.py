@@ -46,6 +46,20 @@ SETTINGS_PROFILE_SCHEMA = {
             "properties": {
                 "phash_threshold": {"type": "integer", "minimum": 0, "maximum": 64, "default": 10},
                 "whash_threshold": {"type": "integer", "minimum": 0, "maximum": 64, "default": 12},
+                "lsh_num_perm": {
+                    "type": "integer",
+                    "minimum": 64,
+                    "maximum": 256,
+                    "default": 128,
+                    "description": "Number of permutations for MinHashLSH (higher = fewer false positives but slower; default 128 for 64-bit hashes). Used to tune LSH precision vs. speed in similarity grouping. Example: 256 for stricter matching in large datasets."
+                },
+                "lsh_threshold": {
+                    "type": ["number", "null"],
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": None,
+                    "description": "Optional Jaccard similarity threshold for LSH query (0.0-1.0); if None, automatically calculated as 1 - hamming_threshold / 64. Allows overriding for fine-tuning LSH recall/precision. Example: 0.8 for high similarity candidates."
+                },
                 "enabled_algorithms": {
                     "type": "array",
                     "items": {"type": "string", "enum": ["phash", "whash"]},
@@ -369,6 +383,8 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     similarity = normalized.setdefault("similarity", {})
     similarity.setdefault("phash_threshold", 10)
     similarity.setdefault("whash_threshold", 12)
+    similarity.setdefault("lsh_num_perm", 128)
+    similarity.setdefault("lsh_threshold", None)
     similarity.setdefault("enabled_algorithms", ["phash"])
     similarity.setdefault("max_distance", 15)
     
@@ -461,6 +477,8 @@ def create_default_profile(name: str, description: Optional[str] = None) -> Dict
         "similarity": {
             "phash_threshold": 10,
             "whash_threshold": 12,
+            "lsh_num_perm": 128,
+            "lsh_threshold": None,
             "enabled_algorithms": ["phash"],
             "max_distance": 15
         },
