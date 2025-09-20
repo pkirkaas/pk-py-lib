@@ -15,7 +15,7 @@ class Stats:
     """
     Statistical data for a group of similar images.
 
-    Computes aggregate metrics such as score ranges and total size for the group.
+    Computes aggregate metrics such as score ranges, total size, and potential savings for the group.
     Used in Group for summary information.
 
     Args:
@@ -23,9 +23,10 @@ class Stats:
         max_score (float): Maximum similarity score in the group.
         avg_score (float): Average similarity score across all images.
         total_size (int): Total file size of all images in bytes.
+        savings (int): Potential space savings by keeping only the smallest image in bytes.
 
     Example:
-        >>> stats = Stats(min_score=0.85, max_score=0.95, avg_score=0.90, total_size=1024000)
+        >>> stats = Stats(min_score=0.85, max_score=0.95, avg_score=0.90, total_size=1024000, savings=524288)
         >>> print(stats.avg_score)
         0.9
     """
@@ -33,6 +34,7 @@ class Stats:
     max_score: float = 0.0
     avg_score: float = 0.0
     total_size: int = 0
+    savings: int = 0
 
 
 @dataclass

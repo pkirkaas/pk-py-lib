@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import os
 from PIL import Image
-from typing import Optional, List
+from typing import Optional, List, Union
 from pathlib import Path
 from datetime import datetime
 
@@ -107,7 +107,7 @@ def format_timestamp(ts: float) -> str:
 class GroupTreeDelegate(QStyledItemDelegate):
     """
     Custom delegate for styling QTreeWidget items in ImageSimilarityManagerDialog.
-
+ 
     - Group headers (top-level): #fafafa background, #333333 text, bold font.
     - Child items: White background with #111111 (dark) text for high contrast.
     - Selection: #4a90e2 background, white text (bold for groups).
@@ -116,12 +116,12 @@ class GroupTreeDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         """
         Override paint to apply custom backgrounds, fonts, and directly draw text for guaranteed visibility.
-
+ 
         Args:
             painter (QPainter): Painter for drawing.
             option (QStyleOptionViewItem): Style option with rect, state, palette, font.
             index (QModelIndex): Model index for the item.
-
+ 
         Strategy:
         - Create modified option that prevents Qt from drawing text
         - Let Qt draw checkboxes and other decorations
@@ -130,7 +130,7 @@ class GroupTreeDelegate(QStyledItemDelegate):
         """
         is_group = index.parent() == QModelIndex()
         selected = bool(option.state & QStyle.State_Selected)
-
+ 
         # Clone the option and clear text/flags to prevent Qt from drawing text
         opt = QStyleOptionViewItem(option)
         opt.text = ""
@@ -144,20 +144,20 @@ class GroupTreeDelegate(QStyledItemDelegate):
         
         # Let Qt draw the background, checkbox, etc. but not text
         super().paint(painter, opt, index)
-
+ 
         # Determine colors
         group_bg = QColor(250, 250, 250)  # #fafafa - light gray for groups
         file_bg  = QColor(255, 255, 255)  # #ffffff - pure white for files
         
         # Text colors - explicitly defined
         text_color = QColor(255, 255, 255) if selected else QColor(17, 17, 17)  # white if selected, dark if not
-
+ 
         # Setup font
         font = QFont(option.font)
         if is_group:
             font.setBold(True)
         painter.setFont(font)
-
+ 
         # Get the text to draw
         text = index.data(Qt.DisplayRole)
         if text:
@@ -184,6 +184,82 @@ class GroupTreeDelegate(QStyledItemDelegate):
             painter.setPen(QColor(100, 100, 100))
             painter.drawRect(focus_rect)
             painter.restore()
+
+
+class CheckboxDelegate(QStyledItemDelegate):
+    """
+    Custom delegate for painting checkboxes in column 0 of the tree widget.
+ 
+    Handles checked, partially checked, and unchecked states with custom drawing.
+    Ensures visibility by explicitly painting indicators with colors and shapes.
+    Background matches row type (group or child) and selection state.
+    """
+ 
+    def __init__(self, parent=None, logger=None):
+        """
+        Initialize the delegate.
+ 
+        Args:
+            parent: Parent object.
+            logger: Logger for debug output.
+        """
+        super().__init__(parent)
+        self.logger = logger
+ 
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        """
+        Paint the checkbox for column 0.
+ 
+        Draws cell background first, then the indicator rectangle with state-specific fill and mark.
+ 
+        Args:
+            painter (QPainter): Painter for drawing.
+            option (QStyleOptionViewItem): Style options including rect and state.
+            index (QModelIndex): Index of the item.
+        """
+        if index.column() != 0:
+            super().paint(painter, option, index)
+            return
+ 
+        is_group = index.parent() == QModelIndex()
+        selected = bool(option.state & QStyle.State_Selected)
+        state = index.data(Qt.CheckStateRole)
+ 
+        if self.logger:
+            path = index.data(Qt.UserRole) or "group"
+            self.logger.debug(f"Painting checkbox for {path} state {state}")
+ 
+        # Draw cell background
+        bg_color = QColor(74, 144, 226) if selected else (QColor(250, 250, 250) if is_group else QColor(255, 255, 255))
+        painter.fillRect(option.rect, bg_color)
+ 
+        # Draw indicator (small square on left)
+        ind_size = 16
+        ind_x = option.rect.left() + 4
+        ind_y = option.rect.top() + (option.rect.height() - ind_size) // 2
+        ind_rect = QRect(ind_x, ind_y, ind_size, ind_size)
+ 
+        painter.save()
+        if state == Qt.Checked:
+            # Blue background, white check mark
+            painter.fillRect(ind_rect, QColor(74, 144, 226))
+            painter.setPen(QPen(QColor(255, 255, 255), 2))
+            w = ind_rect.width()
+            # Draw check: \ then /
+            painter.drawLine(ind_rect.left() + w // 3, ind_rect.top() + w // 2, ind_rect.left() + w // 2, ind_rect.bottom() - w // 3)
+            painter.drawLine(ind_rect.left() + w // 2, ind_rect.bottom() - w // 3, ind_rect.right() - w // 3, ind_rect.top() + w // 3)
+        elif state == Qt.PartiallyChecked:
+            # Yellow background, black dash
+            painter.fillRect(ind_rect, QColor(240, 208, 0))
+            painter.setPen(QPen(QColor(0, 0, 0), 2))
+            mid_y = ind_rect.top() + ind_rect.height() // 2
+            painter.drawLine(ind_rect.left() + 2, mid_y, ind_rect.right() - 2, mid_y)
+        else:
+            # White background, gray border
+            painter.fillRect(ind_rect, QColor(255, 255, 255))
+            painter.setPen(QPen(QColor(170, 170, 170), 1))
+            painter.drawRect(ind_rect)
+        painter.restore()
 
 
 class ImageGrid(QWidget):
@@ -262,6 +338,8 @@ class ImageSimilarityManagerDialog(QDialog):
         self.settings = settings or {}
         self.paths = paths or []
 
+        self.logger = LOGGER if self.mode == "duplicates" else LOGGER_SIM
+
         self.setWindowTitle(f"Image {'Similarity' if self.mode == 'similarity' else 'Duplicate'} Manager")
         self.setModal(True)
         self.resize(1200, 800)
@@ -314,15 +392,23 @@ class ImageSimilarityManagerDialog(QDialog):
         h_splitter = QSplitter(Qt.Horizontal)
         self.tree = QTreeWidget()
         
-        # Fix A: Set light palette on viewport
+        # Enhanced palette for visibility, especially checkboxes in Select column
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(255, 255, 255))
+        palette.setColor(QPalette.Base, QColor(255, 255, 255))
+        palette.setColor(QPalette.AlternateBase, QColor(245, 245, 245))
+        palette.setColor(QPalette.Text, QColor(17, 17, 17))
+        palette.setColor(QPalette.Button, QColor(240, 240, 240))  # Light gray for checkboxes
+        palette.setColor(QPalette.ButtonText, QColor(0, 0, 0))  # Black text
+        palette.setColor(QPalette.Highlight, QColor(74, 144, 226))  # Blue selection
+        palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))  # White on selection
+        self.tree.setPalette(palette)
         viewport = self.tree.viewport()
         viewport.setAutoFillBackground(True)
-        palette = QPalette()
-        palette.setColor(QPalette.Base, QColor(255, 255, 255))
-        palette.setColor(QPalette.Text, QColor(17, 17, 17))
         viewport.setPalette(palette)
         
         self.tree.setItemDelegate(GroupTreeDelegate(self.tree))
+        self.tree.setItemDelegateForColumn(0, CheckboxDelegate(self.tree, self.logger))
         self.tree.setColumnCount(7)
         self.tree.setHeaderLabels(["Select", "Name", "Directory", "Size", "Resolution", "Date", "Score"])
         header = self.tree.header()
@@ -330,19 +416,22 @@ class ImageSimilarityManagerDialog(QDialog):
         for i in range(self.tree.columnCount()):
             header.setSectionResizeMode(i, QHeaderView.Interactive)
         
-        # Simplified stylesheet - let the delegate handle colors
-        # Only set structural styles like borders and padding
+        # Stylesheet for tree (indicators handled by delegate)
         self.tree.setStyleSheet("""
-            QTreeWidget, QTreeWidget::viewport {
-                background: #ffffff;
+            QTreeWidget {
+                background-color: #ffffff;
                 color: #111111;
+                border: 1px solid #d0d0d0;
+            }
+            QTreeWidget::viewport {
+                background-color: #ffffff;
             }
             QTreeWidget::item {
-                border-bottom: 1px solid #e0e0e0;
                 padding: 2px 4px;
+                border-bottom: 1px solid #e0e0e0;
             }
             QTreeWidget::item:selected {
-                background: #4a90e2;
+                background-color: #4a90e2;
                 color: #ffffff;
             }
             QHeaderView::section {
@@ -350,6 +439,7 @@ class ImageSimilarityManagerDialog(QDialog):
                 border: 1px solid #e0e0e0;
                 padding: 5px;
                 font-weight: bold;
+                color: #333333;
             }
         """)
         
@@ -367,6 +457,37 @@ class ImageSimilarityManagerDialog(QDialog):
         self.preview_table.setSortingEnabled(False)
         self.preview_table.setAlternatingRowColors(True)
         self.preview_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        
+        # Stylesheet for preview table checkboxes visibility
+        self.preview_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #ffffff;
+                color: #111111;
+                gridline-color: #e0e0e0;
+                border: 1px solid #d0d0d0;
+            }
+            QTableWidget::item {
+                padding: 2px 4px;
+            }
+            QCheckBox {
+                background-color: #f0f0f0;
+                color: #000000;
+                border: 1px solid #cccccc;
+                spacing: 5px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+            QCheckBox::indicator:unchecked {
+                border: 2px solid #b8b8b8;
+                background-color: #f0f0f0;
+            }
+            QCheckBox::indicator:checked {
+                border: 2px solid #4a90e2;
+                background-color: #4a90e2;
+            }
+        """)
 
         preview_scroll = QScrollArea(widgetResizable=True)
         preview_scroll.setWidget(self.preview_table)
@@ -378,6 +499,7 @@ class ImageSimilarityManagerDialog(QDialog):
 
         self.selected_images = set()
         self.tree.itemClicked.connect(self._on_tree_item_clicked)
+        self.tree.itemChanged.connect(self._on_tree_item_changed)
 
         # --- Status Label ---
         self.status_label = QLabel("0 files selected for deletion")
@@ -516,11 +638,12 @@ class ImageSimilarityManagerDialog(QDialog):
             min_size = min(img.size for img in group.images) if group.images else 0
             savings = group.stats.total_size - min_size
             top.setText(5, format_file_size(savings))
-            top.setFlags(top.flags() & ~Qt.ItemIsUserCheckable)
+            top.setFlags(top.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsUserTristate | Qt.ItemIsEnabled)
+            top.setCheckState(0, Qt.Unchecked)
 
             for idx, img in enumerate(group.images):
                 child = QTreeWidgetItem(top)
-                child.setFlags(child.flags() & ~Qt.ItemIsUserCheckable)  # No checkboxes in tree
+                child.setFlags(child.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
                 child.setText(1, os.path.basename(img.path))
                 child.setText(2, os.path.dirname(img.path))  # Full directory path
                 child.setText(3, format_file_size(img.size))
@@ -530,9 +653,16 @@ class ImageSimilarityManagerDialog(QDialog):
                     child.setText(6, f"{img.score * 100:.1f}%")
                 else:
                     child.setText(6, "100.0%")
-                child.setData(1, Qt.UserRole, img.path)  # For preview and context delete
+                child.setData(0, Qt.UserRole, img.path)
+                if img.path in self.selected_images:
+                    child.setCheckState(0, Qt.Checked)
+                else:
+                    child.setCheckState(0, Qt.Unchecked)
 
             self.tree.expandItem(top)
+            self._update_group_checkstate(top)
+        
+        self._sync_tree_from_selections()
         
         if self.tree.topLevelItemCount() == 0 and self.groups:
             item = QTreeWidgetItem(self.tree)
@@ -563,7 +693,7 @@ class ImageSimilarityManagerDialog(QDialog):
         """
         item = self.tree.itemAt(position)
         if item and item.parent():  # Child
-            path = item.data(1, Qt.UserRole)
+            path = item.data(0, Qt.UserRole)
             if path:
                 menu = QMenu(self)
                 delete_action = QAction("Delete This Image", self)
@@ -571,15 +701,32 @@ class ImageSimilarityManagerDialog(QDialog):
                 menu.addAction(delete_action)
                 menu.exec(self.tree.viewport().mapToGlobal(position))
 
-    def _on_delete_clicked(self, paths: Optional[List[str]] = None) -> None:
+    def _on_delete_clicked(self, arg: Optional[Union[List[str], str, bool]] = None) -> None:
         """
         Delete selected images using table checkboxes or provided paths (e.g., context menu).
         Confirms, deletes with os.remove, removes from groups if successful, refreshes UI.
+        
+        Note:
+            This slot can be invoked by Qt signals that include a boolean 'checked' parameter
+            (e.g., QPushButton.clicked(bool), QAction.triggered(bool)). In such cases, the
+            first argument will be a bool. We normalize that to mean "use current selections".
+        
+        Args:
+            arg: One of:
+                - None or bool (from clicked/triggered): use self.selected_images
+                - List[str]/Tuple/Set of paths: delete those paths
+                - Single str path: delete that path
         """
-        if paths is None:
+        # Normalize input into a list of paths
+        if arg is None or isinstance(arg, bool):
+            # Invoked from button click or no explicit paths: use current checkbox selections
             to_delete = sorted(list(self.selected_images))
         else:
-            to_delete = sorted(paths)
+            if isinstance(arg, (list, tuple, set)):
+                to_delete = sorted([str(p) for p in arg])
+            else:
+                # Single value (e.g., str); coerce to single-item list
+                to_delete = [str(arg)]
     
         if not to_delete:
             QMessageBox.warning(self, "Warning", "No images selected.")
@@ -675,27 +822,35 @@ class ImageSimilarityManagerDialog(QDialog):
     
     def _clear_table(self) -> None:
         """
-        Clear the preview table and reset selections.
+        Clear the preview table without resetting global selections.
         """
         self.preview_table.setRowCount(0)
-        self.selected_images.clear()
         self._update_delete_btn()
         self._update_status_line()
     
-    def _on_checkbox_toggled(self, checked: bool, path: str) -> None:
+    def _on_checkbox_toggled(self, checkbox: QCheckBox, checked: bool) -> None:
         """
         Handle checkbox state change in the preview table.
         
         Args:
+            checkbox (QCheckBox): The checkbox that was toggled.
             checked (bool): Whether the checkbox is checked.
-            path (str): The image path associated with the checkbox.
         """
+        path = checkbox.property("path")
+        if path is None:
+            self.logger.warning("Checkbox without path property")
+            return
+        path = str(path)
+        self.logger.debug(f"Toggling preview {path}: {checked}")
         if checked:
             self.selected_images.add(path)
         else:
             self.selected_images.discard(path)
+        self.logger.debug(f"Selected images now: {len(self.selected_images)}")
         self._update_delete_btn()
         self._update_status_line()
+        self._sync_tree_from_selections()
+        self.tree.viewport().repaint()
     
     def _on_tree_item_clicked(self, item: QTreeWidgetItem) -> None:
         """
@@ -716,7 +871,7 @@ class ImageSimilarityManagerDialog(QDialog):
                 group = self.groups[index]
                 paths = [img.path for img in group.images]
         else:  # Leaf item (single image)
-            path = item.data(1, Qt.UserRole)
+            path = item.data(0, Qt.UserRole)
             if path:
                 paths = [path]
     
@@ -736,8 +891,11 @@ class ImageSimilarityManagerDialog(QDialog):
     
             # Column 0: Checkbox
             checkbox = QCheckBox()
-            checkbox.toggled.connect(lambda checked, p=path: self._on_checkbox_toggled(checked, p))
+            checkbox.setProperty("path", path)
+            checkbox.toggled.connect(lambda checked, cb=checkbox: self._on_checkbox_toggled(cb, checked))
             self.preview_table.setCellWidget(row, 0, checkbox)
+            if path in self.selected_images:
+                checkbox.setChecked(True)
     
             # Column 1: Preview image
             preview_label = QLabel()
@@ -800,9 +958,166 @@ class ImageSimilarityManagerDialog(QDialog):
     
         self.preview_table.verticalHeader().setDefaultSectionSize(120)
         self.preview_table.resizeRowsToContents()  # Ensure proper height
+        self._update_preview_checkboxes()
         self._update_status_line()
 
 # Syntax validation complete.
+
+    def _update_group_checkstate(self, parent: QTreeWidgetItem) -> None:
+        """
+        Update group header checkstate based on children states.
+        
+        - Unchecked: 0 selected
+        - Checked: all selected
+        - PartiallyChecked: some but not all selected
+        
+        This maintains bidirectional sync for group-level selection.
+        """
+        if not parent or parent.childCount() == 0:
+            return
+        
+        self.tree.blockSignals(True)
+        try:
+            checked_count = sum(
+                1 for i in range(parent.childCount())
+                if parent.child(i).checkState(0) == Qt.Checked
+            )
+            total = parent.childCount()
+            
+            if checked_count == 0:
+                new_state = Qt.Unchecked
+            elif checked_count == total:
+                new_state = Qt.Checked
+            else:
+                new_state = Qt.PartiallyChecked
+            parent.setCheckState(0, new_state)
+        finally:
+            self.tree.blockSignals(False)
+        self.tree.viewport().update()
+
+
+    def _sync_tree_from_selections(self) -> None:
+        """
+        Synchronize all tree checkboxes to reflect self.selected_images state.
+        
+        Iterates over all groups and children, setting checkstates accordingly.
+        Updates group headers to checked/partial/unchecked based on children.
+        Ensures tree reflects global selections without user interaction.
+        """
+        self.tree.blockSignals(True)
+        try:
+            for top_level in range(self.tree.topLevelItemCount()):
+                group_item = self.tree.topLevelItem(top_level)
+                child_count = group_item.childCount()
+                count_selected = 0
+                for child_idx in range(child_count):
+                    child_item = group_item.child(child_idx)
+                    child_path = child_item.data(0, Qt.UserRole)
+                    if child_path and child_path in self.selected_images:
+                        count_selected += 1
+                    child_item.setCheckState(0, Qt.Checked if child_path in self.selected_images else Qt.Unchecked)
+                    self.logger.debug(f"Child {child_path}: checked={child_path in self.selected_images}")
+                if count_selected == child_count:
+                    group_state = Qt.Checked
+                elif count_selected > 0:
+                    group_state = Qt.PartiallyChecked
+                else:
+                    group_state = Qt.Unchecked
+                group_item.setCheckState(0, group_state)
+                self.logger.debug(f"Group {top_level}: {count_selected}/{child_count} selected, state: {group_state}")
+        finally:
+            self.tree.blockSignals(False)
+        
+        self.tree.viewport().repaint()
+
+
+    def _update_preview_checkboxes(self) -> None:
+        """
+        Update all checkboxes in the preview table to match self.selected_images.
+        
+        Blocks signals during update to prevent recursive toggles.
+        Ensures preview reflects current global selections when group switches or selections change.
+        """
+        for row in range(self.preview_table.rowCount()):
+            checkbox = self.preview_table.cellWidget(row, 0)
+            if isinstance(checkbox, QCheckBox):
+                path_item = self.preview_table.item(row, 4)
+                if path_item:
+                    path = path_item.text()
+                    checkbox.blockSignals(True)
+                    checkbox.setChecked(path in self.selected_images)
+                    checkbox.blockSignals(False)
+
+
+    def _on_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        """
+        Handle changes to checkstate in the Select column (column 0) of the tree.
+        
+        Bidirectional sync logic:
+        - For group headers (top-level): Toggle all children in the group (add/remove paths from selected_images).
+          Sets all child checkstates to match.
+        - For child items: Add/remove individual path from selected_images, then update parent group checkstate.
+        
+        After update:
+        - Refreshes status and delete button.
+        - If the affected group is currently displayed in preview, updates preview checkboxes.
+        
+        Args:
+            item (QTreeWidgetItem): The item whose state changed.
+            column (int): The column (only processes column 0).
+        """
+        if column != 0:
+            return
+        
+        state = item.checkState(0)
+        self.logger.debug(f"Toggling tree item '{item.text(1)}' state: {state}")
+        
+        if state == Qt.PartiallyChecked and item.parent() is None:
+            # Partial is derived; no action on selected_images
+            self.tree.viewport().update()
+            return
+        
+        self.tree.blockSignals(True)
+        try:
+            if item.parent() is None:  # Group header
+                group_idx = self.tree.indexOfTopLevelItem(item)
+                if 0 <= group_idx < len(self.groups):
+                    group_paths = [img.path for img in self.groups[group_idx].images]
+                    if state == Qt.Checked:
+                        self.selected_images.update(group_paths)
+                    elif state == Qt.Unchecked:
+                        self.selected_images.difference_update(group_paths)
+                    
+                    # Propagate to all children: set their checkstates to match group
+                    for i in range(item.childCount()):
+                        child_item = item.child(i)
+                        child_item.setCheckState(0, state)
+            else:  # Child item
+                path = item.data(0, Qt.UserRole)
+                if path:
+                    self.logger.debug(f"Toggling child {path}: {state == Qt.Checked}")
+                    if state == Qt.Checked:
+                        self.selected_images.add(path)
+                    elif state == Qt.Unchecked:
+                        self.selected_images.discard(path)
+                    
+                    # Update parent group checkstate based on children
+                    parent = item.parent()
+                    if parent:
+                        self._update_group_checkstate(parent)
+        finally:
+            self.tree.blockSignals(False)
+        
+        self._sync_tree_from_selections()
+        self.tree.viewport().repaint()
+        self._update_status_line()
+        self._update_delete_btn()
+        self.logger.debug(f"Selected images now: {len(self.selected_images)}")
+        
+        # Update preview checkboxes if preview is populated (current group)
+        if self.preview_table.rowCount() > 0:
+            self._update_preview_checkboxes()
+
 
 def compute_group_stats(images: List[ImageData]) -> Stats:
     """
