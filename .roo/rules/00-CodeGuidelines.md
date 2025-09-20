@@ -72,6 +72,10 @@ The development environment is a Windows 11 Pro machine, but the shells used are
 - If ANY of the task description is unclear or incomplete, you will ask for clarification before proceeding
 - You will ask any clarifying questions required before responding. 
 
+## Always DRY!!!
+- ALWAYS try to make code/components reusable/configurable/customizable, when similar functionality is required
+- DO NOT always create new code/components when new/similar functionality/features are requested - instead examine existing code/components and try to add/customize functionality by parameters/settings, rather than create new components/classes/functions/code
+
 ## Your implementation of user coding/design instructions
 - The user (me) will provide coding/architectural instructions/specifications
 - Before implementation, you should review the proposed design/approach carefully, and provide feedback/suggestions/improvements of the user's suggested implementation.

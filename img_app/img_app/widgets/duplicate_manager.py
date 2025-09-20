@@ -30,7 +30,7 @@ from typing import Optional, List, Union
 from pathlib import Path
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QRect
+from PySide6.QtCore import Qt, QRect, QSize, QEvent
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem,
     QTreeWidgetItemIterator,
@@ -56,6 +56,43 @@ except ImportError:
 
 LOGGER = get_logger("img_app.duplicates")
 LOGGER_SIM = get_logger("img_app.similarity")
+
+def _qt_item_flag(name: str, default: int = 0):
+    """
+    Return a Qt.ItemFlag enum value by name in a version-compatible way.
+    Tries Qt.ItemFlag.<name>, then Qt.<name>. If not found, returns default (0).
+
+    Notes
+    -----
+    - This helper shields us from PySide6 enum API differences between versions.
+    - Qt6 exposes flags under Qt.ItemFlag; some versions also expose legacy aliases directly on Qt.
+    - If neither exists, we return default (0) so callers can OR it safely or skip it.
+
+    Examples
+    --------
+    - _qt_item_flag('ItemIsTristate', 0)
+    - _qt_item_flag('ItemIsAutoTristate', 0)
+    """
+    # Prefer the Qt6-style enum container
+    try:
+        return getattr(Qt.ItemFlag, name)
+    except Exception:
+        pass
+    # Fallback to legacy alias directly on Qt
+    return getattr(Qt, name, default)
+
+# Optional debug at import time to record available tri-state symbol
+try:
+    _tri = _qt_item_flag("ItemIsTristate", 0) or _qt_item_flag("ItemIsAutoTristate", 0)
+    if _tri:
+        LOGGER.debug(f"Tri-state item flag available: {_tri}")
+        LOGGER_SIM.debug(f"Tri-state item flag available: {_tri}")
+    else:
+        LOGGER.debug("Tri-state item flag not available; using manual partial-state visuals")
+        LOGGER_SIM.debug("Tri-state item flag not available; using manual partial-state visuals")
+except Exception:
+    # Best-effort logging; never fail at import time
+    pass
 
 
 def format_file_size(size_bytes: int) -> str:
@@ -234,10 +271,7 @@ class CheckboxDelegate(QStyledItemDelegate):
         painter.fillRect(option.rect, bg_color)
  
         # Draw indicator (small square on left)
-        ind_size = 16
-        ind_x = option.rect.left() + 4
-        ind_y = option.rect.top() + (option.rect.height() - ind_size) // 2
-        ind_rect = QRect(ind_x, ind_y, ind_size, ind_size)
+        ind_rect = self._indicator_rect(option)
  
         painter.save()
         if state == Qt.Checked:
@@ -261,7 +295,84 @@ class CheckboxDelegate(QStyledItemDelegate):
             painter.drawRect(ind_rect)
         painter.restore()
 
+        # Note: Consistency of geometry between paint() and editorEvent() is critical
+        # for reliable hit-testing in the custom checkbox column.
 
+    def _indicator_rect(self, option: QStyleOptionViewItem) -> QRect:
+        """
+        Compute the rectangle for the checkbox indicator within the cell.
+
+        Uses the same geometry for painting and hit-testing to avoid drift.
+
+        Args:
+            option: Style option providing cell rect.
+
+        Returns:
+            QRect: Rectangle for the checkbox indicator.
+        """
+        ind_size = 16
+        ind_x = option.rect.left() + 4
+        ind_y = option.rect.top() + (option.rect.height() - ind_size) // 2
+        return QRect(ind_x, ind_y, ind_size, ind_size)
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex):
+        """
+        Provide a size hint large enough to ensure the checkbox indicator is visible.
+
+        Returns at least 28px width and font-height+padding height.
+        """
+        fm = option.fontMetrics
+        h = max(22, fm.height() + 6)
+        w = max(28, 22)
+        return QSize(w, h)
+
+    def editorEvent(self, event, model, option: QStyleOptionViewItem, index: QModelIndex) -> bool:
+        """
+        Handle user interaction (mouse/key) to toggle the checkbox state.
+
+        Supports:
+        - Mouse left-button release within the cell (or indicator rect)
+        - Space/Select keypress when the cell is focused
+
+        Toggles Qt.CheckStateRole and relies on the item's changed signal to
+        drive synchronization logic already implemented in the dialog.
+        """
+        if index.column() != 0:
+            return False
+
+        try:
+            from PySide6.QtGui import QMouseEvent, QKeyEvent  # Lazy import for typing context
+        except Exception:
+            QMouseEvent = object  # type: ignore
+            QKeyEvent = object    # type: ignore
+
+        et = event.type()
+        # Mouse toggle
+        if et == QEvent.MouseButtonRelease and hasattr(event, "button") and event.button() == Qt.LeftButton:
+            # Use forgiving hit-test: anywhere in the cell toggles; indicator rect suffices too
+            pt = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            if option.rect.contains(pt):  # or self._indicator_rect(option).contains(pt)
+                state = index.data(Qt.CheckStateRole)
+                new_state = Qt.Checked if state != Qt.Checked else Qt.Unchecked
+                if self.logger:
+                    path = index.data(Qt.UserRole) or "group"
+                    self.logger.debug(f"editorEvent mouse toggle for {path}: {state} -> {new_state}")
+                return bool(model.setData(index, new_state, Qt.CheckStateRole))
+
+        # Keyboard toggle
+        if et == QEvent.KeyPress and hasattr(event, "key"):
+            key = event.key()
+            if key in (Qt.Key_Space, Qt.Key_Select):
+                state = index.data(Qt.CheckStateRole)
+                new_state = Qt.Checked if state != Qt.Checked else Qt.Unchecked
+                if self.logger:
+                    path = index.data(Qt.UserRole) or "group"
+                    self.logger.debug(f"editorEvent key toggle for {path}: {state} -> {new_state}")
+                return bool(model.setData(index, new_state, Qt.CheckStateRole))
+
+        return False
+
+ 
 class ImageGrid(QWidget):
     """
     Grid widget for image previews.
@@ -415,6 +526,10 @@ class ImageSimilarityManagerDialog(QDialog):
         # Make all columns user-resizable
         for i in range(self.tree.columnCount()):
             header.setSectionResizeMode(i, QHeaderView.Interactive)
+        # Enforce a visible minimum width for Select column (0)
+        header.setMinimumSectionSize(28)
+        header.resizeSection(0, 28)
+        header.setStretchLastSection(False)
         
         # Stylesheet for tree (indicators handled by delegate)
         self.tree.setStyleSheet("""
@@ -513,6 +628,12 @@ class ImageSimilarityManagerDialog(QDialog):
         self.delete_btn.clicked.connect(self._on_delete_clicked)
         self.delete_btn.setEnabled(False)
         btn_layout.addWidget(self.delete_btn)
+
+        # Footer option: explicit opt-in to clear selections after delete
+        self.clear_after_delete_cb = QCheckBox("Clear selections after delete")
+        self.clear_after_delete_cb.setChecked(False)
+        btn_layout.addWidget(self.clear_after_delete_cb)
+
         btn_layout.addStretch()
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
@@ -590,6 +711,12 @@ class ImageSimilarityManagerDialog(QDialog):
                 LOGGER_SIM.info("Output from find_similar_images: empty list")
     
             self._populate_tree()
+            # Post-populate synchronization: reflect current selections without clearing
+            self._sync_tree_from_selections()
+            if self.preview_table.rowCount() > 0:
+                self._update_preview_checkboxes()
+            self._update_status_line()
+            self._update_delete_btn()
             LOGGER_SIM.info(f"Computed {len(self.groups)} groups (algorithm={algorithm}, threshold={threshold})")
     
         except Exception as e:
@@ -638,7 +765,8 @@ class ImageSimilarityManagerDialog(QDialog):
             min_size = min(img.size for img in group.images) if group.images else 0
             savings = group.stats.total_size - min_size
             top.setText(5, format_file_size(savings))
-            top.setFlags(top.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsUserTristate | Qt.ItemIsEnabled)
+            tristate = _qt_item_flag('ItemIsTristate', 0) or _qt_item_flag('ItemIsAutoTristate', 0)
+            top.setFlags(top.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | tristate)
             top.setCheckState(0, Qt.Unchecked)
 
             for idx, img in enumerate(group.images):
@@ -771,26 +899,34 @@ class ImageSimilarityManagerDialog(QDialog):
                 # Per-file error message
                 show_selectable_error(self, f"Delete Failed: {os.path.basename(path)}", str(e))
     
+        # Update selection persistence: remove only successfully deleted paths
+        if successful:
+            self.selected_images.difference_update(successful)
+
+        # Optional explicit clear (opt-in via footer checkbox)
+        if hasattr(self, "clear_after_delete_cb") and self.clear_after_delete_cb.isChecked():
+            self.selected_images.clear()
+
         # Filter out groups with fewer than 2 images and update stats
         self.groups = [g for g in self.groups if len(g.images) >= 2]
         for g in self.groups:
             g.stats = compute_group_stats(g.images)
-    
-        # Refresh tree
+
+        # Refresh tree and synchronize UI
         self._populate_tree()
-    
+        self._sync_tree_from_selections()
+        if self.preview_table.rowCount() > 0:
+            self._update_preview_checkboxes()
+
         if successful:
             show_selectable_info(self, "Delete Complete", f"Successfully deleted {len(successful)} file(s).")
-    
-        # Clear selections and table
-        self.selected_images.clear()
+
+        # Clear preview and repopulate for current selection, without clearing global selections
         self._clear_table()
-    
-        # Repopulate table if a tree item is currently selected
         current_item = self.tree.currentItem()
         if current_item:
             self._on_tree_item_clicked(current_item)
-    
+
         self._update_status_line()
         self._update_delete_btn()
 
@@ -807,6 +943,10 @@ class ImageSimilarityManagerDialog(QDialog):
                 new_groups.append(group)
         self.groups = new_groups
         self._populate_tree()
+        # Keep selections; just re-sync the UI state
+        self._sync_tree_from_selections()
+        if self.preview_table.rowCount() > 0:
+            self._update_preview_checkboxes()
         self._update_status_line()
         self._update_delete_btn()
         self._clear_table()

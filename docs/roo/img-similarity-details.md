@@ -334,3 +334,41 @@ To support hierarchical GUI display and rich statistics, new dataclasses are int
 **Batch Integration**: `compute_phash_batch` / `compute_whash_batch` return {path: hash or None}, used to build hashes list for grouping. Progress logged every 50 files.
 
 **GUI Integration**: In [duplicate_manager.py](img_app/img_app/widgets/duplicate_manager.py), populate QTreeWidget with Group data: top item for group stats/thumb, children for ImageData (checkbox, thumb via delegate). Post-delete filters groups, recomputes stats.
+---
+## Selection UI and State Synchronization — Minimal Fix (2025-09-20)
+
+Left Pane: Groups Tree (QTreeWidget)
+- Column 0 “Select” uses custom [python.CheckboxDelegate](img_app/img_app/widgets/duplicate_manager.py:189)
+  - sizeHint: [python.CheckboxDelegate.sizeHint()](img_app/img_app/widgets/duplicate_manager.py:281)
+  - editorEvent: [python.CheckboxDelegate.editorEvent()](img_app/img_app/widgets/duplicate_manager.py:292)
+  - paint: [python.CheckboxDelegate.paint()](img_app/img_app/widgets/duplicate_manager.py:236) using [_indicator_rect](img_app/img_app/widgets/duplicate_manager.py:264)
+- Header configuration ensures visibility:
+  - [python.ImageSimilarityManagerDialog.__init__()](img_app/img_app/widgets/duplicate_manager.py:489)
+- Group tri-state and child checkability set in:
+  - [python.ImageSimilarityManagerDialog._populate_tree()](img_app/img_app/widgets/duplicate_manager.py:731), [python.ImageSimilarityManagerDialog._populate_tree()](img_app/img_app/widgets/duplicate_manager.py:735)
+
+Right Pane: Preview Table (QTableWidget)
+- Per-row QCheckBox widgets remain; toggling handled by:
+  - [python.ImageSimilarityManagerDialog._on_checkbox_toggled()](img_app/img_app/widgets/duplicate_manager.py:831)
+
+Synchronization Paths
+- Preview → State → Tree:
+  - _on_checkbox_toggled → _sync_tree_from_selections → _update_preview_checkboxes
+- Tree → State → Preview:
+  - _on_tree_item_changed → _sync_tree_from_selections → _update_preview_checkboxes (if present)
+
+Deletion and Persistence
+- Default: only deleted items removed from selection
+  - [python.ImageSimilarityManagerDialog._on_delete_clicked()](img_app/img_app/widgets/duplicate_manager.py:864)
+- Optional: explicit full clear after delete via footer checkbox
+  - [python.ImageSimilarityManagerDialog.__init__()](img_app/img_app/widgets/duplicate_manager.py:595), [python.ImageSimilarityManagerDialog._on_delete_clicked()](img_app/img_app/widgets/duplicate_manager.py:869)
+- Recompute/refresh: perform sync without clearing:
+  - [python.ImageSimilarityManagerDialog._compute_groups()](img_app/img_app/widgets/duplicate_manager.py:676), [python.ImageSimilarityManagerDialog._refresh_groups()](img_app/img_app/widgets/duplicate_manager.py:907)
+
+Acceptance and Manual Checks
+- See [architecture-plan.md](architecture-plan.md:1) “Acceptance Criteria” and “Manual Verification”
+
+Future Refactor Notes
+- Replace global set with SelectionStore emitting delta signals
+- Transition to QTreeView/QTableView with checkable models (Qt.CheckStateRole)
+- Identity: normalized absolute path; future: content-hash

@@ -473,3 +473,23 @@ Implementation
 Notes
 - Current implementation uses the algorithm key 'sha256' for identity in [ScanWorker.run()](img_app/img_app/main_window.py:315); Option A duplicates may later switch to blake3 per canonical decision. The reporting queries use the same algorithm label to match computed hashes.
 - Error handling follows GUI standards; the report generation is wrapped to prevent UI crashes; detailed errors use [gui_error_handler()](src/pk_py_lib/gui/utils/messages.py:293) patterns elsewhere in the window.
+
+---
+## Similarity Manager — Selection Semantics (Minimal Fix)
+
+Behavioral contract
+- The global selection set (self.selected_images) is the single source of truth for the dialog
+- Toggling selection from either pane updates the same selection set and synchronizes both panes
+- Deletion removes only successfully deleted items from the selection by default
+- Users may opt to “Clear selections after delete” via a footer checkbox (default OFF)
+- Recompute and refresh do not clear selection; views are resynchronized; selections that still exist by path remain selected
+
+UI Requirements
+- Left “Select” column must remain visible and wide enough to present a 16×16 indicator (min section size 28 px)
+- Checkbox toggling must work on mouse click and Space/Select keys for both groups (tri-state) and children
+- The footer must include the “Clear selections after delete” option
+
+Traceability to implementation
+- Header sizing: [python.ImageSimilarityManagerDialog.__init__()](img_app/img_app/widgets/duplicate_manager.py:489)
+- Delegate toggling/size: [python.CheckboxDelegate.sizeHint()](img_app/img_app/widgets/duplicate_manager.py:281), [python.CheckboxDelegate.editorEvent()](img_app/img_app/widgets/duplicate_manager.py:292)
+- Delete semantics: [python.ImageSimilarityManagerDialog._on_delete_clicked()](img_app/img_app/widgets/duplicate_manager.py:864)

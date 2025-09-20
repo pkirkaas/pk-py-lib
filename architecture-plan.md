@@ -542,3 +542,61 @@ References
 - API validation/normalization semantics: [docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md)
 - Technical architecture (OS-aware matching, defaults SOoT): [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md)
 - Errors (blocking behavior): [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md)
+
+---
+## Image Similarity Manager — Selection State Architecture (Minimal Fix, 2025-09-20)
+
+Summary
+- Implemented a targeted fix to resolve:
+  - Left pane “Select” column not visibly reflecting selection
+  - Cross-group selections appearing to clear unexpectedly
+- Retained the existing single-source-of-truth as a global set: self.selected_images
+- Deferred a full SelectionStore refactor; documented next-steps below
+
+Core Source and Flow
+- Source of truth:
+  - self.selected_images (Set[str]) maintained by [python.ImageSimilarityManagerDialog](img_app/img_app/widgets/duplicate_manager.py:1)
+- Right preview pane → state mutation:
+  - [python.ImageSimilarityManagerDialog._on_checkbox_toggled()](img_app/img_app/widgets/duplicate_manager.py:831)
+  - Calls [_sync_tree_from_selections](img_app/img_app/widgets/duplicate_manager.py:999) and [_update_preview_checkboxes](img_app/img_app/widgets/duplicate_manager.py:1034)
+- Left tree pane → state mutation:
+  - [python.ImageSimilarityManagerDialog._on_tree_item_changed()](img_app/img_app/widgets/duplicate_manager.py:1052)
+  - Uses [_update_group_checkstate](img_app/img_app/widgets/duplicate_manager.py:966) for tri-state parent; then syncs
+
+UI/UX Adjustments (Minimal Fix)
+- Checkbox visibility and clickability in left tree:
+  - Enforce header min width and disable stretch:
+    - header.setMinimumSectionSize(28), header.resizeSection(0, 28), header.setStretchLastSection(False) in [python.ImageSimilarityManagerDialog.__init__()](img_app/img_app/widgets/duplicate_manager.py:489)
+  - CheckboxDelegate improved for reliable render and toggling:
+    - sizeHint added at [python.CheckboxDelegate.sizeHint()](img_app/img_app/widgets/duplicate_manager.py:281)
+    - editorEvent added at [python.CheckboxDelegate.editorEvent()](img_app/img_app/widgets/duplicate_manager.py:292)
+    - Shared indicator-rect helper at [python.CheckboxDelegate._indicator_rect()](img_app/img_app/widgets/duplicate_manager.py:264)
+    - paint consistent with geometry at [python.CheckboxDelegate.paint()](img_app/img_app/widgets/duplicate_manager.py:236)
+  - Tri-state and user-checkable flags:
+    - Groups: Qt.ItemIsUserCheckable | Qt.ItemIsTristate | Qt.ItemIsEnabled at [python.ImageSimilarityManagerDialog._populate_tree()](img_app/img_app/widgets/duplicate_manager.py:731)
+    - Children: Qt.ItemIsUserCheckable | Qt.ItemIsEnabled at [python.ImageSimilarityManagerDialog._populate_tree()](img_app/img_app/widgets/duplicate_manager.py:735)
+- Selection persistence and delete semantics:
+  - Delete removes only deleted entries from selection: [python.ImageSimilarityManagerDialog._on_delete_clicked()](img_app/img_app/widgets/duplicate_manager.py:864)
+  - Optional explicit clear controlled by footer checkbox: [python.ImageSimilarityManagerDialog.__init__()](img_app/img_app/widgets/duplicate_manager.py:595), [python.ImageSimilarityManagerDialog._on_delete_clicked()](img_app/img_app/widgets/duplicate_manager.py:869)
+- Recompute/refresh behavior:
+  - Post-populate synchronization without clearing: [python.ImageSimilarityManagerDialog._compute_groups()](img_app/img_app/widgets/duplicate_manager.py:676), [python.ImageSimilarityManagerDialog._refresh_groups()](img_app/img_app/widgets/duplicate_manager.py:907)
+
+Acceptance Criteria
+- Left “Select” column checkboxes clearly visible and toggle reliably (group tri-state correct)
+- Cross-pane synchronization (left/right) remains consistent
+- Selections persist across groups and user actions; only deleted items are removed from selection unless explicit clear is requested
+- Recompute preserves selection for items still present by path
+
+Manual Verification
+- Launch app (pdm run imgapp), open the dialog
+- Select in Group A, then Group B; return to Group A: selections persist
+- Delete with the footer checkbox OFF: only deleted items removed from selection
+- Delete with the footer checkbox ON: all selections cleared post delete
+- Press “Compute Groups”: selections still present by path remain selected
+
+Forward Plan — Clean Refactor (Next Step)
+- Introduce SelectionStore (QObject) with signals (added/removed/cleared/changed)
+- Convert views to model/view (QTreeView/QTableView) exposing Qt.CheckStateRole (tri-state for groups)
+- Unidirectional data flow: user action → SelectionStore → models → views
+- Identity normalization via Path(path).resolve(); future: content-hash
+- See proposed API in [docs/roo/img-similarity-details.md](docs/roo/img-similarity-details.md)

@@ -304,3 +304,30 @@ The previous separate DuplicateManagerDialog and SimilarityManagerDialog are mer
 - Text selectable in tabs, status, errors.
 
 This unified design supports mode-based computation/display, hierarchical view, and safe deletion with UI feedback.
+
+---
+## UI Update — Similarity Manager Footer and Select Column (Minimal Fix)
+
+Changes
+- Footer: Added a QCheckBox labeled “Clear selections after delete” (default OFF)
+  - Wiring in delete flow: [python.ImageSimilarityManagerDialog._on_delete_clicked()](img_app/img_app/widgets/duplicate_manager.py:869)
+- Left pane “Select” column width enforced to avoid clipping of the custom indicator
+  - Header min size + resize of column 0: [python.ImageSimilarityManagerDialog.__init__()](img_app/img_app/widgets/duplicate_manager.py:489)
+- Checkbox delegate made fully interactive with keyboard and mouse
+  - [python.CheckboxDelegate.editorEvent()](img_app/img_app/widgets/duplicate_manager.py:292)
+  - [python.CheckboxDelegate.sizeHint()](img_app/img_app/widgets/duplicate_manager.py:281)
+
+UX Rationale
+- Visibility: Prevents false perception that selections aren’t applied
+- Explicit clearing: Prevents surprising global clears; user opts in via checkbox
+- Accessibility: Keyboard toggling via Space/Select
+
+Acceptance
+- The column remains wide enough for the indicator
+- Toggling works on both mouse and keyboard, for group and child rows
+- Delete behavior follows the footer option and preserves unrelated selections
+
+Execution notes for this subtask
+- Only append the sections above to the specified files
+- Keep all filenames and language constructs as clickable references
+- On completion, use attempt_completion to list the files updated and the titles of added sections; include a one-paragraph summary confirming that docs now reflect the minimal fix and forward plan
