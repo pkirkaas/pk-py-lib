@@ -372,3 +372,28 @@ Future Refactor Notes
 - Replace global set with SelectionStore emitting delta signals
 - Transition to QTreeView/QTableView with checkable models (Qt.CheckStateRole)
 - Identity: normalized absolute path; future: content-hash
+---
+## Compatibility Note — PySide6 ItemIsTristate Flags
+
+Context
+- Some PySide6 builds expose item flags under Qt6-style enum containers (Qt.ItemFlag.ItemIsTristate), while others expose legacy aliases directly on Qt (Qt.ItemIsTristate). Certain environments may not expose either symbol consistently.
+
+Implementation
+- A small helper safely resolves item flags across versions and falls back to 0 (omitting the flag when unavailable):
+  - [python._qt_item_flag()](img_app/img_app/widgets/duplicate_manager.py:64)
+- Group tri‑state application uses this helper:
+  - [python.ImageSimilarityManagerDialog._populate_tree() tristate assignment](img_app/img_app/widgets/duplicate_manager.py:768)
+  - [python.ImageSimilarityManagerDialog._populate_tree() flags set](img_app/img_app/widgets/duplicate_manager.py:769)
+
+Behavioral implications
+- When tri‑state flags are unavailable, visuals remain correct because parent partial states are computed and painted programmatically:
+  - [python.ImageSimilarityManagerDialog._update_group_checkstate()](img_app/img_app/widgets/duplicate_manager.py:966)
+  - [python.ImageSimilarityManagerDialog._sync_tree_from_selections()](img_app/img_app/widgets/duplicate_manager.py:1101)
+  - [python.CheckboxDelegate.paint()](img_app/img_app/widgets/duplicate_manager.py:236)
+- User interactions on group rows (toggle all children) continue to function via:
+  - [python.ImageSimilarityManagerDialog._on_tree_item_changed()](img_app/img_app/widgets/duplicate_manager.py:1154)
+
+Rationale
+- The fallback ensures cross‑version compatibility and prevents runtime errors like:
+  - AttributeError: type object 'PySide6.QtCore.Qt' has no attribute 'ItemIsTristate'
+- The UI remains consistent because checked/partial/unchecked states are driven by Qt.CheckStateRole and synchronized across panes.

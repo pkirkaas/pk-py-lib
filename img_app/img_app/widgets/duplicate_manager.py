@@ -262,9 +262,13 @@ class CheckboxDelegate(QStyledItemDelegate):
         selected = bool(option.state & QStyle.State_Selected)
         state = index.data(Qt.CheckStateRole)
  
-        if self.logger:
-            path = index.data(Qt.UserRole) or "group"
-            self.logger.debug(f"Painting checkbox for {path} state {state}")
+        # Minimal debug: only for child rows to confirm painting; avoid verbose path logs
+        if self.logger and not is_group:
+            try:
+                sval = int(state) if state is not None else -1
+            except Exception:
+                sval = -1
+            self.logger.debug(f"paint child: state={sval}")
  
         # Draw cell background
         bg_color = QColor(74, 144, 226) if selected else (QColor(250, 250, 250) if is_group else QColor(255, 255, 255))
@@ -782,10 +786,15 @@ class ImageSimilarityManagerDialog(QDialog):
                 else:
                     child.setText(6, "100.0%")
                 child.setData(0, Qt.UserRole, img.path)
-                if img.path in self.selected_images:
-                    child.setCheckState(0, Qt.Checked)
-                else:
-                    child.setCheckState(0, Qt.Unchecked)
+                # Explicitly set CheckStateRole so delegate can paint, even when Unchecked
+                state = Qt.Checked if img.path in self.selected_images else Qt.Unchecked
+                child.setCheckState(0, state)
+                # Minimal init debug: only log for the first few children per group to reduce noise
+                if idx < 3:
+                    try:
+                        self.logger.debug(f"child-check init: {img.path} state={int(state)}")
+                    except Exception:
+                        self.logger.debug(f"child-check init: {img.path} state={state}")
 
             self.tree.expandItem(top)
             self._update_group_checkstate(top)
