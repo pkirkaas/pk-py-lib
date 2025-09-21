@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QPainter, QPixmap, QFont, QStandardItem, QAction, QColor, QBrush, QPalette, QImage, QPen
 from PySide6.QtWidgets import QStyleOptionViewItem
 from PySide6.QtCore import QModelIndex
+from PySide6.QtCore import QSignalBlocker
 
 from src.pk_py_lib.gui.utils.messages import show_selectable_info, show_selectable_error
 from src.pk_py_lib.core.logging import get_logger
@@ -165,6 +166,11 @@ class GroupTreeDelegate(QStyledItemDelegate):
         - Then manually draw our text with explicit colors
         - This ensures text is always visible regardless of theme or Qt internal handling
         """
+        # For column 0, use the default styled delegate so native checkbox hit-testing/toggling works
+        if index.column() == 0:
+            super().paint(painter, option, index)
+            return
+
         is_group = index.parent() == QModelIndex()
         selected = bool(option.state & QStyle.State_Selected)
  
@@ -172,20 +178,20 @@ class GroupTreeDelegate(QStyledItemDelegate):
         opt = QStyleOptionViewItem(option)
         opt.text = ""
         opt.displayAlignment = Qt.AlignLeft | Qt.AlignVCenter  # Reset alignment
-        
+         
         # Set explicit background brush for light backgrounds
         if is_group:
             opt.backgroundBrush = QBrush(QColor(250, 250, 250))
         else:
             opt.backgroundBrush = QBrush(QColor(255, 255, 255))
-        
+         
         # Let Qt draw the background, checkbox, etc. but not text
         super().paint(painter, opt, index)
  
         # Determine colors
         group_bg = QColor(250, 250, 250)  # #fafafa - light gray for groups
         file_bg  = QColor(255, 255, 255)  # #ffffff - pure white for files
-        
+         
         # Text colors - explicitly defined
         text_color = QColor(255, 255, 255) if selected else QColor(17, 17, 17)  # white if selected, dark if not
  
@@ -200,7 +206,7 @@ class GroupTreeDelegate(QStyledItemDelegate):
         if text:
             # Set text color explicitly
             painter.setPen(text_color)
-            
+             
             # Calculate text rect with padding (adjust for checkbox column)
             column = index.column()
             text_rect = QRect(option.rect)
@@ -208,10 +214,10 @@ class GroupTreeDelegate(QStyledItemDelegate):
                 text_rect.adjust(20, 0, -4, 0)  # Leave space for checkbox
             else:
                 text_rect.adjust(4, 0, -4, 0)
-            
+             
             # Draw the text directly
             painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, str(text))
-        
+         
         # Draw focus rect if needed
         if option.state & QStyle.State_HasFocus:
             focus_rect = QRect(option.rect)
@@ -452,6 +458,9 @@ class ImageSimilarityManagerDialog(QDialog):
         self.db_manager = db_manager
         self.settings = settings or {}
         self.paths = paths or []
+        # Reentrancy guard: when True, suppresses handling of itemChanged to avoid
+        # re-entrant sync loops and transient visual reverts during programmatic updates
+        self._suppress_tree_item_changed: bool = False
 
         self.logger = LOGGER if self.mode == "duplicates" else LOGGER_SIM
 
@@ -523,7 +532,7 @@ class ImageSimilarityManagerDialog(QDialog):
         viewport.setPalette(palette)
         
         self.tree.setItemDelegate(GroupTreeDelegate(self.tree))
-        self.tree.setItemDelegateForColumn(0, CheckboxDelegate(self.tree, self.logger))
+        # self.tree.setItemDelegateForColumn(0, CheckboxDelegate(self.tree, self.logger))
         self.tree.setColumnCount(7)
         self.tree.setHeaderLabels(["Select", "Name", "Directory", "Size", "Resolution", "Date", "Score"])
         header = self.tree.header()
@@ -658,6 +667,21 @@ class ImageSimilarityManagerDialog(QDialog):
         self._update_status_line()
         self._update_delete_btn()
 
+    def _norm_path(self, p: str) -> str:
+        """
+        Normalize a filesystem path for consistent comparisons across platforms.
+
+        On Windows, normcase lowercases the path and normalizes separators.
+        On POSIX, normcase is a no-op; normpath collapses redundant separators.
+
+        Returns the input unchanged on error.
+        """
+        import os
+        try:
+            return os.path.normcase(os.path.normpath(p))
+        except Exception:
+            return p
+ 
     def _get_hashes_from_db(self, algorithm: str) -> List[Dict[str, str]]:
         """
         Query DB for hashes of given algorithm.
@@ -745,6 +769,9 @@ class ImageSimilarityManagerDialog(QDialog):
             return
     
     
+        # Suppress itemChanged during initial population to avoid reentrant slot and visual flicker
+        self._suppress_tree_item_changed = True
+        blocker = QSignalBlocker(self.tree)
         for group in self.groups:
             if not (hasattr(group, 'id') and hasattr(group, 'images') and isinstance(group.images, list)):
                 error_msg = f"Invalid group: missing 'id', 'images', or 'images' not list. Skipping group."
@@ -785,9 +812,10 @@ class ImageSimilarityManagerDialog(QDialog):
                     child.setText(6, f"{img.score * 100:.1f}%")
                 else:
                     child.setText(6, "100.0%")
-                child.setData(0, Qt.UserRole, img.path)
+                norm = self._norm_path(img.path)
+                child.setData(0, Qt.UserRole, norm)
                 # Explicitly set CheckStateRole so delegate can paint, even when Unchecked
-                state = Qt.Checked if img.path in self.selected_images else Qt.Unchecked
+                state = Qt.Checked if norm in self.selected_images else Qt.Unchecked
                 child.setCheckState(0, state)
                 # Minimal init debug: only log for the first few children per group to reduce noise
                 if idx < 3:
@@ -799,6 +827,8 @@ class ImageSimilarityManagerDialog(QDialog):
             self.tree.expandItem(top)
             self._update_group_checkstate(top)
         
+        del blocker  # release to re-enable signals
+        self._suppress_tree_item_changed = False
         self._sync_tree_from_selections()
         
         if self.tree.topLevelItemCount() == 0 and self.groups:
@@ -890,7 +920,7 @@ class ImageSimilarityManagerDialog(QDialog):
                     successful.append(path)
                     # Remove from all groups immediately
                     for group in self.groups[:]:
-                        group.images = [img for img in group.images if img.path != path]
+                        group.images = [img for img in group.images if self._norm_path(img.path) != path]
     
                     if self.mode == "duplicates":
                         LOGGER.info(f"Deleted: {path}")
@@ -985,17 +1015,17 @@ class ImageSimilarityManagerDialog(QDialog):
             checkbox (QCheckBox): The checkbox that was toggled.
             checked (bool): Whether the checkbox is checked.
         """
-        path = checkbox.property("path")
-        if path is None:
+        raw = checkbox.property("path")
+        path = self._norm_path(str(raw) if raw else "")
+        if not path:
             self.logger.warning("Checkbox without path property")
             return
-        path = str(path)
-        self.logger.debug(f"Toggling preview {path}: {checked}")
+        op = "add" if checked else "remove"
+        self.logger.debug(f"preview-toggle {op}: {path}")
         if checked:
             self.selected_images.add(path)
         else:
             self.selected_images.discard(path)
-        self.logger.debug(f"Selected images now: {len(self.selected_images)}")
         self._update_delete_btn()
         self._update_status_line()
         self._sync_tree_from_selections()
@@ -1043,7 +1073,7 @@ class ImageSimilarityManagerDialog(QDialog):
             checkbox.setProperty("path", path)
             checkbox.toggled.connect(lambda checked, cb=checkbox: self._on_checkbox_toggled(cb, checked))
             self.preview_table.setCellWidget(row, 0, checkbox)
-            if path in self.selected_images:
+            if self._norm_path(path) in self.selected_images:
                 checkbox.setChecked(True)
     
             # Column 1: Preview image
@@ -1153,19 +1183,25 @@ class ImageSimilarityManagerDialog(QDialog):
         Updates group headers to checked/partial/unchecked based on children.
         Ensures tree reflects global selections without user interaction.
         """
-        self.tree.blockSignals(True)
+        # Suppress re-entrant itemChanged during programmatic sync and block tree signals.
+        # Guard ensures the itemChanged slot does not try to undo our programmatic writes.
+        self._suppress_tree_item_changed = True
+        blocker = QSignalBlocker(self.tree)
         try:
+            self.tree.blockSignals(True)
             for top_level in range(self.tree.topLevelItemCount()):
                 group_item = self.tree.topLevelItem(top_level)
                 child_count = group_item.childCount()
                 count_selected = 0
                 for child_idx in range(child_count):
                     child_item = group_item.child(child_idx)
-                    child_path = child_item.data(0, Qt.UserRole)
-                    if child_path and child_path in self.selected_images:
+                    raw = child_item.data(0, Qt.UserRole)
+                    path = self._norm_path(str(raw) if raw else "")
+                    in_sel = bool(path and path in self.selected_images)
+                    if in_sel:
                         count_selected += 1
-                    child_item.setCheckState(0, Qt.Checked if child_path in self.selected_images else Qt.Unchecked)
-                    self.logger.debug(f"Child {child_path}: checked={child_path in self.selected_images}")
+                    child_item.setCheckState(0, Qt.Checked if in_sel else Qt.Unchecked)
+                    self.logger.debug(f"Child {path}: checked={in_sel}")
                 if count_selected == child_count:
                     group_state = Qt.Checked
                 elif count_selected > 0:
@@ -1176,8 +1212,9 @@ class ImageSimilarityManagerDialog(QDialog):
                 self.logger.debug(f"Group {top_level}: {count_selected}/{child_count} selected, state: {group_state}")
         finally:
             self.tree.blockSignals(False)
-        
-        self.tree.viewport().repaint()
+            del blocker  # release to re-enable signals
+            self._suppress_tree_item_changed = False
+        self.tree.viewport().update()
 
 
     def _update_preview_checkboxes(self) -> None:
@@ -1192,7 +1229,8 @@ class ImageSimilarityManagerDialog(QDialog):
             if isinstance(checkbox, QCheckBox):
                 path_item = self.preview_table.item(row, 4)
                 if path_item:
-                    path = path_item.text()
+                    raw = path_item.text()
+                    path = self._norm_path(str(raw) if raw else "")
                     checkbox.blockSignals(True)
                     checkbox.setChecked(path in self.selected_images)
                     checkbox.blockSignals(False)
@@ -1215,6 +1253,10 @@ class ImageSimilarityManagerDialog(QDialog):
             item (QTreeWidgetItem): The item whose state changed.
             column (int): The column (only processes column 0).
         """
+        # Non-reentrant guard: ignore signals caused by our own programmatic updates
+        if getattr(self, "_suppress_tree_item_changed", False):
+            self.logger.debug("itemChanged suppressed")
+            return
         if column != 0:
             return
         
@@ -1231,20 +1273,33 @@ class ImageSimilarityManagerDialog(QDialog):
             if item.parent() is None:  # Group header
                 group_idx = self.tree.indexOfTopLevelItem(item)
                 if 0 <= group_idx < len(self.groups):
-                    group_paths = [img.path for img in self.groups[group_idx].images]
+                    # Normalize all paths for group bulk operation
+                    raw_paths = [img.path for img in self.groups[group_idx].images]
+                    group_paths = [self._norm_path(str(p)) for p in raw_paths]
                     if state == Qt.Checked:
                         self.selected_images.update(group_paths)
+                        self.logger.debug(f"group-toggle add: {len(group_paths)} items")
                     elif state == Qt.Unchecked:
                         self.selected_images.difference_update(group_paths)
+                        self.logger.debug(f"group-toggle remove: {len(group_paths)} items")
                     
                     # Propagate to all children: set their checkstates to match group
-                    for i in range(item.childCount()):
-                        child_item = item.child(i)
-                        child_item.setCheckState(0, state)
+                    # Wrap in guard + QSignalBlocker to avoid re-entrant itemChanged storms
+                    self._suppress_tree_item_changed = True
+                    blocker = QSignalBlocker(self.tree)
+                    try:
+                        for i in range(item.childCount()):
+                            child_item = item.child(i)
+                            child_item.setCheckState(0, state)
+                    finally:
+                        del blocker  # release to re-enable signals
+                        self._suppress_tree_item_changed = False
             else:  # Child item
-                path = item.data(0, Qt.UserRole)
+                raw = item.data(0, Qt.UserRole)
+                path = self._norm_path(str(raw) if raw else "")
                 if path:
-                    self.logger.debug(f"Toggling child {path}: {state == Qt.Checked}")
+                    op = "add" if state == Qt.Checked else "remove"
+                    self.logger.debug(f"tree-toggle {op}: {path}")
                     if state == Qt.Checked:
                         self.selected_images.add(path)
                     elif state == Qt.Unchecked:
