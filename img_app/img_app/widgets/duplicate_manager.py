@@ -150,7 +150,19 @@ class GroupTreeDelegate(QStyledItemDelegate):
     - Child items: White background with #111111 (dark) text for high contrast.
     - Selection: #4a90e2 background, white text (bold for groups).
     - Directly draws text to ensure visibility across all themes.
+    - For column 0, it explicitly draws a custom checkbox and handles its events.
     """
+    def __init__(self, parent=None, logger=None):
+        """
+        Initialize the delegate.
+ 
+        Args:
+            parent: Parent object.
+            logger: Logger for debug output.
+        """
+        super().__init__(parent)
+        self.logger = logger
+
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         """
         Override paint to apply custom backgrounds, fonts, and directly draw text for guaranteed visibility.
@@ -161,16 +173,43 @@ class GroupTreeDelegate(QStyledItemDelegate):
             index (QModelIndex): Model index for the item.
  
         Strategy:
-        - Create modified option that prevents Qt from drawing text
-        - Let Qt draw checkboxes and other decorations
-        - Then manually draw our text with explicit colors
-        - This ensures text is always visible regardless of theme or Qt internal handling
+        - For column 0, perform custom checkbox painting.
+        - For other columns, prevent Qt from drawing text, let it draw background/decorations,
+          then manually draw our text with explicit colors for visibility.
         """
-        # For column 0, use the default styled delegate so native checkbox hit-testing/toggling works
         if index.column() == 0:
-            super().paint(painter, option, index)
+            # --- Custom Checkbox Painting (for column 0) ---
+            is_group = index.parent() == QModelIndex()
+            selected = bool(option.state & QStyle.State_Selected)
+            state = index.data(Qt.CheckStateRole)
+    
+            # Draw cell background
+            bg_color = QColor(74, 144, 226) if selected else (QColor(250, 250, 250) if is_group else QColor(255, 255, 255))
+            painter.fillRect(option.rect, bg_color)
+    
+            # Draw indicator (small square on left)
+            ind_rect = self._indicator_rect(option)
+    
+            painter.save()
+            if state == Qt.Checked:
+                painter.fillRect(ind_rect, QColor(74, 144, 226))
+                painter.setPen(QPen(QColor(255, 255, 255), 2))
+                w = ind_rect.width()
+                painter.drawLine(ind_rect.left() + w // 3, ind_rect.top() + w // 2, ind_rect.left() + w // 2, ind_rect.bottom() - w // 3)
+                painter.drawLine(ind_rect.left() + w // 2, ind_rect.bottom() - w // 3, ind_rect.right() - w // 3, ind_rect.top() + w // 3)
+            elif state == Qt.PartiallyChecked:
+                painter.fillRect(ind_rect, QColor(240, 208, 0))
+                painter.setPen(QPen(QColor(0, 0, 0), 2))
+                mid_y = ind_rect.top() + ind_rect.height() // 2
+                painter.drawLine(ind_rect.left() + 2, mid_y, ind_rect.right() - 2, mid_y)
+            else:
+                painter.fillRect(ind_rect, QColor(255, 255, 255))
+                painter.setPen(QPen(QColor(170, 170, 170), 1))
+                painter.drawRect(ind_rect)
+            painter.restore()
             return
 
+        # --- Custom Text Painting (for other columns) ---
         is_group = index.parent() == QModelIndex()
         selected = bool(option.state & QStyle.State_Selected)
  
@@ -185,14 +224,10 @@ class GroupTreeDelegate(QStyledItemDelegate):
         else:
             opt.backgroundBrush = QBrush(QColor(255, 255, 255))
          
-        # Let Qt draw the background, checkbox, etc. but not text
+        # Let Qt draw the background, etc. but not text
         super().paint(painter, opt, index)
  
         # Determine colors
-        group_bg = QColor(250, 250, 250)  # #fafafa - light gray for groups
-        file_bg  = QColor(255, 255, 255)  # #ffffff - pure white for files
-         
-        # Text colors - explicitly defined
         text_color = QColor(255, 255, 255) if selected else QColor(17, 17, 17)  # white if selected, dark if not
  
         # Setup font
@@ -204,18 +239,9 @@ class GroupTreeDelegate(QStyledItemDelegate):
         # Get the text to draw
         text = index.data(Qt.DisplayRole)
         if text:
-            # Set text color explicitly
             painter.setPen(text_color)
-             
-            # Calculate text rect with padding (adjust for checkbox column)
-            column = index.column()
             text_rect = QRect(option.rect)
-            if column == 0:  # Checkbox column - smaller text area
-                text_rect.adjust(20, 0, -4, 0)  # Leave space for checkbox
-            else:
-                text_rect.adjust(4, 0, -4, 0)
-             
-            # Draw the text directly
+            text_rect.adjust(4, 0, -4, 0)
             painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, str(text))
          
         # Draw focus rect if needed
@@ -228,97 +254,9 @@ class GroupTreeDelegate(QStyledItemDelegate):
             painter.drawRect(focus_rect)
             painter.restore()
 
-
-class CheckboxDelegate(QStyledItemDelegate):
-    """
-    Custom delegate for painting checkboxes in column 0 of the tree widget.
- 
-    Handles checked, partially checked, and unchecked states with custom drawing.
-    Ensures visibility by explicitly painting indicators with colors and shapes.
-    Background matches row type (group or child) and selection state.
-    """
- 
-    def __init__(self, parent=None, logger=None):
-        """
-        Initialize the delegate.
- 
-        Args:
-            parent: Parent object.
-            logger: Logger for debug output.
-        """
-        super().__init__(parent)
-        self.logger = logger
- 
-    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
-        """
-        Paint the checkbox for column 0.
- 
-        Draws cell background first, then the indicator rectangle with state-specific fill and mark.
- 
-        Args:
-            painter (QPainter): Painter for drawing.
-            option (QStyleOptionViewItem): Style options including rect and state.
-            index (QModelIndex): Index of the item.
-        """
-        if index.column() != 0:
-            super().paint(painter, option, index)
-            return
- 
-        is_group = index.parent() == QModelIndex()
-        selected = bool(option.state & QStyle.State_Selected)
-        state = index.data(Qt.CheckStateRole)
- 
-        # Minimal debug: only for child rows to confirm painting; avoid verbose path logs
-        if self.logger and not is_group:
-            try:
-                sval = int(state) if state is not None else -1
-            except Exception:
-                sval = -1
-            self.logger.debug(f"paint child: state={sval}")
- 
-        # Draw cell background
-        bg_color = QColor(74, 144, 226) if selected else (QColor(250, 250, 250) if is_group else QColor(255, 255, 255))
-        painter.fillRect(option.rect, bg_color)
- 
-        # Draw indicator (small square on left)
-        ind_rect = self._indicator_rect(option)
- 
-        painter.save()
-        if state == Qt.Checked:
-            # Blue background, white check mark
-            painter.fillRect(ind_rect, QColor(74, 144, 226))
-            painter.setPen(QPen(QColor(255, 255, 255), 2))
-            w = ind_rect.width()
-            # Draw check: \ then /
-            painter.drawLine(ind_rect.left() + w // 3, ind_rect.top() + w // 2, ind_rect.left() + w // 2, ind_rect.bottom() - w // 3)
-            painter.drawLine(ind_rect.left() + w // 2, ind_rect.bottom() - w // 3, ind_rect.right() - w // 3, ind_rect.top() + w // 3)
-        elif state == Qt.PartiallyChecked:
-            # Yellow background, black dash
-            painter.fillRect(ind_rect, QColor(240, 208, 0))
-            painter.setPen(QPen(QColor(0, 0, 0), 2))
-            mid_y = ind_rect.top() + ind_rect.height() // 2
-            painter.drawLine(ind_rect.left() + 2, mid_y, ind_rect.right() - 2, mid_y)
-        else:
-            # White background, gray border
-            painter.fillRect(ind_rect, QColor(255, 255, 255))
-            painter.setPen(QPen(QColor(170, 170, 170), 1))
-            painter.drawRect(ind_rect)
-        painter.restore()
-
-        # Note: Consistency of geometry between paint() and editorEvent() is critical
-        # for reliable hit-testing in the custom checkbox column.
-
     def _indicator_rect(self, option: QStyleOptionViewItem) -> QRect:
         """
         Compute the rectangle for the checkbox indicator within the cell.
-
-        Uses the same geometry for painting and hit-testing to avoid drift.
-
-        Args:
-            option: Style option providing cell rect.
-
-        Returns:
-            QRect: Rectangle for the checkbox indicator.
         """
         ind_size = 16
         ind_x = option.rect.left() + 4
@@ -327,41 +265,33 @@ class CheckboxDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex):
         """
-        Provide a size hint large enough to ensure the checkbox indicator is visible.
-
-        Returns at least 28px width and font-height+padding height.
+        Provide a size hint, especially for column 0 to ensure checkbox is visible.
         """
-        fm = option.fontMetrics
-        h = max(22, fm.height() + 6)
-        w = max(28, 22)
-        return QSize(w, h)
+        if index.column() == 0:
+            fm = option.fontMetrics
+            h = max(22, fm.height() + 6)
+            w = max(28, 22)
+            return QSize(w, h)
+        return super().sizeHint(option, index)
 
     def editorEvent(self, event, model, option: QStyleOptionViewItem, index: QModelIndex) -> bool:
         """
-        Handle user interaction (mouse/key) to toggle the checkbox state.
-
-        Supports:
-        - Mouse left-button release within the cell (or indicator rect)
-        - Space/Select keypress when the cell is focused
-
-        Toggles Qt.CheckStateRole and relies on the item's changed signal to
-        drive synchronization logic already implemented in the dialog.
+        Handle user interaction (mouse/key) to toggle the checkbox state for column 0.
         """
         if index.column() != 0:
             return False
 
         try:
-            from PySide6.QtGui import QMouseEvent, QKeyEvent  # Lazy import for typing context
+            from PySide6.QtGui import QMouseEvent, QKeyEvent
         except Exception:
-            QMouseEvent = object  # type: ignore
-            QKeyEvent = object    # type: ignore
+            QMouseEvent = object
+            QKeyEvent = object
 
         et = event.type()
         # Mouse toggle
         if et == QEvent.MouseButtonRelease and hasattr(event, "button") and event.button() == Qt.LeftButton:
-            # Use forgiving hit-test: anywhere in the cell toggles; indicator rect suffices too
             pt = event.position().toPoint() if hasattr(event, "position") else event.pos()
-            if option.rect.contains(pt):  # or self._indicator_rect(option).contains(pt)
+            if option.rect.contains(pt):
                 state = index.data(Qt.CheckStateRole)
                 new_state = Qt.Checked if state != Qt.Checked else Qt.Unchecked
                 if self.logger:
@@ -382,7 +312,7 @@ class CheckboxDelegate(QStyledItemDelegate):
 
         return False
 
- 
+
 class ImageGrid(QWidget):
     """
     Grid widget for image previews.
@@ -531,8 +461,7 @@ class ImageSimilarityManagerDialog(QDialog):
         viewport.setAutoFillBackground(True)
         viewport.setPalette(palette)
         
-        self.tree.setItemDelegate(GroupTreeDelegate(self.tree))
-        # self.tree.setItemDelegateForColumn(0, CheckboxDelegate(self.tree, self.logger))
+        self.tree.setItemDelegate(GroupTreeDelegate(self.tree, self.logger))
         self.tree.setColumnCount(7)
         self.tree.setHeaderLabels(["Select", "Name", "Directory", "Size", "Resolution", "Date", "Score"])
         header = self.tree.header()
@@ -540,8 +469,8 @@ class ImageSimilarityManagerDialog(QDialog):
         for i in range(self.tree.columnCount()):
             header.setSectionResizeMode(i, QHeaderView.Interactive)
         # Enforce a visible minimum width for Select column (0)
-        header.setMinimumSectionSize(28)
-        header.resizeSection(0, 28)
+        header.setMinimumSectionSize(60)
+        header.resizeSection(0, 60)
         header.setStretchLastSection(False)
         
         # Stylesheet for tree (indicators handled by delegate)
