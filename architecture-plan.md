@@ -548,10 +548,11 @@ References
 
 Summary
 - Implemented a targeted fix to resolve:
-  - Left pane “Select” column not visibly reflecting selection
+  - Left pane "Select" column not visibly reflecting selection
   - Cross-group selections appearing to clear unexpectedly
 - Retained the existing single-source-of-truth as a global set: self.selected_images
 - Deferred a full SelectionStore refactor; documented next-steps below
+- **Custom painting now handled by [`GroupTreeDelegate`](img_app/img_app/widgets/base_group_manager.py:159)** for consistent visual rendering
 
 Core Source and Flow
 - Source of truth:
@@ -567,11 +568,11 @@ UI/UX Adjustments (Minimal Fix)
 - Checkbox visibility and clickability in left tree:
   - Enforce header min width and disable stretch:
     - header.setMinimumSectionSize(28), header.resizeSection(0, 28), header.setStretchLastSection(False) in [python.ImageSimilarityManagerDialog.__init__()](img_app/img_app/widgets/duplicate_manager.py:489)
-  - CheckboxDelegate improved for reliable render and toggling:
-    - sizeHint added at [python.CheckboxDelegate.sizeHint()](img_app/img_app/widgets/duplicate_manager.py:281)
-    - editorEvent added at [python.CheckboxDelegate.editorEvent()](img_app/img_app/widgets/duplicate_manager.py:292)
-    - Shared indicator-rect helper at [python.CheckboxDelegate._indicator_rect()](img_app/img_app/widgets/duplicate_manager.py:264)
-    - paint consistent with geometry at [python.CheckboxDelegate.paint()](img_app/img_app/widgets/duplicate_manager.py:236)
+  - **Custom painting by [`GroupTreeDelegate`](img_app/img_app/widgets/base_group_manager.py:159)** for reliable render and toggling:
+    - [`GroupTreeDelegate.paint()`](img_app/img_app/widgets/base_group_manager.py:180) handles all visual rendering with custom backgrounds and text
+    - [`GroupTreeDelegate.sizeHint()`](img_app/img_app/widgets/base_group_manager.py:374) ensures proper sizing for checkbox column
+    - [`GroupTreeDelegate.editorEvent()`](img_app/img_app/widgets/base_group_manager.py:385) manages mouse and keyboard interaction
+    - [`GroupTreeDelegate._indicator_rect()`](img_app/img_app/widgets/base_group_manager.py:229) computes checkbox geometry
   - Tri-state and user-checkable flags:
     - Groups: Qt.ItemIsUserCheckable | Qt.ItemIsTristate | Qt.ItemIsEnabled at [python.ImageSimilarityManagerDialog._populate_tree()](img_app/img_app/widgets/duplicate_manager.py:731)
     - Children: Qt.ItemIsUserCheckable | Qt.ItemIsEnabled at [python.ImageSimilarityManagerDialog._populate_tree()](img_app/img_app/widgets/duplicate_manager.py:735)
@@ -582,17 +583,19 @@ UI/UX Adjustments (Minimal Fix)
   - Post-populate synchronization without clearing: [python.ImageSimilarityManagerDialog._compute_groups()](img_app/img_app/widgets/duplicate_manager.py:676), [python.ImageSimilarityManagerDialog._refresh_groups()](img_app/img_app/widgets/duplicate_manager.py:907)
 
 Acceptance Criteria
-- Left “Select” column checkboxes clearly visible and toggle reliably (group tri-state correct)
+- Left "Select" column checkboxes clearly visible and toggle reliably (group tri-state correct)
 - Cross-pane synchronization (left/right) remains consistent
 - Selections persist across groups and user actions; only deleted items are removed from selection unless explicit clear is requested
 - Recompute preserves selection for items still present by path
+- **Visual rendering consistent across different system themes and platforms**
 
 Manual Verification
 - Launch app (pdm run imgapp), open the dialog
 - Select in Group A, then Group B; return to Group A: selections persist
 - Delete with the footer checkbox OFF: only deleted items removed from selection
 - Delete with the footer checkbox ON: all selections cleared post delete
-- Press “Compute Groups”: selections still present by path remain selected
+- Press "Compute Groups": selections still present by path remain selected
+- **Verify consistent visual appearance across Windows, macOS, and Linux themes**
 
 Forward Plan — Clean Refactor (Next Step)
 - Introduce SelectionStore (QObject) with signals (added/removed/cleared/changed)
@@ -600,3 +603,97 @@ Forward Plan — Clean Refactor (Next Step)
 - Unidirectional data flow: user action → SelectionStore → models → views
 - Identity normalization via Path(path).resolve(); future: content-hash
 - See proposed API in [docs/roo/img-similarity-details.md](docs/roo/img-similarity-details.md)
+
+---
+## Custom Painting Architecture
+
+### Overview
+The custom painting architecture provides theme-independent, consistent visual rendering for group list tables across all platforms. Implemented by [`GroupTreeDelegate`](img_app/img_app/widgets/base_group_manager.py:159), this approach ensures reliable visual feedback for selection, hover, and focus states regardless of system theme settings.
+
+### Design Rationale
+- **Theme Independence**: Qt's default item rendering varies significantly across platforms (Windows, macOS, Linux) and themes, leading to inconsistent user experiences
+- **Visual Clarity**: Custom painting guarantees clear visibility of selection states and text contrast
+- **Performance Optimization**: Eliminates redundant text rendering that caused doubled-text issues
+- **Accessibility**: Ensures high contrast and clear visual feedback for all interaction states
+
+### Core Painting Methods
+
+#### [`_paint_text_cell()`](img_app/img_app/widgets/base_group_manager.py:351)
+- **Purpose**: Main coordinator for text column painting
+- **Responsibilities**:
+  - Orchestrates background, text, and focus indicator rendering
+  - Eliminates reliance on `super().paint()` for text columns
+  - Ensures consistent visual hierarchy across all columns
+
+#### [`_draw_cell_background()`](img_app/img_app/widgets/base_group_manager.py:238)
+- **Purpose**: Render cell backgrounds with proper visual states
+- **Features**:
+  - Uses Qt's style APIs for consistent look across themes
+  - Handles group vs child item differentiation
+  - Manages selection, hover, focus, and disabled states
+  - Provides consistent background colors regardless of system theme
+
+#### [`_draw_cell_text()`](img_app/img_app/widgets/base_group_manager.py:268)
+- **Purpose**: Draw text content with proper styling and alignment
+- **Capabilities**:
+  - Handles text elision for long content
+  - Applies appropriate text colors based on selection state
+  - Uses custom font styling (bold for group headers)
+  - Respects column-specific text alignment
+  - Ensures high contrast readability
+
+#### [`_draw_focus_indicator()`](img_app/img_app/widgets/base_group_manager.py:314)
+- **Purpose**: Visual feedback for keyboard navigation
+- **Implementation**:
+  - Draws dotted border around focused items
+  - Only activates when `State_HasFocus` is set
+  - Uses consistent dotted line style matching Qt defaults
+
+### Visual State Management
+
+#### Background Colors
+- **Group Headers**: Light gray (#fafafa) for visual hierarchy
+- **Child Items**: White background for content clarity
+- **Selection**: Blue (#4a90e2) with white text for high contrast
+- **Hover**: Uses Qt's native hover state rendering
+
+#### Text Styling
+- **Group Headers**: Bold dark text (#333333) for emphasis
+- **Child Items**: Standard dark text (#111111) for readability
+- **Selected Items**: White text with bold styling for groups
+- **Alignment**: Column-specific alignment (right for numeric, left for text)
+
+### Checkbox Column (Column 0) Specialization
+- **Custom Painting**: Direct rendering of checkbox indicators
+- **Three States**: Checked (blue with white check), PartiallyChecked (yellow with black dash), Unchecked (white with gray border)
+- **Interactive**: Mouse and keyboard toggling via [`editorEvent()`](img_app/img_app/widgets/base_group_manager.py:385)
+- **Geometry**: Proper sizing via [`sizeHint()`](img_app/img_app/widgets/base_group_manager.py:374)
+
+### Benefits and Impact
+
+#### Consistency
+- Uniform appearance across Windows, macOS, and Linux
+- No dependency on system theme settings
+- Predictable visual behavior in all environments
+
+#### Accessibility
+- Clear visual feedback for all interaction states
+- High contrast text and background combinations
+- Consistent focus indicators for keyboard navigation
+
+#### Performance
+- Eliminated doubled-text rendering issue
+- Optimized painting without redundant operations
+- Efficient state management and rendering
+
+#### Maintainability
+- Centralized painting logic in single delegate class
+- Clear separation of concerns between painting methods
+- Easy to extend or modify visual appearance
+
+### Integration Points
+- Used by both [`DuplicateManager`](img_app/img_app/widgets/duplicate_manager.py) and [`SimilarityManager`](img_app/img_app/widgets/similarity_manager.py)
+- Inherited by [`BaseImageGroupManagerDialog`](img_app/img_app/widgets/base_group_manager.py:433)
+- Provides consistent visual foundation for all group management dialogs
+
+This custom painting architecture represents a significant improvement in visual consistency and user experience, ensuring that the application maintains a professional appearance across all supported platforms and themes.

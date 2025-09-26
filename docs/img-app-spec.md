@@ -272,6 +272,20 @@ Each settings profile includes:
 
 - Single pool
   - Find and group duplicate/similar sets (clusters) within the pool
+## Duplicate Manager Dialog (Exact Matches)
+
+- Retains the **Processing Summary** and **Duplicate Report** tabs (QTextEdit with selectable text) to present scan metrics and the textual duplicate report immediately after a run.
+- The central splitter now hosts only the results tree; the image preview pane has been removed because duplicate detection spans arbitrary file types.
+- Tree columns expose metadata rather than thumbnails:
+  - **Name**, **Directory**, **Size** (existing fields).
+  - **File Type** (upper-case extension with tooltip fallback to “Unknown”).
+  - **Potential Savings** (group total and per-file delta versus the smallest member; tooltip preserves last-modified timestamp).
+  - **Score** column remains hidden (duplicates are always 100 %).
+- Status footer and deletion workflow (including the optional “Clear selections after delete” checkbox) remain unchanged.
+
+Implementation references:
+- [`img_app/img_app/widgets/duplicate_manager.py`](img_app/img_app/widgets/duplicate_manager.py:1): `_should_include_preview()` now returns `False`; `_populate_tree()` enriches group/child rows with file-type and savings metadata; dialog title updated to “Duplicate File Manager”.
+- [`img_app/img_app/widgets/base_group_manager.py`](img_app/img_app/widgets/base_group_manager.py:1): Introduced `_should_include_preview()` and `_build_secondary_panel()` hooks plus preview guards so subclasses can disable the preview pane.
   - UI shows cluster header with representative thumbnail, member count, total size, etc., plus all member files
 
 - Dual pools (default)

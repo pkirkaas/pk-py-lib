@@ -38,7 +38,8 @@ from datetime import datetime
 import traceback
 from src.pk_py_lib.core.logging.logger import get_logger
 
-from .widgets.duplicate_manager import ImageSimilarityManagerDialog
+from .widgets.duplicate_manager import DuplicateManagerDialog
+from .widgets.similarity_manager import SimilarityManagerDialog
 
 import logging
 from collections import defaultdict
@@ -1606,17 +1607,30 @@ class MainWindow(QMainWindow):
                 logger.info(f"Groups data prepared: {len(groups_data)} groups")
                 settings = {}
             text += f"\nDuplicates: {len(groups_data)} groups"
-            dlg = ImageSimilarityManagerDialog(
-                mode=mode,
-                groups=groups_data or [],
-                summary_text=text,
-                report_text=report_text,
-                db_manager=db_mgr,
-                settings=settings,
-                paths=run_paths if mode == 'similarity' else None,
-                parent=self
+            if is_similarity:
+                dlg = SimilarityManagerDialog(
+                    groups=groups_data or [],
+                    db_manager=db_mgr,
+                    settings=settings,
+                    summary_text=text,
+                    report_text=report_text,
+                    parent=self
+                )
+            else:
+                dlg = DuplicateManagerDialog(
+                    groups=groups_data or [],
+                    summary_text=text,
+                    report_text=report_text,
+                    parent=self
+                )
+            logger.info(
+                "Created dialog",
+                extra={
+                    "requested_mode": self._current_scan_mode or "duplicates",
+                    "dialog_type": type(dlg).__name__,
+                    "group_count": len(groups_data or []),
+                },
             )
-            logger.info(f"Created dialog for mode '{self._current_scan_mode or 'duplicates'}': {type(dlg).__name__} with {len(groups_data)} groups")
        
             ret = dlg.exec()
             print(f"[DEBUG _on_scan_finished] Dialog exec() returned: {ret}", file=sys.stderr)
