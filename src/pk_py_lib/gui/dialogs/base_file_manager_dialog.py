@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
+    QSplitter,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -89,18 +91,52 @@ class BaseFileManagerDialog(QDialog):
         self._main_layout.setContentsMargins(12, 12, 12, 12)
         self._main_layout.setSpacing(12)
 
-        self._build_tabs(self._main_layout)
+        # --- Top Pane (Summary/Report Tabs) ---
+        top_pane_widget = QWidget(self)
+        top_pane_layout = QVBoxLayout(top_pane_widget)
+        top_pane_layout.setContentsMargins(0, 0, 0, 0)
+        top_pane_layout.setSpacing(0) # Tabs widget handles its own spacing
 
+        self._build_tabs(top_pane_layout) # Adds self.tab_widget to top_pane_layout
+
+        # Ensure the top pane (tabs only) can be resized by the splitter
+        top_pane_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+
+        # --- Content Area (Controls + Main results) ---
+        content_area_widget = QWidget(self)
+        # Ensure the content area expands to fill available space
+        content_area_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        content_area_layout = QVBoxLayout(content_area_widget)
+        content_area_layout.setContentsMargins(0, 0, 0, 0)
+        content_area_layout.setSpacing(12) # Spacing between controls and content area
+
+        # Add controls (Status Row) to the top of the content area
         controls = self._build_controls()
         if controls is not None:
-            self._main_layout.addWidget(controls)
+            content_area_layout.addWidget(controls)
 
-        self._build_content_area(self._main_layout)
+        self._build_content_area(content_area_layout)
+
+        # --- Vertical Splitter ---
+        # This splitter divides the top report/controls area from the main content area.
+        self._main_splitter = QSplitter(Qt.Vertical, self)
+        self._main_splitter.addWidget(top_pane_widget)
+        self._main_splitter.addWidget(content_area_widget)
+
+        # Set initial sizes: top pane minimal (1), bottom pane takes remaining space.
+        # This ensures the top pane starts at its minimum size hint (content height)
+        # and is collapsable (by setting the size to 0, but 1 is safer for initial display).
+        self._main_splitter.setSizes([1, 1000000])
+        self._main_splitter.setCollapsible(0, True) # Make the top pane collapsable
+
+        self._main_layout.addWidget(self._main_splitter)
         self._build_footer(self._main_layout)
 
     def _build_tabs(self, parent_layout: QVBoxLayout) -> None:
         """Create the Summary/Report tab widget with selectable text."""
         self.tab_widget = QTabWidget(self)
+        # Ensure the tab widget respects its minimum size (content height) but can expand
+        self.tab_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
 
         self.summary_edit = QTextEdit(self.tab_widget)
         self.summary_edit.setReadOnly(True)

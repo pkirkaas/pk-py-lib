@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QSpinBox,
     QVBoxLayout,
@@ -152,6 +153,8 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
     def _build_controls(self) -> QWidget:
         """Build similarity-specific controls including algorithm and threshold."""
         controls_widget = QWidget(self)
+        # Ensure the controls row does not expand vertically
+        controls_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         layout = QHBoxLayout(controls_widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)

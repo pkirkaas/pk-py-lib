@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -137,6 +138,8 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
     def _build_controls(self) -> QWidget:
         """Create duplicate-specific controls such as direction filtering."""
         controls_widget = QWidget(self)
+        # Ensure the controls row does not expand vertically
+        controls_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         layout = QHBoxLayout(controls_widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
