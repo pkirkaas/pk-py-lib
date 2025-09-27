@@ -395,9 +395,37 @@ class BaseFileManagerDialog(QDialog):
         self.status_label.setText(f"{count}/{total_files} files selected")
         self.delete_button.setEnabled(count > 0)
         
+    # ---------------------------------------------------------------------#
+    # Signals
+    # ---------------------------------------------------------------------#
+    files_deleted = Signal(list)
+    
     def _on_delete_clicked(self) -> None:
-        """Handle delete button click. Override in subclasses."""
-        raise NotImplementedError("Subclasses must implement _on_delete_clicked")
+        """
+        Handle the deletion of selected files by moving them to the system trash.
+
+        This method is implemented in the base class to provide generic, safe deletion
+        functionality using `FileOperations.safe_delete(to_trash=True)`.
+
+        It handles user confirmation, iterates through selected paths, logs success/failure
+        to the Report tab, clears the selection for deleted items, and emits the
+        `files_deleted` signal to notify subclasses to refresh their views.
+        """
+        selected_paths = self.selection_store.get_selected_paths()
+        if not selected_paths:
+            return
+
+        # 1. Confirmation Dialog (Implementation details omitted for documentation)
+        # ...
+
+        # 2. Perform Deletion (Implementation details omitted for documentation)
+        # ...
+        
+        # 3. Final Report and Cleanup (Implementation details omitted for documentation)
+        # ...
+        
+        # 4. Notify subclasses/parent to refresh their views
+        self.files_deleted.emit(list(selected_paths))
 ```
 
 ## Phase 3: Dialog-Specific Implementations (Week 3)
@@ -544,13 +572,19 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         pass
         
     def _on_delete_clicked(self) -> None:
-        """Handle delete action for selected duplicates."""
-        selected_paths = self.selection_store.get_selected_paths()
-        if not selected_paths:
-            return
-            
-        # Implementation details...
-        pass
+        """
+        Handle delete action for selected duplicates.
+
+        Since the deletion logic is now implemented in BaseFileManagerDialog,
+        subclasses only need to ensure their view is updated when the
+        `files_deleted` signal is emitted by the base class.
+        
+        This method is now redundant and should be removed or updated to call
+        the base class implementation if it were still abstract.
+        """
+        # This method is now handled by BaseFileManagerDialog.
+        # Subclasses should connect to self.files_deleted signal for post-deletion cleanup.
+        super()._on_delete_clicked()
 ```
 
 ### Similarity Manager Implementation
@@ -726,6 +760,12 @@ def show_similarity_manager(self, db_manager: DatabaseManager) -> None:
     dialog.exec()
 ```
 
+**2025-09-27 Update — Duplicate Metadata Resolution**
+
+- The duplicates workflow now persists the scan summary’s per-file metadata into a `MainWindow._last_run_file_map` cache and introduces `_resolve_file_metadata(path, size_hint, modified_hint)`.
+- `_convert_raw_groups_to_dialog_groups(...)` calls the helper for every file item so the dialog receives authoritative size and modification timestamps even when upstream sources omit them.
+- `_on_scan_finished(...)` resets the metadata cache each run, hydrates it from `summary["files"]`, and falls back to filesystem `stat()` when hints are missing. This ensures the Duplicate Manager displays correct file sizes (no longer zero) across cache-backed and live runs.
+
 ### Testing Strategy
 
 **File: `tests/test_file_management_dialogs.py`**
@@ -811,6 +851,7 @@ class TestDuplicateManagerDialog:
 - [x] Create common UI components (tabs, footer, status)
 - [x] Implement selection synchronization
 - [x] Create view factory for dialog components (FileGroupView, SimilarityPreviewPane)
+- [x] Implement Delete Selected functionality (to Trash) in BaseFileManagerDialog
 - [ ] Add integration tests for base functionality (Pending)
  
 ### Phase 3: Specific Dialogs (Week 3)

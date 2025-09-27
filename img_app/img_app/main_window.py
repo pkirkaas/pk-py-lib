@@ -18,6 +18,7 @@ Syntax validation: This file has been reviewed for Python syntax correctness.
 from __future__ import annotations
 
 import sys
+import argparse # Added for CLI argument type hinting
 
 from PySide6.QtGui import QAction, QIcon, QPalette, QColor
 from PySide6.QtCore import Qt, Signal, QThread
@@ -435,10 +436,45 @@ class MainWindow(QMainWindow):
     True
     """
 
+    @staticmethod
+    def _to_int_timestamp(val) -> int:
+        """
+        Best-effort string/number/None -> integer epoch seconds converter.
+        
+        This robust conversion is necessary because database values might be stored
+        as strings (e.g., ISO format) or integers, and direct int() conversion fails
+        for strings. Returns 0 on failure or None input.
+        """
+        if val is None:
+            return 0
+        try:
+            if isinstance(val, (int, float)):
+                return int(val)
+            s = str(val).strip()
+            if not s:
+                return 0
+            if s.isdigit():
+                return int(s)
+            
+            # Attempt common ISO formats
+            from datetime import datetime
+            s2 = s[:-1] if s.endswith("Z") else s
+            s2 = s2.replace(" ", "T")
+            dt = None
+            for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+                try:
+                    dt = datetime.strptime(s2, fmt)
+                    break
+                except Exception:
+                    continue
+            return int(dt.timestamp()) if dt else 0
+        except Exception:
+            return 0
+    
     # Signal emitted when the active profile changes
     profile_changed = Signal(dict)
 
-    def __init__(self, parent: QWidget | None = None, active_profile: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, parent: QWidget | None = None, active_profile: Optional[Dict[str, Any]] = None, cli_args: Optional[argparse.Namespace] = None) -> None:
         """
         Initialize MainWindow.
 
@@ -449,10 +485,13 @@ class MainWindow(QMainWindow):
         active_profile : Optional[Dict[str, Any]]
             Active settings profile to associate with this window; stored on self.active_profile
             for future use by UI components. Passing None keeps behavior identical to prior versions.
+        cli_args : Optional[argparse.Namespace]
+            Parsed command line arguments, used to check for flags like --default.
         """
         super().__init__(parent)
         # Store the active profile for future use in widgets/controllers
         self.active_profile: Optional[Dict[str, Any]] = active_profile
+        self.cli_args = cli_args
         self.profiles: List[Dict[str, Any]] = []
         self.controller = None  # Will be set when database manager is available
         self.structured_editor = None
@@ -460,7 +499,10 @@ class MainWindow(QMainWindow):
         self.dialog_selection_store: SelectionStore = SelectionStore()
         # Track whether we've connected structured_editor.dirtyChanged to avoid spurious disconnect warnings
         self._editor_dirty_connected: bool = False
-         
+        self._last_run_file_map: Dict[str, Dict[str, Any]] = {}
+        # Cache resolved filesystem metadata for the most recent scan to avoid repeated DB/stat lookups
+        self._metadata_cache: Dict[str, Tuple[int, int]] = {}
+        
         self._setup_window()
         self._setup_menu_bar()
         self._setup_status_bar()
@@ -1139,6 +1181,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(100)
         self.progress_status_label.setText("Operation completed")
         self.start_btn.setEnabled(True)
+        self._last_run_file_map = {}
+        self._metadata_cache = {}
 
         # Extract counters
         found = int(summary.get("found", 0) or 0)
@@ -1169,6 +1213,47 @@ class MainWindow(QMainWindow):
         except Exception:
             run_paths = []
         self._last_run_paths = run_paths
+        try:
+            files_summary = summary.get("files")
+            if isinstance(files_summary, list):
+                def _coerce_size(value: Any) -> int:
+                    try:
+                        if value is None:
+                            return 0
+                        if isinstance(value, (int, float)):
+                            return max(int(value), 0)
+                        text = str(value).strip()
+                        if not text:
+                            return 0
+                        return max(int(float(text)), 0)
+                    except Exception:
+                        return 0
+
+                run_file_map: Dict[str, Dict[str, Any]] = {}
+                for item in files_summary:
+                    if not isinstance(item, dict):
+                        continue
+                    path_str = str(item.get("path") or "").strip()
+                    if not path_str:
+                        continue
+                    run_file_map[path_str] = item
+                    size_hint = item.get("size")
+                    if size_hint is None:
+                        size_hint = item.get("file_size")
+                    modified_hint = item.get("modified_time")
+                    if modified_hint is None:
+                        modified_hint = item.get("file_modified")
+                    if modified_hint is None:
+                        modified_hint = item.get("modified")
+                    size_val = _coerce_size(size_hint)
+                    modified_val = MainWindow._to_int_timestamp(modified_hint)
+                    self._metadata_cache[path_str] = (max(size_val, 0), max(modified_val, 0))
+                self._last_run_file_map = run_file_map
+            else:
+                self._last_run_file_map = {}
+        except Exception:
+            self._last_run_file_map = {}
+            self._metadata_cache = {}
         try:
             algo = str(summary.get("algorithm") or "sha256")
         except Exception:
@@ -1523,7 +1608,8 @@ class MainWindow(QMainWindow):
                                 except Exception:
                                     sz = 0
                                 try:
-                                    mod = int(rr["file_modified"]) if rr["file_modified"] is not None else 0
+                                    # Use the robust converter to handle potential string timestamps
+                                    mod = MainWindow._to_int_timestamp(rr["file_modified"])
                                 except Exception:
                                     mod = 0
                                 pl = str(rr["pool"] or "")
@@ -1815,9 +1901,18 @@ class MainWindow(QMainWindow):
             max_score = 0.0
             
             for raw_file in raw_group.get('files', []):
-                path = str(raw_file.get('path', ''))
-                size = int(raw_file.get('size', 0))
-                modified = int(raw_file.get('modified', 0))
+                path = str(raw_file.get('path', '')).strip()
+                if not path:
+                    continue
+                size_hint = raw_file.get('size')
+                if size_hint is None:
+                    size_hint = raw_file.get('file_size')
+                modified_hint = raw_file.get('modified')
+                if modified_hint is None:
+                    modified_hint = raw_file.get('modified_time')
+                if modified_hint is None:
+                    modified_hint = raw_file.get('file_modified')
+                size, modified = self._resolve_file_metadata(path, size_hint, modified_hint)
                 score = float(raw_file.get('score', 1.0))
                 # Default to 'A' if pool is missing or None/empty string
                 pool = str(raw_file.get('pool', 'A') or 'A')
@@ -1826,10 +1921,10 @@ class MainWindow(QMainWindow):
                     FileItem(
                         path=path,
                         size=size,
-                        resolution="",
+                        resolution=str(raw_file.get('resolution') or ""),
                         mod_date=format_timestamp(modified),
                         score=score,
-                        file_type="",
+                        file_type=str(raw_file.get('file_type') or ""),
                         savings=0,
                     )
                 )
@@ -1865,6 +1960,84 @@ class MainWindow(QMainWindow):
                 )
             )
         return dialog_groups, pool_map
+
+    def _resolve_file_metadata(
+        self,
+        path: str,
+        size_hint: Any | None = None,
+        modified_hint: Any | None = None,
+    ) -> Tuple[int, int]:
+        """
+        Resolve the authoritative file size (bytes) and modified timestamp (epoch seconds) for a path.
+ 
+        Parameters
+        ----------
+        path : str
+            Absolute filesystem path for the file whose metadata should be resolved. The path may refer
+            to files that were present in the most recent scan or be looked up on demand.
+ 
+        size_hint : Any | None
+            Optional size value gathered from upstream sources (e.g., scan summary, database rows).
+            Accepts integers, floats, numeric strings, or None. Values ≤ 0 are treated as unknown.
+ 
+        modified_hint : Any | None
+            Optional modified-time hint, typically an epoch number or ISO-8601 string. Values that
+            cannot be parsed are treated as unknown.
+ 
+        Returns
+        -------
+        Tuple[int, int]
+            A tuple ``(size_bytes, modified_epoch_seconds)`` where unknown components are returned as 0.
+            Resolved values are cached in ``self._metadata_cache`` to minimize repeated filesystem calls.
+ 
+        Examples
+        --------
+        >>> size, mtime = self._resolve_file_metadata(
+        ...     "C:/Photos/example.jpg",
+        ...     size_hint="2048",
+        ...     modified_hint="2025-09-27T12:00:00"
+        ... )
+        >>> size
+        2048
+        >>> mtime > 0
+        True
+        """
+        def _coerce_size(value: Any | None) -> int:
+            try:
+                if value is None:
+                    return 0
+                if isinstance(value, (int, float)):
+                    return max(int(value), 0)
+                text = str(value).strip()
+                if not text:
+                    return 0
+                return max(int(float(text)), 0)
+            except Exception:
+                return 0
+ 
+        cached_size, cached_modified = self._metadata_cache.get(path, (0, 0))
+        hint_size = _coerce_size(size_hint)
+        hint_modified = MainWindow._to_int_timestamp(modified_hint)
+ 
+        size = hint_size
+        if size == 0:
+            try:
+                stat = Path(path).stat()
+                size = int(stat.st_size)
+            except Exception:
+                size = cached_size
+ 
+        modified = hint_modified
+        if modified == 0:
+            try:
+                stat = Path(path).stat()
+                modified = int(stat.st_mtime)
+            except Exception:
+                modified = cached_modified
+ 
+        resolved = (max(size, 0), max(modified, 0))
+        self._metadata_cache[path] = resolved
+        return resolved
 
     def _get_duplicate_groups_single_pool(self) -> list[dict]:
         """
@@ -1919,31 +2092,9 @@ class MainWindow(QMainWindow):
         # Algorithm aligned with textual duplicates report and ScanWorker (image_hashes.algorithm)
         algorithm = "sha256"
         
-        # Local helper to coerce timestamps to integer epoch seconds
-        def _to_int_timestamp(val) -> int:
-            try:
-                return int(val)
-            except Exception:
-                try:
-                    # Attempt common ISO formats
-                    from datetime import datetime
-                    s = str(val or "").strip()
-                    if not s:
-                        return 0
-                    if s.endswith("Z"):
-                        s = s[:-1]
-                    s2 = s.replace(" ", "T")
-                    dt = None
-                    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
-                        try:
-                            dt = datetime.strptime(s2, fmt)
-                            break
-                        except Exception:
-                            continue
-                    return int(dt.timestamp()) if dt else 0
-                except Exception:
-                    return 0
-
+        # Use the class method for robust timestamp conversion
+        _to_int_timestamp = MainWindow._to_int_timestamp
+        
         try:
             groups: list[dict] = []
             # Use a new connection; populate a TEMP table with this run's file set
@@ -1963,7 +2114,7 @@ class MainWindow(QMainWindow):
                     """
                     SELECT ih.hash_value AS hash
                     FROM image_hashes ih
-                    JOIN image_metadata im ON im.id = ih.image_id
+                    JOIN image_metadata im ON im.id = ih.image_id AND im.is_valid = 1
                     JOIN temp_run_files t ON t.file_path = im.file_path
                     WHERE ih.algorithm = ? AND ih.hash_value IS NOT NULL
                     GROUP BY ih.hash_value
@@ -1987,7 +2138,7 @@ class MainWindow(QMainWindow):
                            im.file_modified,
                            im.pool
                     FROM image_hashes ih
-                    JOIN image_metadata im ON im.id = ih.image_id
+                    JOIN image_metadata im ON im.id = ih.image_id AND im.is_valid = 1
                     JOIN temp_run_files t ON t.file_path = im.file_path
                     WHERE ih.algorithm = ? AND ih.hash_value IN ({placeholders})
                     ORDER BY ih.hash_value, im.file_path
@@ -2309,6 +2460,16 @@ class MainWindow(QMainWindow):
                 self.status_label.setText("Settings Manager controller not available")
                 return
         self._load_profiles()
+
+    def start_default_operation(self) -> None:
+        """
+        Public method to automatically start the operation if the --default CLI flag was set.
+        
+        This method should be called after the MainWindow is fully initialized and shown.
+        """
+        if getattr(self.cli_args, 'default', False):
+            self.logger.info("CLI --default flag detected. Automatically starting operation.")
+            self._on_start()
 
     def _load_profile_into_editor(self, profile_id: str) -> None:
         """
@@ -2683,38 +2844,9 @@ class MainWindow(QMainWindow):
             show_selectable_info(self, "Clean Cache", "Cache database did not exist. A new empty cache was created.")
             return
 
-        from datetime import datetime
-
-        def _to_epoch_seconds(val) -> int | None:
-            """Best-effort string/number → epoch seconds converter."""
-            if val is None:
-                return None
-            try:
-                if isinstance(val, (int, float)):
-                    return int(val)
-                s = str(val).strip()
-                if not s:
-                    return None
-                if s.isdigit():
-                    return int(s)
-                # Try ISO formats
-                s2 = s[:-1] if s.endswith("Z") else s
-                s2 = s2.replace(" ", "T")
-                try:
-                    dt = datetime.fromisoformat(s2)
-                    return int(dt.timestamp())
-                except Exception:
-                    pass
-                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y/%m/%d %H:%M:%S"):
-                    try:
-                        dt = datetime.strptime(s, fmt)
-                        return int(dt.timestamp())
-                    except Exception:
-                        continue
-            except Exception:
-                return None
-            return None
-
+        # Use the static method for robust timestamp conversion
+        _to_epoch_seconds = MainWindow._to_int_timestamp
+        
         removed_missing = 0
         removed_changed = 0
         checked = 0
@@ -2740,11 +2872,16 @@ class MainWindow(QMainWindow):
                         size_db = int(row["file_size"]) if row["file_size"] is not None else None
                     except Exception:
                         size_db = None
+                    
+                    # Use the robust converter
                     mtime_db = _to_epoch_seconds(row["file_modified"])
 
                     size_changed = (size_db is None) or (int(st.st_size) != size_db)
                     mtime_changed = True
-                    if mtime_db is not None:
+                    
+                    # Check if mtime_db is non-zero (i.e., conversion succeeded)
+                    if mtime_db is not None and mtime_db > 0:
+                        # Allow 1 second tolerance for filesystem/DB differences
                         mtime_changed = abs(int(st.st_mtime) - int(mtime_db)) > 1
 
                     if size_changed or mtime_changed:

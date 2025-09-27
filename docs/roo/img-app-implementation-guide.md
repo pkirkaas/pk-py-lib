@@ -2023,6 +2023,7 @@ print(groups)  # [['/img1.jpg', '/img2.jpg']]  # Groups ≥2 only
 
 ### Integration Notes
 - **Database Storage**: Hashes persist in `image_hashes` (image_id FK to `image_metadata`), queried for grouping. See schema in [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md).
+- **Exact Hash Persistence**: [`scan_directory()`](src/pk_py_lib/core/filesystem/traversal.py:818) now upserts both SHA-256 identity hashes and any computed perceptual hashes into `image_hashes`, ensuring duplicate clustering works even if the in-memory results are discarded.
 - **Settings Overrides**: `hash_size` from `criteria.phash.hash_size` (default 8); thresholds from `similarity.phash_threshold` (default 10). Algorithms via `similarity.enabled_algorithms` (default ['phash']).
 - **Caching**: 1-day TTL via CacheManager; key="path:phash". Batch progress logged.
 - **Error Handling**: InvalidImageError for corrupted/unsupported formats; SimilarityError for computation failures. GUI/DB errors shown selectably; continues on skips.

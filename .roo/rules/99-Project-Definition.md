@@ -44,3 +44,7 @@ This is a Python project, with two primary components that will eventually be se
 
 ## Run the application in the terminal after changes to code
 When you complete a task that makes changes to the code, run the app in the VSCode terminal with the command `pdm run imgapp` and monitor the terminal output and logs to identify errors/results.
+
+## Adding CLI Options/Arguments
+
+When asked to add a CLI option, add it to the `img_app/app.py` `main` function. Assure that options/parameters are passed both when invoking the application from the `imgapp` script AND the `pdm run imgapp` command in `pyproject.toml`

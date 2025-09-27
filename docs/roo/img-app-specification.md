@@ -69,6 +69,13 @@ The KDC Image Organizer (img-app) is a cross-platform desktop GUI application de
   ```
 - Environment override: `PK_IMG_APP_HOME` can override base directory
 
+### 2.0.3 Command Line Interface (CLI) Options
+
+The application supports the following command-line arguments for bootstrap and utility functions:
+
+- `-l`, `--location`: List all local data paths used by the application (e.g., settings.db, cache.db, log directories).
+- `-d`, `--default`: Automatically run/start the operation defined by the last active profile immediately upon GUI launch. This bypasses manual clicking of the "Start" button.
+
 ### 2.1 Core Features
 
 #### 2.1.1 Image Format Support

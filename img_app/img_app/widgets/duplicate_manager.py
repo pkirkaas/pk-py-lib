@@ -75,9 +75,9 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
 
     Notes
     -----
-    * The dialog respects the "report-only" policy for duplicates in Settings
-      Profiles v1. Deletion requests therefore emit informative guidance rather
-      than performing destructive operations.
+    * Deletion requests move selected files to the system recycle bin via the
+      :class:`BaseFileManagerDialog` safe deletion workflow, ensuring a reversible
+      operation that honours platform conventions.
     * The SelectionStore drives the footer status updates via the base dialog.
     """
 
@@ -220,24 +220,8 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
                 ),
             )
         else:
-            # Provide a concise informational summary with normalized metadata for operators.
-            report_lines = [
-                "Settings Profile Validation",
-                "---------------------------",
-                "Status: VALID",
-            ]
-            default_threshold = self._extract_similarity_threshold()
-            if default_threshold is not None:
-                report_lines.append(
-                    f"Normalized similarity threshold: {default_threshold * 100:.1f}% "
-                    f"(UI {internal_to_ui_percent(default_threshold)})."
-                )
-
-            show_selectable_info(
-                self,
-                "Profile Validation Successful",
-                "\n".join(report_lines),
-            )
+            # Validation succeeded; no modal feedback required for duplicate workflow
+            LOGGER.debug("DuplicateManagerDialog profile validation succeeded")
 
     def refresh_groups(
         self,
@@ -262,30 +246,21 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
     # Base overrides
     # ---------------------------------------------------------------------#
     def _on_delete_clicked(self) -> None:
-        """Handle delete requests (report-only in v1)."""
+        """Handle delete requests by delegating to the base trash workflow."""
         selected_count = self.selection_store.get_selection_count()
         if selected_count == 0:
             show_selectable_info(
                 self,
                 "No Selection",
-                "Please select one or more files to request deletion review.",
+                "Please select one or more files to delete.",
             )
             return
 
-        show_selectable_info(
-            self,
-            "Report Only Mode",
-            (
-                "Settings Profiles v1 operates in report-only mode.\n\n"
-                "The selected files have been marked for follow-up review but were "
-                "not deleted. Export the report or utilize future workflow stages to "
-                "action deletions safely."
-            ),
-        )
         LOGGER.info(
-            "DuplicateManagerDialog delete requested in report-only mode",
+            "DuplicateManagerDialog deletion requested",
             variables={"selected_count": selected_count},
         )
+        super()._on_delete_clicked()
 
     # ---------------------------------------------------------------------#
     # Internal helpers

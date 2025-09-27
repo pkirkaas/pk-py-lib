@@ -311,9 +311,12 @@ class FileGroupView(QWidget):
 
         group_item.setData(0, Qt.UserRole, group.ref_path)
         group_item.setFlags(Qt.ItemIsEnabled)
-        group_item.setFirstColumnSpanned(True)
         for column in range(self.tree_widget.columnCount()):
             group_item.setFont(column, font)
+            if column in (3, 5, 6):
+                group_item.setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
+            else:
+                group_item.setTextAlignment(column, Qt.AlignLeft | Qt.AlignVCenter)
         return group_item
 
     def _build_file_item(self, file_item: FileItem) -> QTreeWidgetItem:

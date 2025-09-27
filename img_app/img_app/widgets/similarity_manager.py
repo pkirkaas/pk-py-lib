@@ -89,8 +89,8 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
 
     Notes
     -----
-    * Settings Profiles v1 operate in report-only mode. Deletion requests therefore
-      show guidance rather than mutating the filesystem.
+    * Deletion requests invoke the base dialog’s safe deletion workflow, moving
+      selected files to the platform recycle bin so the operation remains reversible.
     * When a database manager is provided the **Compute Groups** button will query the
       cache database for perceptual hashes and recompute clusters with the selected
       algorithm and threshold.
@@ -269,7 +269,8 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             info_lines.append(
                 f"Normalized threshold: {threshold * 100:.1f}% (UI {internal_to_ui_percent(threshold)})."
             )
-        show_selectable_info(self, "Profile Validation Successful", "\n".join(info_lines))
+        # Success message box removed per user request. Validation status is logged.
+        pass
 
     def refresh_groups(
         self,
@@ -294,29 +295,21 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
     # Base dialog overrides
     # ------------------------------------------------------------------#
     def _on_delete_clicked(self) -> None:
-        """Handle delete requests in report-only mode."""
+        """Handle delete requests via the shared safe deletion workflow."""
         selected_count = self.selection_store.get_selection_count()
         if selected_count == 0:
             show_selectable_info(
                 self,
                 "No Selection",
-                "Please select one or more files to request deletion review.",
+                "Please select one or more files to delete.",
             )
             return
 
-        show_selectable_info(
-            self,
-            "Report Only Mode",
-            (
-                "Settings Profiles v1 operates in report-only mode.\n\n"
-                "The selected files have been marked for review but were not deleted. "
-                "Export the report or use future workflow stages to action deletions safely."
-            ),
-        )
         LOGGER.info(
-            "SimilarityManagerDialog delete requested in report-only mode",
+            "SimilarityManagerDialog deletion requested",
             variables={"selected_count": selected_count},
         )
+        super()._on_delete_clicked()
 
     # ------------------------------------------------------------------#
     # Internal helpers

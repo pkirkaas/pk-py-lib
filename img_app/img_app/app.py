@@ -93,6 +93,7 @@ def main() -> int:
     """
     parser = argparse.ArgumentParser(description="KDC Image Organizer")
     parser.add_argument("-l", "--location", action="store_true", help="List all local data paths used by the application")
+    parser.add_argument("-d", "--default", action="store_true", help="Automatically run/start the last profile used when the GUI is started")
     args, qt_argv = parser.parse_known_args()
     
     if args.location:
@@ -204,7 +205,7 @@ def main() -> int:
         return 1
 
     # 5) Create main window, pass active profile, and attach managers
-    window = MainWindow(active_profile=active_profile)
+    window = MainWindow(active_profile=active_profile, cli_args=args)
     if db_mgr is not None:
         setattr(window, "database_manager", db_mgr)
     if config_mgr is not None:
@@ -216,6 +217,11 @@ def main() -> int:
     window.load_profiles()
 
     window.show()
+    
+    # Check for CLI option to automatically start the default operation
+    if args.default:
+        window.start_default_operation()
+        
     return app.exec()
 
 

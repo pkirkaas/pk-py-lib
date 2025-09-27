@@ -11,8 +11,9 @@ Syntax validation performed with Python's ast module prior to inclusion.
 from __future__ import annotations
 
 from typing import List, Optional
+from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QDialog,
@@ -25,9 +26,11 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QMessageBox,
 )
 
 from ..dialog_models import DialogState, Group
+from ...core.filesystem.operations import FileOperations
 from ..models import SelectionStore
 
 
@@ -74,6 +77,13 @@ class BaseFileManagerDialog(QDialog):
         self._summary_text: str = ""
         self._report_text: str = ""
 
+        # Set window flags to enable Minimize and Maximize buttons
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowMinimizeButtonHint
+            | Qt.WindowMaximizeButtonHint
+        )
+        
         self.setModal(True)
         self.resize(1200, 800)
         self.setWindowTitle("File Manager")
@@ -268,9 +278,81 @@ class BaseFileManagerDialog(QDialog):
     # ---------------------------------------------------------------------#
     def _on_delete_clicked(self) -> None:
         """
-        Subclasses must provide deletion behaviour appropriate to their workflow.
+        Handle the deletion of selected files by moving them to the system trash.
+
+        This method performs the following steps:
+        1. Retrieves the list of selected file paths from the selection store.
+        2. Prompts the user for confirmation using a QMessageBox.
+        3. Iterates through the paths and calls FileOperations.safe_delete(to_trash=True).
+        4. Updates the report tab with the results of the operation.
+        5. Emits the files_deleted signal upon completion.
         """
-        raise NotImplementedError("Subclasses must implement _on_delete_clicked")
+        selected_paths = self.selection_store.get_selected_paths()
+        if not selected_paths:
+            return
+
+        # 1. Confirmation Dialog
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Confirm Deletion")
+        msg_box.setText(
+            f"Are you sure you want to move {len(selected_paths)} selected file(s) to the Recycle Bin/Trash?"
+        )
+        msg_box.setInformativeText("This operation is generally reversible via the system trash.")
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg_box.setDefaultButton(QMessageBox.No)
+        
+        if msg_box.exec() != QMessageBox.Yes:
+            return
+
+        # 2. Perform Deletion
+        deleted_count = 0
+        failed_paths: List[Path] = []
+        
+        self.append_report_lines(
+            f"--- Starting deletion of {len(selected_paths)} files to Trash ---"
+        )
+
+        for path_str in selected_paths:
+            path = Path(path_str)
+            try:
+                # Use safe_delete with to_trash=True
+                success = FileOperations.safe_delete(path, to_trash=True)
+                if success:
+                    deleted_count += 1
+                    self.append_report_lines(f"SUCCESS: Moved to trash: {path.name}")
+                else:
+                    # Should only happen if path didn't exist, which is logged internally
+                    failed_paths.append(path)
+                    self.append_report_lines(f"SKIPPED: File not found or deletion failed: {path.name}")
+            except Exception as e:
+                failed_paths.append(path)
+                self.append_report_lines(f"ERROR: Failed to delete {path.name}: {e}")
+
+        # 3. Final Report and Cleanup
+        self.append_report_lines(
+            f"--- Deletion complete: {deleted_count} deleted, {len(failed_paths)} failed ---"
+        )
+        
+        # Clear selection store for deleted items
+        for path in selected_paths:
+            if Path(path) not in failed_paths:
+                self.selection_store.remove_selection(path)
+        
+        # 4. Notify subclasses/parent to refresh their views
+        self.files_deleted.emit(selected_paths)
+        
+        # If all selected files were deleted, show success message
+        if deleted_count > 0 and len(failed_paths) == 0:
+            QMessageBox.information(
+                self,
+                "Deletion Complete",
+                f"Successfully moved {deleted_count} file(s) to the Recycle Bin/Trash."
+            )
+            
+    # ---------------------------------------------------------------------#
+    # Signals
+    # ---------------------------------------------------------------------#
+    files_deleted = Signal(list)
 
 
 __all__ = ["BaseFileManagerDialog"]

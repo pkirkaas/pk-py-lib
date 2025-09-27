@@ -6,6 +6,8 @@ duplicate detection, and directory statistics.
 """
 
 import os
+import sqlite3
+import traceback
 from pathlib import Path
 from typing import Iterator, Optional, List, Dict, Any, Pattern, Set, Union
 import fnmatch
@@ -833,6 +835,36 @@ def scan_directory(
                         """, (str(path), path.name, file_info.extension, file_info.size, file_info.modified_time,
                               primary_hash, primary_alg))
                         log.debug(f"Stored metadata for {path}")
+                        row = conn.execute(
+                            "SELECT id FROM image_metadata WHERE file_path = ?",
+                            (str(path),)
+                        ).fetchone()
+                        if row is None:
+                            raise RuntimeError(f"image_metadata id resolution failed for {path}")
+                        image_id = row["id"] if hasattr(row, "keys") else row[0]
+                        image_id = int(image_id)
+                        if exact_hash:
+                            conn.execute(
+                                """
+                                INSERT OR REPLACE INTO image_hashes (image_id, algorithm, hash_value)
+                                VALUES (?, ?, ?)
+                                """,
+                                (image_id, "sha256", exact_hash),
+                            )
+                        if "hashes" in result:
+                            for alg_name, hash_value in result["hashes"].items():
+                                if not hash_value:
+                                    continue
+                                alg_token = str(alg_name or "").strip().lower()
+                                if not alg_token:
+                                    continue
+                                conn.execute(
+                                    """
+                                    INSERT OR REPLACE INTO image_hashes (image_id, algorithm, hash_value)
+                                    VALUES (?, ?, ?)
+                                    """,
+                                    (image_id, alg_token, hash_value),
+                                )
                 except Exception as e_db:
                     log.error(f"DB storage failed for {path}: {e_db}", exc_info=True)
                     error_details.append({

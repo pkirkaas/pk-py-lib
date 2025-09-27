@@ -501,6 +501,7 @@ Library implementation
 App integration
 - Main window integration: [img_app/img_app/main_window.py](img_app/img_app/main_window.py:1) — Profile management UI with combobox, create/copy buttons, and progress reporting
 - App bootstrap: [img_app/img_app/app.py](img_app/img_app/app.py:60) — Direct launch with active profile loading
+  - Supports CLI flag `-d`/`--default` to automatically trigger the active profile's operation (`_on_start`) upon GUI launch.
 - Profile operations occur through the API respecting all invariants
 - `meta.active_profile_id` is set consistently; list responses include `is_active`
 

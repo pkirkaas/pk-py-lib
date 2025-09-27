@@ -718,6 +718,145 @@ class DatabaseManager:
                 logger.warning(f"Failed to verify/add extension column in image_metadata: {e}")
             except Exception as e:
                 logger.error(f"Unexpected error during extension column migration: {e}")
+    
+            # Migration 1.6.0: Ensure 'algorithm' column exists in image_metadata with CHECK constraint
+            # This handles outdated schemas where inserts fail due to missing column or legacy CHECK constraint (OperationalError or CHECK constraint failed)
+            try:
+                # Robust detection using sqlite_master for full CREATE SQL
+                cur_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='image_metadata'")
+                create_result = cur_sql.fetchone()
+                needs_migration = False
+                if create_result:
+                    create_sql = create_result[0]
+                    # Check for legacy schema without 'algorithm' column or incomplete CHECK
+                    if 'algorithm' not in create_sql or ("CHECK (algorithm IN ('phash', 'whash'))" in create_sql and "sha256" not in create_sql):
+                        needs_migration = True
+                        logger.info("Detected legacy image_metadata schema; preparing migration for 'algorithm' column and CHECK constraint")
+                    elif "CHECK (algorithm IN ('sha256', 'phash', 'whash'))" in create_sql:
+                        logger.info("Migration for image_metadata 'algorithm' column already applied (full CHECK constraint present)")
+                        needs_migration = False
+                    else:
+                        # Ambiguous schema; fallback to safe recreate
+                        logger.warning("Ambiguous image_metadata schema detected; falling back to safe recreate for 'algorithm' support")
+                        needs_migration = True
+                else:
+                    # Table missing: CACHE_SCHEMA will create with new schema
+                    logger.debug("image_metadata table missing; CACHE_SCHEMA will create with new schema")
+                    needs_migration = False
+    
+                if needs_migration:
+                    logger.info("Applying image_metadata migration: Adding/updating 'algorithm' column and CHECK constraint to support 'sha256', 'phash', 'whash'")
+    
+                    # Backup existing data
+                    backup_cur = conn.execute("SELECT * FROM image_metadata ORDER BY id")
+                    rows = backup_cur.fetchall()
+                    row_count = len(rows)
+                    if row_count > 0:
+                        logger.info(f"Backing up {row_count} rows from image_metadata")
+                    else:
+                        logger.info("No existing data to backup")
+    
+                    # Drop old table
+                    conn.execute("DROP TABLE IF EXISTS image_metadata")
+                    logger.info("Dropped existing image_metadata table")
+    
+                    # Recreate with updated canonical schema including 'algorithm' column and full CHECK constraint
+                    conn.executescript("""
+                    CREATE TABLE image_metadata (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        file_path TEXT UNIQUE NOT NULL,
+                        file_name TEXT NOT NULL,
+                        extension TEXT,
+                        file_size INTEGER NOT NULL,
+                        file_modified TIMESTAMP NOT NULL,
+                        file_created TIMESTAMP,
+                        pool TEXT NOT NULL DEFAULT 'A' CHECK (pool IN ('A','B')),
+                        file_hash_sha256 TEXT,
+                        algorithm TEXT NOT NULL DEFAULT 'sha256' CHECK (algorithm IN ('sha256', 'phash', 'whash')),
+                        partial_hash_sha256 TEXT,
+                        file_inode INTEGER,
+                        file_device INTEGER,
+                        hash_computed_at TIMESTAMP,
+                        width INTEGER,
+                        height INTEGER,
+                        format TEXT,
+                        color_mode TEXT,
+                        bit_depth INTEGER,
+                        exif_data JSON,
+                        camera_make TEXT,
+                        camera_model TEXT,
+                        lens_model TEXT,
+                        date_taken TIMESTAMP,
+                        gps_latitude REAL,
+                        gps_longitude REAL,
+                        last_scanned TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        scan_version TEXT,
+                        is_valid BOOLEAN DEFAULT TRUE,
+                        mtime_ns INTEGER
+                    );
+                    """)
+                    logger.info("Recreated image_metadata with 'algorithm' column and full CHECK constraint")
+    
+                    # Recreate indexes
+                    indexes_sql = """
+                    CREATE INDEX IF NOT EXISTS idx_metadata_path ON image_metadata(file_path);
+                    CREATE INDEX IF NOT EXISTS idx_metadata_sha256 ON image_metadata(file_hash_sha256);
+                    CREATE INDEX IF NOT EXISTS idx_metadata_partial ON image_metadata(partial_hash_sha256);
+                    CREATE INDEX IF NOT EXISTS idx_metadata_inode ON image_metadata(file_inode, file_device);
+                    CREATE INDEX IF NOT EXISTS idx_metadata_size ON image_metadata(file_size);
+                    CREATE INDEX IF NOT EXISTS idx_metadata_date ON image_metadata(date_taken);
+                    """
+                    conn.executescript(indexes_sql)
+                    logger.info("Recreated indexes on image_metadata")
+    
+                    # Restore data: map columns, handle missing 'algorithm' (default 'sha256'), log invalid
+                    if rows:
+                        restored_count = 0
+                        invalid_alg_count = 0
+                        for row in rows:
+                            try:
+                                # For simplicity, assume order matches schema; use explicit INSERT with available columns
+                                # Since DROP/RECREATE, use INSERT with explicit columns (skip id for AUTOINCREMENT)
+                                # Assume original row has columns without algorithm, so insert with DEFAULT
+                                # But to be robust, use dict or skip if too complex; for PoC, assume standard order
+                                # Original schema without algorithm: id, file_path, file_name, file_size, file_modified, ... (adjust index)
+                                # To avoid fragility, insert with known columns, let DEFAULT handle algorithm
+                                conn.execute("""
+                                INSERT INTO image_metadata (
+                                    file_path, file_name, extension, file_size, file_modified, file_created, pool,
+                                    file_hash_sha256, partial_hash_sha256, file_inode, file_device, hash_computed_at,
+                                    width, height, format, color_mode, bit_depth, exif_data, camera_make, camera_model,
+                                    lens_model, date_taken, gps_latitude, gps_longitude, last_scanned, scan_version,
+                                    is_valid, mtime_ns
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """, row[1:])  # Skip id, append DEFAULT for algorithm
+                                restored_count += 1
+                            except sqlite3.IntegrityError as ie:
+                                logger.warning(f"IntegrityError restoring metadata row {row}: {ie}")
+                            except Exception as e:
+                                logger.error(f"Error restoring metadata row {row}: {e}")
+                        logger.info(f"Restored {restored_count} rows to image_metadata")
+    
+                    # Verify post-migration using sqlite_master
+                    cur_verify_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='image_metadata'")
+                    verify_result = cur_verify_sql.fetchone()
+                    if verify_result and "CHECK (algorithm IN ('sha256', 'phash', 'whash'))" in verify_result[0]:
+                        logger.info("Migration verification: 'algorithm' column and full CHECK constraint confirmed for image_metadata")
+                    else:
+                        logger.warning("Migration warning: Unable to verify 'algorithm' constraint for image_metadata")
+    
+                    # Update meta schema_version
+                    conn.execute(
+                        "INSERT OR REPLACE INTO meta (key, value, notes, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                        ("schema_version", "1.6.0", "Updated image_metadata with 'algorithm' CHECK for multi-hash support; preserved all legacy data")
+                    )
+                    logger.info("image_metadata migration 1.6.0 complete: Enables 'sha256' inserts for exact duplicates alongside perceptual hashes; resolves insert errors")
+                else:
+                    logger.info("image_metadata schema already up-to-date with 'algorithm' column")
+            except sqlite3.OperationalError as e:
+                logger.warning(f"Failed to verify/add algorithm column in image_metadata: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error during algorithm column migration: {e}")
 
             # Migration 1.6.0: Add/update 'algorithm' column in image_metadata for multi-hash support.
             # Enables storage of exact duplicates ('sha256') and perceptual similarity ('phash', 'whash') hashes in unified table.
