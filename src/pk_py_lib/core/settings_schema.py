@@ -124,6 +124,12 @@ SETTINGS_PROFILE_SCHEMA = {
                 "mode": {"type": "string", "enum": ["report_only"], "default": "report_only"}
             },
             "required": ["mode"]
+        },
+        "image_quality_evaluator": {
+            "type": "string",
+            "default": "brisque",
+            "enum": ["brisque"],
+            "description": "The active image quality evaluator to use (e.g., 'brisque' for BRISQUE-based scoring). Scores are normalized such that higher floats indicate higher quality."
         }
     },
 
@@ -440,6 +446,7 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     # Ensure output exists
     output = normalized.setdefault("output", {})
     output.setdefault("mode", "report_only")
+    normalized.setdefault("image_quality_evaluator", "brisque")
     
     return normalized
 
@@ -503,7 +510,8 @@ def create_default_profile(name: str, description: Optional[str] = None) -> Dict
         },
         "output": {
             "mode": "report_only"
-        }
+        },
+        "image_quality_evaluator": "brisque"
     }
     
     return normalize_settings(profile)

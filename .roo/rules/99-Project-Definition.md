@@ -44,7 +44,7 @@ This is a Python project, with two primary components that will eventually be se
 
 ## Libraries
 
-We have the latest version of the `opencv-contrib-python` image processing library installed. Ensure you 
+We have the latest version of the `opencv-contrib-python` image processing library installed. Ensure you consider all available contributed modules in `opencv-contrib-python` when choosing/implementing image processing features. Consider all other installed python image processing libraries as well, and select the most appropriate library to implement desired image processing functionality. 
 
 ## Run the application in the terminal after changes to code
 When you complete a task that makes changes to the code, run the app in the VSCode terminal with the command `pdm run imgapp` and monitor the terminal output and logs to identify errors/results.
