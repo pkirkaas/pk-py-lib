@@ -202,7 +202,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         self._validator_errors = errors or []
         LOGGER.info(
             "Settings profile validation for DuplicateManagerDialog",
-            extra={"is_valid": is_valid, "error_count": len(self._validator_errors)},
+            variables={"is_valid": is_valid, "error_count": len(self._validator_errors)},
         )
 
         if not is_valid:
@@ -281,7 +281,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         )
         LOGGER.info(
             "DuplicateManagerDialog delete requested in report-only mode",
-            extra={"selected_count": selected_count},
+            variables={"selected_count": selected_count},
         )
 
     # ---------------------------------------------------------------------#

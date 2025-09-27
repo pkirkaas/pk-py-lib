@@ -240,7 +240,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         self._validator_errors = errors or []
         LOGGER.info(
             "Settings profile validation for SimilarityManagerDialog",
-            extra={"is_valid": is_valid, "error_count": len(self._validator_errors)},
+            variables={"is_valid": is_valid, "error_count": len(self._validator_errors)},
         )
 
         if not is_valid:
@@ -312,7 +312,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         )
         LOGGER.info(
             "SimilarityManagerDialog delete requested in report-only mode",
-            extra={"selected_count": selected_count},
+            variables={"selected_count": selected_count},
         )
 
     # ------------------------------------------------------------------#

@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -187,7 +188,9 @@ class BaseFileManagerDialog(QDialog):
         """
         self._summary_text = text or ""
         self.summary_edit.setPlainText(self._summary_text)
-        self.summary_edit.moveCursor(self.summary_edit.textCursor().Start)
+        # Move cursor to start to ensure the top of the text is visible
+        self.summary_edit.setTextCursor(QTextCursor(self.summary_edit.document()))
+        self.summary_edit.moveCursor(QTextCursor.Start)
 
     def set_report_text(self, text: str) -> None:
         """
@@ -197,7 +200,9 @@ class BaseFileManagerDialog(QDialog):
         """
         self._report_text = text or ""
         self.report_edit.setPlainText(self._report_text)
-        self.report_edit.moveCursor(self.report_edit.textCursor().Start)
+        # Move cursor to start to ensure the top of the text is visible
+        self.report_edit.setTextCursor(QTextCursor(self.report_edit.document()))
+        self.report_edit.moveCursor(QTextCursor.Start)
 
     def append_report_lines(self, *lines: str) -> None:
         """
