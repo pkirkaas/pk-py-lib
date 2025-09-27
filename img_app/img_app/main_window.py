@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QDialog, QLineEdit, QFormLayout, QDialogButtonBox, QStackedWidget,
     QMessageBox, QToolBar, QMenu, QSizePolicy, QTextEdit
 )
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Mapping, Sequence
 from pathlib import Path
 from src.pk_py_lib.gui.utils.messages import show_selectable_info, show_selectable_error, gui_error_handler, gui_error_context
 from src.pk_py_lib.core.database import CACHE_SCHEMA
@@ -37,6 +37,13 @@ from src.pk_py_lib.core.filesystem.identity import get_inode_device, compute_sha
 from datetime import datetime
 import traceback
 from src.pk_py_lib.core.logging.logger import get_logger
+from src.pk_py_lib.core.image.similarity import (
+    get_image_metadata,
+    format_timestamp,
+    find_similar_images,
+)
+from src.pk_py_lib.gui.dialog_models import FileItem, Group, GroupStats
+from src.pk_py_lib.gui.models import SelectionStore, PoolDirection
 
 from .widgets.duplicate_manager import DuplicateManagerDialog
 from .widgets.similarity_manager import SimilarityManagerDialog
@@ -449,6 +456,8 @@ class MainWindow(QMainWindow):
         self.profiles: List[Dict[str, Any]] = []
         self.controller = None  # Will be set when database manager is available
         self.structured_editor = None
+        # Shared selection store for file management dialogs
+        self.dialog_selection_store: SelectionStore = SelectionStore()
         # Track whether we've connected structured_editor.dirtyChanged to avoid spurious disconnect warnings
         self._editor_dirty_connected: bool = False
          
@@ -1241,6 +1250,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+
         # Pools debug
         try:
             pools_obj = payload_for_mode.get('pools', {}) if isinstance(payload_for_mode, dict) else {}
@@ -1329,6 +1339,7 @@ class MainWindow(QMainWindow):
 
                     if two_pool:
                         if direction == "duplicates":
+                            # Two-Pool Duplicate Clustering (A vs B)
                             rows = conn.execute("""
                                 SELECT ia.file_path AS a_path, ib.file_path AS b_path
                                 FROM image_hashes ih
@@ -1340,20 +1351,77 @@ class MainWindow(QMainWindow):
                                 WHERE ih.algorithm = ? AND ih.hash_value IS NOT NULL
                                 ORDER BY ia.file_path, ib.file_path
                             """, (algo,)).fetchall()
+                            
                             groups_map: dict[str, list[str]] = defaultdict(list)
                             for r in rows:
                                 a = str(r["a_path"]); b = str(r["b_path"])
                                 groups_map[a].append(b)
+                            
                             report_lines.append("Two-Pool Report — duplicates (A vs B)")
+                            all_paths_in_groups = set()
+                            
                             for a_path, b_list in groups_map.items():
                                 if not b_list:
                                     continue
                                 groups += 1
                                 total_dups += len(b_list)
                                 report_lines.append(f"\nA: {a_path}\nB duplicates:")
+                                all_paths_in_groups.add(a_path)
                                 for b in b_list:
                                     report_lines.append(f"  - {b}")
+                                    all_paths_in_groups.add(b)
+
+                            # Prepare data for DuplicateManagerDialog (groups_data_prepared)
+                            if all_paths_in_groups:
+                                placeholders = ",".join("?" for _ in all_paths_in_groups)
+                                sql = f"""
+                                    SELECT im.file_path, im.file_size, im.file_modified, im.pool
+                                    FROM image_metadata im
+                                    JOIN temp_run_files tr ON tr.file_path = im.file_path
+                                    WHERE im.file_path IN ({placeholders})
+                                """
+                                rows_meta = conn.execute(sql, list(all_paths_in_groups)).fetchall()
+                                meta_lookup = {str(r["file_path"]): r for r in rows_meta}
+                                
+                                group_id = 1
+                                for a_path, b_list in groups_map.items():
+                                    if not b_list:
+                                        continue
+                                    
+                                    group_files = []
+                                    
+                                    # Add A path (reference)
+                                    meta_a = meta_lookup.get(a_path)
+                                    if meta_a:
+                                        group_files.append({
+                                            "path": a_path,
+                                            "size": int(meta_a["file_size"] or 0),
+                                            "modified": int(meta_a["file_modified"] or 0),
+                                            "pool": str(meta_a["pool"] or "A"),
+                                            "score": 1.0
+                                        })
+                                    
+                                    # Add B paths (duplicates)
+                                    for b_path in b_list:
+                                        meta_b = meta_lookup.get(b_path)
+                                        if meta_b:
+                                            group_files.append({
+                                                "path": b_path,
+                                                "size": int(meta_b["file_size"] or 0),
+                                                "modified": int(meta_b["file_modified"] or 0),
+                                                "pool": str(meta_b["pool"] or "B"),
+                                                "score": 1.0
+                                            })
+                                    
+                                    if len(group_files) >= 2:
+                                        groups_data_prepared.append({
+                                            "hash": f"two_pool_dup_{group_id}",
+                                            "count": len(group_files),
+                                            "files": group_files,
+                                        })
+                                        group_id += 1
                         else:
+                            # Two-Pool Non-Duplicates (B not in A) - Only report generation needed
                             rows = conn.execute("""
                                 SELECT ib.file_path AS b_path
                                 FROM image_hashes hb
@@ -1385,11 +1453,11 @@ class MainWindow(QMainWindow):
                             WHERE ih.algorithm = ? AND ih.hash_value IS NOT NULL
                             ORDER BY hv, p
                         """, (algo,)).fetchall()
-
+ 
                         current_hash: str | None = None
                         current_files: list[str] = []
                         report_lines.append("Duplicate Report — Single Pool")
-
+ 
                         def _flush():
                             nonlocal groups, total_dups, report_lines, current_hash, current_files
                             if current_hash is not None and len(current_files) >= 2:
@@ -1398,7 +1466,7 @@ class MainWindow(QMainWindow):
                                 report_lines.append(f"\nHash: {current_hash}")
                                 for fp in current_files:
                                     report_lines.append(f"  - {fp}")
-
+ 
                         for r in rows:
                             hv = str(r["hv"]); p = str(r["p"])
                             if hv != current_hash:
@@ -1408,13 +1476,13 @@ class MainWindow(QMainWindow):
                             else:
                                 current_files.append(p)
                         _flush()
-
+ 
                         # Prepare data for DuplicateManagerDialog
                         hv_to_paths: dict[str, list[str]] = defaultdict(list)
                         for r in rows:
                             h = str(r["hv"]); p = str(r["p"])
                             hv_to_paths[h].append(p)
-
+ 
                         dup_hashes = [h for h, lst in hv_to_paths.items() if len(lst) >= 2]
                         groups_data_fallback = [
                             {
@@ -1424,7 +1492,7 @@ class MainWindow(QMainWindow):
                             }
                             for h in dup_hashes
                         ]
-
+ 
                         if dup_hashes:
                             placeholders = ",".join("?" for _ in dup_hashes)
                             sql = f"""
@@ -1441,7 +1509,7 @@ class MainWindow(QMainWindow):
                             """
                             params = [algo, *dup_hashes]
                             rows2 = conn.execute(sql, params).fetchall()
-
+ 
                             by_hash: dict[str, dict] = {}
                             for rr in rows2:
                                 h = str(rr["hash"])
@@ -1460,7 +1528,7 @@ class MainWindow(QMainWindow):
                                     mod = 0
                                 pl = str(rr["pool"] or "")
                                 g["files"].append({"path": fp, "size": sz, "modified": mod, "pool": pl})
-
+ 
                             groups_data_prepared = []
                             for h, g in by_hash.items():
                                 g["count"] = len(g["files"])
@@ -1531,122 +1599,138 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # Display logic
-        if two_pool:
-            if direction == "non_duplicates":
-                self._show_resizable_text_dialog("Non-duplicates Report", report_text)
-                try:
-                    self.statusBar().showMessage(f"Non-duplicates (B not in A): {non_matches}", 10000)
-                except Exception:
-                    pass
-            else:
-                self._show_resizable_text_dialog("Duplicate Report", report_text)
-                try:
-                    self.statusBar().showMessage(f"Two-pool duplicates groups: {groups}", 10000)
-                except Exception:
-                    pass
-            return
-
         # Determine mode from profile
         mode_val = (payload_for_mode.get("mode") if isinstance(payload_for_mode, dict) else "?") or "?"
+        scope_kind = (((payload_for_mode.get("scope") or {}).get("kind")) if isinstance(payload_for_mode, dict) else None) or "?"
+        is_similarity = mode_val == "similarity"
+        
+        # Handle non-duplicates case first, which only generates a report and returns
+        if two_pool and direction == "non_duplicates":
+            self._show_resizable_text_dialog("Non-duplicates Report", report_text)
+            try:
+                self.statusBar().showMessage(f"Non-duplicates (B not in A): {non_matches}", 10000)
+            except Exception:
+                pass
+            return
 
-        # Single-pool: open appropriate dialog based on mode (even if empty)
-        is_similarity = ('similarity' in payload_for_mode and payload_for_mode['similarity'].get('enabled_algorithms')) or summary.get('compute_hashes', False) or 'hashes' in summary
-        logger.debug(f"Profile similarity: {payload_for_mode.get('similarity', {})} , scan compute_hashes: {summary.get('compute_hashes')}, is_similarity: {is_similarity}")
-        if not is_similarity:
-            logger.warning("Mode detection failed; defaulting to duplicates mode.")
+        # Clear selection store before opening a new dialog
         try:
-            # Use unified dialog with mode
-            mode = 'similarity' if is_similarity else 'duplicates'
+            self.dialog_selection_store.clear_selection()
+        except Exception:
+            pass
+
+        dialog_groups: List[Group] = []
+        pool_map: Dict[str, str] = {}
+        dialog = None
+        
+        try:
             if is_similarity:
-                # Compute perceptual hash groups for similarity mode
-                threshold = payload_for_mode.get('similarity', {}).get('phash_threshold', 10)
+                # 1. Compute raw similarity groups (list[list[str]])
                 similarity_groups = self._compute_similarity_groups(payload_for_mode, run_paths, db_mgr)
-                groups_data = similarity_groups
-                logger.info(f"Groups data prepared: {len(groups_data)} groups")
-                settings_sim = payload_for_mode.get('similarity', {}) if isinstance(payload_for_mode, dict) else {}
-                settings = settings_sim
-            else:
-                # Diagnostics: summarize shape of file entries before grouping
-                try:
-                    files_preview = summary.get('files') or []
-                    if isinstance(files_preview, list):
-                        c_hash = sum(1 for f in files_preview if isinstance(f, dict) and f.get('hash'))
-                        c_exact = sum(1 for f in files_preview if isinstance(f, dict) and f.get('exact_hash'))
-                        c_sha256_in_hashes = sum(
-                            1 for f in files_preview
-                            if isinstance(f, dict) and isinstance(f.get('hashes'), dict) and f['hashes'].get('sha256')
-                        )
-                        c_phash = sum(
-                            1 for f in files_preview
-                            if isinstance(f, dict) and isinstance(f.get('hashes'), dict) and f['hashes'].get('phash')
-                        )
-                        c_whash = sum(
-                            1 for f in files_preview
-                            if isinstance(f, dict) and isinstance(f.get('hashes'), dict) and f['hashes'].get('whash')
-                        )
-                        LOGGER.info(
-                            "scan.summary.files.shape",
-                            variables={
-                                "n": len(files_preview),
-                                "hash_top": c_hash,
-                                "exact_hash": c_exact,
-                                "hashes.sha256": c_sha256_in_hashes,
-                                "hashes.phash": c_phash,
-                                "hashes.whash": c_whash,
-                            }
-                        )
-                except Exception:
-                    pass
-    
-                # Use groups_data from scan if available, else fallback
-                groups_data = summary.get('groups_data', [])
-                if len(groups_data) == 0:
-                    groups_data = self._compute_duplicate_groups_from_files(summary['files'])
-                groups_data = groups_data or (groups_data_prepared or self._get_duplicate_groups_single_pool() or groups_data_fallback)
-                logger.info(f"Groups data prepared: {len(groups_data)} groups")
-                settings = {}
-            text += f"\nDuplicates: {len(groups_data)} groups"
-            if is_similarity:
-                dlg = SimilarityManagerDialog(
-                    groups=groups_data or [],
+                
+                # 2. Format raw groups into list[dict] with metadata
+                raw_groups = self._format_similarity_groups(similarity_groups, db_mgr)
+                
+                # 3. Convert to immutable Group objects and extract pool map
+                dialog_groups, pool_map = self._convert_raw_groups_to_dialog_groups(raw_groups)
+                
+                if not dialog_groups:
+                    show_selectable_info(
+                        self,
+                        "No Similarity Groups",
+                        "The scan did not produce any similarity clusters for review.",
+                    )
+                    return
+                
+                text += f"\nSimilarity groups: {len(dialog_groups)}"
+                
+                dialog = SimilarityManagerDialog(
+                    groups=dialog_groups,
+                    pool_map=pool_map,
+                    selection_store=self.dialog_selection_store,
                     db_manager=db_mgr,
-                    settings=settings,
                     summary_text=text,
                     report_text=report_text,
-                    parent=self
+                    profile_payload=payload_for_mode,
+                    parent=self,
                 )
             else:
-                dlg = DuplicateManagerDialog(
-                    groups=groups_data or [],
+                # Duplicates mode (Single-pool or Two-pool duplicates)
+                
+                # 1. Use groups_data_prepared (from two_pool logic) or fallback to single-pool logic
+                raw_duplicate_groups = (
+                    groups_data_prepared
+                    or self._get_duplicate_groups_single_pool()
+                    or groups_data_fallback
+                    or []
+                )
+                
+                # 2. Convert to immutable Group objects and extract pool map
+                dialog_groups, pool_map = self._convert_raw_groups_to_dialog_groups(raw_duplicate_groups)
+                
+                if not dialog_groups:
+                    show_selectable_info(
+                        self,
+                        "No Duplicate Groups",
+                        "The scan did not produce any duplicate clusters for review.",
+                    )
+                    return
+                
+                text += f"\nDuplicates groups: {len(dialog_groups)}"
+                
+                # Determine initial direction for the dialog based on two_pool status
+                initial_direction = PoolDirection.ALL
+                if two_pool:
+                    try:
+                        d = (payload_for_mode.get('scope', {}) or {}).get('direction')
+                        if d == "A_TO_B":
+                            initial_direction = PoolDirection.A_TO_B
+                        elif d == "B_TO_A":
+                            initial_direction = PoolDirection.B_TO_A
+                    except Exception:
+                        pass
+
+                dialog = DuplicateManagerDialog(
+                    groups=dialog_groups,
+                    pool_map=pool_map,
+                    selection_store=self.dialog_selection_store,
                     summary_text=text,
                     report_text=report_text,
-                    parent=self
+                    initial_direction=initial_direction,
+                    profile_payload=payload_for_mode,
+                    parent=self,
                 )
-            logger.info(
-                "Created dialog",
-                extra={
-                    "requested_mode": self._current_scan_mode or "duplicates",
-                    "dialog_type": type(dlg).__name__,
-                    "group_count": len(groups_data or []),
+
+            # Execute dialog
+            ret = dialog.exec()
+            total_items = sum(group.stats.file_count for group in dialog_groups)
+            LOGGER.info(
+                "file_management.dialog.completed",
+                variables={
+                    "dialog_type": type(dialog).__name__,
+                    "return_code": ret,
+                    "group_count": len(dialog_groups),
+                    "item_count": total_items,
+                    "mode": mode_val,
+                    "scope": scope_kind,
                 },
             )
-       
-            ret = dlg.exec()
-            print(f"[DEBUG _on_scan_finished] Dialog exec() returned: {ret}", file=sys.stderr)
-            LOGGER.info("Dialog executed", variables={
-                "return_code": ret,
-                "dialog_type": "SimilarityManagerDialog" if is_similarity else "DuplicateManagerDialog",
-                "groups_passed": len(groups_data)
-            })
+            try:
+                self.statusBar().showMessage(
+                    f"{mode_val.capitalize()} groups: {len(dialog_groups)} ({total_items} files)",
+                    10000,
+                )
+            except Exception:
+                pass
+        
         except Exception as e:
             try:
                 print(f"[DEBUG _on_scan_finished] Exception creating dialog: {e}", file=sys.stderr)
                 traceback.print_exc(file=sys.stderr)
-                if mode_val == "similarity":
-                    LOGGER.error("similarity.dialog.failed", exception=e, variables={"groups_count": len(groups_data or [])})
+                if is_similarity:
+                    LOGGER.error("similarity.dialog.failed", exception=e, variables={"groups_count": len(dialog_groups or [])})
                 else:
-                    LOGGER.error("dups.dialog.failed", exception=e, variables={"groups_count": len(groups_data or [])})
+                    LOGGER.error("dups.dialog.failed", exception=e, variables={"groups_count": len(dialog_groups or [])})
  
                 # Show basic QDialog with summary on error
                 try:
@@ -1668,9 +1752,89 @@ class MainWindow(QMainWindow):
                 pass
  
         try:
+            # Update status bar with final counts if dialog failed to open
             self.statusBar().showMessage(f"Duplicate groups: {groups}; duplicate files: {total_dups}", 10000)
         except Exception:
             pass
+        return
+
+    def _convert_raw_groups_to_dialog_groups(self, raw_groups: list[dict]) -> Tuple[List[Group], Dict[str, str]]:
+        """
+        Converts raw group dictionaries (from DB queries/scan results) into
+        immutable Group dataclasses and extracts the path->pool map.
+
+        Parameters
+        ----------
+        raw_groups : list[dict]
+            List of group dictionaries, where each group contains a 'files' list
+            of file dictionaries, each having 'path', 'size', 'modified', and 'pool'.
+
+        Returns
+        -------
+        Tuple[List[Group], Dict[str, str]]
+            A tuple containing the list of immutable Group objects and a map of
+            file path to pool label.
+        """
+        dialog_groups: List[Group] = []
+        pool_map: Dict[str, str] = {}
+        
+        for idx, raw_group in enumerate(raw_groups, 1):
+            files: List[FileItem] = []
+            total_size = 0
+            min_score = 1.0
+            max_score = 0.0
+            
+            for raw_file in raw_group.get('files', []):
+                path = str(raw_file.get('path', ''))
+                size = int(raw_file.get('size', 0))
+                modified = int(raw_file.get('modified', 0))
+                score = float(raw_file.get('score', 1.0))
+                # Default to 'A' if pool is missing or None/empty string
+                pool = str(raw_file.get('pool', 'A') or 'A')
+                
+                files.append(
+                    FileItem(
+                        path=path,
+                        size=size,
+                        resolution="",
+                        mod_date=format_timestamp(modified),
+                        score=score,
+                        file_type="",
+                        savings=0,
+                    )
+                )
+                total_size += size
+                min_score = min(min_score, score)
+                max_score = max(max_score, score)
+                pool_map[path] = pool
+
+            if not files:
+                continue
+
+            # Calculate average score (simple average of scores, assuming 1.0 for duplicates)
+            avg_score = sum(f.score for f in files) / len(files) if files else 0.0
+            
+            stats = GroupStats(
+                total_size=total_size,
+                savings=total_size - min(f.size for f in files) if files else 0,
+                min_score=min_score,
+                max_score=max_score,
+                avg_score=avg_score,
+                file_count=len(files),
+            )
+            
+            # Use the first file's path as the reference path
+            ref_path = files[0].path
+            
+            dialog_groups.append(
+                Group(
+                    id=idx,
+                    items=files,
+                    stats=stats,
+                    ref_path=ref_path,
+                )
+            )
+        return dialog_groups, pool_map
 
     def _get_duplicate_groups_single_pool(self) -> list[dict]:
         """

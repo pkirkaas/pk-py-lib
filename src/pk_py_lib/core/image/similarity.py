@@ -20,7 +20,7 @@ from PIL import Image
 import imagehash
 from pk_py_lib.core.cache import CacheManager
 from pk_py_lib.core.logging.logger import get_logger
-from pk_py_lib.gui.models import ImageData, Group, Stats
+from pk_py_lib.gui.dialog_models import FileItem, Group, GroupStats
 
 try:
     from datasketch import MinHash, MinHashLSH
@@ -143,33 +143,53 @@ def get_image_metadata(path: str) -> Dict[str, any]:
         raise InvalidImageError(path, f"Metadata extraction failed: {e}")
 
 
-def compute_group_stats(images: List[ImageData]) -> Stats:
+def compute_group_stats(images: List[FileItem]) -> GroupStats:
     """
-    Compute aggregate statistics for a group of images.
+    Compute aggregate statistics for a group of files.
 
     Args:
-        images (List[ImageData]): List of ImageData objects.
+        images (List[FileItem]): List of FileItem objects.
 
     Returns:
-        Stats: Aggregated min/max/avg score and total size.
+        GroupStats: Aggregated min/max/avg score and total size.
 
     Example:
-        >>> stats = compute_group_stats([img1, img2])
+        >>> from pk_py_lib.gui.dialog_models import FileItem
+        >>> item1 = FileItem(path='a', size=100, resolution='1', mod_date='1', score=0.8)
+        >>> item2 = FileItem(path='b', size=200, resolution='1', mod_date='1', score=1.0)
+        >>> stats = compute_group_stats([item1, item2])
         >>> print(stats.avg_score)
         0.9
     """
     if not images:
-        return Stats()
+        # Return a default GroupStats object with zero/default values
+        return GroupStats(total_size=0, savings=0, min_score=0.0, max_score=0.0, avg_score=0.0, file_count=0)
 
-    scores = [img.score for img in images]
+    scores = [img.score for img in images if img.score is not None]
     sizes = [img.size for img in images]
+    
+    if not scores:
+        # Handle case where scores are None for all items (e.g., exact duplicates)
+        min_score = 1.0
+        max_score = 1.0
+        avg_score = 1.0
+    else:
+        min_score = min(scores)
+        max_score = max(scores)
+        avg_score = sum(scores) / len(scores)
 
-    min_score = min(scores)
-    max_score = max(scores)
-    avg_score = sum(scores) / len(scores)
     total_size = sum(sizes)
+    min_size = min(sizes) if sizes else 0
+    savings = total_size - min_size
 
-    return Stats(min_score=min_score, max_score=max_score, avg_score=avg_score, total_size=total_size)
+    return GroupStats(
+        total_size=total_size,
+        savings=savings,
+        min_score=min_score,
+        max_score=max_score,
+        avg_score=avg_score,
+        file_count=len(images)
+    )
 
 
 def compute_phash(
@@ -427,8 +447,8 @@ def find_similar_phash(
     Returns:
         List[Group]: List of groups, each a Group with:
         - id (int): Unique group identifier
-        - images (List[ImageData]): ImageData objects with path, metadata, and normalized score (1 - hamming_dist / 64)
-        - stats (Stats): Aggregated min/max/avg score and total_size
+        - images (List[FileItem]): FileItem objects with path, metadata, and normalized score (1 - hamming_dist / 64)
+        - stats (GroupStats): Aggregated min/max/avg score and total_size
         - ref_path (str): Path to reference image
         Singletons omitted; images sorted by path.
         Example: groups[0].images[0].score → 0.95 (95% similarity)
@@ -580,31 +600,33 @@ def find_similar_phash(
         ref_hash_dict = group_hashes[0]
         ref_path = ref_hash_dict['path']
         ref_hash = ref_hash_dict['hash']
-        images: List[ImageData] = []
+        images: List[FileItem] = []
         valid_count = 0
         for h_dict in group_hashes:
             try:
                 dist = hamming_distance(ref_hash, h_dict['hash'])
                 score = 1.0 - (dist / 64.0)
                 meta = get_image_metadata(h_dict['path'])
-                img_data = ImageData(
+                file_item = FileItem(
                     path=h_dict['path'],
                     size=meta['size'],
                     resolution=meta['resolution'],
                     mod_date=meta['mod_date'],
-                    score=score
+                    score=score,
+                    file_type="",
+                    savings=0,
                 )
-                images.append(img_data)
+                images.append(file_item)
                 valid_count += 1
             except Exception as e:
-                logger.warning(f"Failed to create ImageData for {h_dict['path']}: {e}")
+                logger.warning(f"Failed to create FileItem for {h_dict['path']}: {e}")
                 continue
         if valid_count < 2:
             continue
         stats = compute_group_stats(images)
         group_obj = Group(
             id=group_id,
-            images=images,
+            items=images,
             stats=stats,
             ref_path=ref_path
         )
@@ -906,8 +928,8 @@ def find_similar_whash(
     Returns:
         List[Group]: List of groups, each a Group with:
         - id (int): Unique group identifier
-        - images (List[ImageData]): ImageData objects with path, metadata, and normalized score (1 - hamming_dist / 64)
-        - stats (Stats): Aggregated min/max/avg score and total_size
+        - images (List[FileItem]): FileItem objects with path, metadata, and normalized score (1 - hamming_dist / 64)
+        - stats (GroupStats): Aggregated min/max/avg score and total_size
         - ref_path (str): Path to reference image
         Singletons omitted; images sorted by path.
         Example: groups[0].images[0].score → 0.95 (95% similarity)
@@ -1059,31 +1081,33 @@ def find_similar_whash(
         ref_hash_dict = group_hashes[0]
         ref_path = ref_hash_dict['path']
         ref_hash = ref_hash_dict['hash']
-        images: List[ImageData] = []
+        images: List[FileItem] = []
         valid_count = 0
         for h_dict in group_hashes:
             try:
                 dist = hamming_distance(ref_hash, h_dict['hash'])
                 score = 1.0 - (dist / 64.0)
                 meta = get_image_metadata(h_dict['path'])
-                img_data = ImageData(
+                file_item = FileItem(
                     path=h_dict['path'],
                     size=meta['size'],
                     resolution=meta['resolution'],
                     mod_date=meta['mod_date'],
-                    score=score
+                    score=score,
+                    file_type="",
+                    savings=0,
                 )
-                images.append(img_data)
+                images.append(file_item)
                 valid_count += 1
             except Exception as e:
-                logger.warning(f"Failed to create ImageData for {h_dict['path']}: {e}")
+                logger.warning(f"Failed to create FileItem for {h_dict['path']}: {e}")
                 continue
         if valid_count < 2:
             continue
         stats = compute_group_stats(images)
         group_obj = Group(
             id=group_id,
-            images=images,
+            items=images,
             stats=stats,
             ref_path=ref_path
         )
@@ -1177,8 +1201,8 @@ def find_exact_duplicates(
             content hash (e.g., BLAKE3 hex). From DB or computed.
 
     Returns:
-        List[Group]: List of duplicate groups with ImageData (score=1.0), stats.
-
+        List[Group]: List of duplicate groups with FileItem (score=1.0), stats.
+ 
     Raises:
         ValueError: If hashes empty or invalid.
         InvalidImageError: For metadata fetch failures.
@@ -1212,35 +1236,37 @@ def find_exact_duplicates(
         paths.sort()
         ref_path = paths[0]
 
-        images: List[ImageData] = []
+        images: List[FileItem] = []
         for path in paths:
             try:
                 meta = get_image_metadata(path)
                 score = 1.0
-                img_data = ImageData(
+                file_item = FileItem(
                     path=path,
                     size=meta['size'],
                     resolution=meta['resolution'],
                     mod_date=meta['mod_date'],
-                    score=score
+                    score=score,
+                    file_type="",
+                    savings=0,
                 )
-                images.append(img_data)
+                images.append(file_item)
             except Exception as e:
                 logger.error(f"Failed to process duplicate {path}: {e}")
                 continue
-
+ 
         if len(images) < 2:
             continue
-
+ 
         stats = compute_group_stats(images)
         # Override scores for exact
         stats.min_score = 1.0
         stats.max_score = 1.0
         stats.avg_score = 1.0
-
+ 
         group = Group(
             id=group_id,
-            images=images,
+            items=images,
             stats=stats,
             ref_path=ref_path
         )
