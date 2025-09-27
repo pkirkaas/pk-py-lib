@@ -42,6 +42,10 @@ This is a Python project, with two primary components that will eventually be se
 
 - You will update the specification/requirements/design documents in `/docs` on an ongoing basis to reflect refinements determined during chat interactions
 
+## Libraries
+
+We have the latest version of the `opencv-contrib-python` image processing library installed. Ensure you 
+
 ## Run the application in the terminal after changes to code
 When you complete a task that makes changes to the code, run the app in the VSCode terminal with the command `pdm run imgapp` and monitor the terminal output and logs to identify errors/results.
 

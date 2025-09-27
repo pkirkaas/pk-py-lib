@@ -15,7 +15,7 @@ dependencies = [
     "pyqtgraph>=0.13.0",        # Fast image display and plotting
     "click>=8.1.0",             # CLI framework
     "tqdm>=4.66.0",             # Progress bars
-    "opencv-python>=4.8.0",     # Advanced image processing
+    "opencv-contrib-python>=4.8.0",     # Advanced image processing
     "scikit-image>=0.22.0",     # Image algorithms
     "imagehash>=4.3.1",         # Perceptual hashing (aHash, dHash, pHash)
     "datasketch>=1.6.0",        # LSH indexing for efficient similarity search
@@ -26,6 +26,7 @@ dependencies = [
     "jsonschema>=4.20.0",       # JSON schema validation
     "xxhash>=3.4.0",            # XXH3 fast hashing for duplicate detection
     "platformdirs>=4.0.0",      # Platform-specific directory paths
+    "image-quality-analysis>=0.1.1",
 ]
 requires-python = "<3.14,>=3.13"
 readme = "README.md"

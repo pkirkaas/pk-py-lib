@@ -218,6 +218,25 @@ class FileGroupView(QWidget):
         layout.addWidget(self.tree_widget)
         self._apply_column_configuration()
 
+        self.tree_widget.setStyleSheet("""
+            QTreeView::item:selected {
+                background: #4a90e2;
+                color: #ffffff;
+            }
+            QTreeView::item:selected:!active {
+                background: #4a90e2;
+                color: #ffffff;
+            }
+            QTreeView::item:hover {
+                background: #e3f2fd;
+                color: #333333;
+            }
+            QTreeView::item:hover:selected {
+                background: #4a90e2;
+                color: #ffffff;
+            }
+        """)
+
     def _connect_signals(self) -> None:
         """Wire Qt signals between the tree widget and the selection store."""
         self.tree_widget.itemChanged.connect(self._on_tree_item_changed)
@@ -572,6 +591,25 @@ class SimilarityPreviewPane(QWidget):
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.Stretch)
+
+        self.preview_table.setStyleSheet("""
+            QTableView::item:selected {
+                background: #4a90e2;
+                color: #ffffff;
+            }
+            QTableView::item:selected:!active {
+                background: #4a90e2;
+                color: #ffffff;
+            }
+            QTableView::item:hover {
+                background: #e3f2fd;
+                color: #333333;
+            }
+            QTableView::item:hover:selected {
+                background: #4a90e2;
+                color: #ffffff;
+            }
+        """)
 
         layout.addWidget(self.preview_table)
         self.preview_table.hide()
