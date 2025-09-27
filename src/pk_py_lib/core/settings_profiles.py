@@ -1292,3 +1292,40 @@ class SettingsProfilesManager:
                 candidate = f"{base_name} ({n})"
                 n += 1
             return candidate
+
+
+def get_active_profile_settings() -> dict:
+    """
+    Get the settings from the active profile.
+    
+    Returns
+    -------
+    dict
+        The active profile's settings (json_data for JSON format profiles,
+        or converted legacy items for legacy profiles)
+        
+    Raises
+    ------
+    RuntimeError
+        If no active profile can be determined or settings retrieval fails
+    """
+    from .database import DatabaseManager
+    
+    try:
+        db = DatabaseManager()
+        mgr = SettingsProfilesManager(db)
+        active_profile = mgr.get_active_profile()
+        
+        if active_profile is None:
+            # Ensure default profile exists
+            active_profile = mgr.ensure_default_profile()
+        
+        # If profile is in legacy format, migrate to JSON for consistency
+        if not active_profile.is_json_format():
+            active_profile = mgr.migrate_to_json_format(active_profile.id)
+        
+        # Return the JSON data or empty dict if None
+        return active_profile.json_data or {}
+        
+    except Exception as e:
+        raise RuntimeError(f"Failed to get active profile settings: {e}") from e

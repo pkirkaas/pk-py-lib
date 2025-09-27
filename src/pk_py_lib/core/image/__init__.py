@@ -6,12 +6,13 @@ Quality evaluation scores are normalized such that higher float values indicate 
 (implementation-specific scale, e.g., 0-100 where 100 is perfect quality).
 """
 
-from .similarity import compute_similarity_hash, find_similar_images  # Existing imports; adjust if needed
+from .similarity import compute_phash, compute_whash, find_similar_images  # Existing imports; adjust if needed
 from .quality.provider import get_active_image_quality_evaluator, set_active_evaluator
 
 
 __all__ = [
-    'compute_similarity_hash',
+    'compute_phash',
+    'compute_whash',
     'find_similar_images',
     'get_active_image_quality_evaluator',
     'set_active_evaluator'

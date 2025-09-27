@@ -46,25 +46,27 @@ class ImageQualityProviderError(Exception):
 _logger = get_logger(__name__)
 
 
-def get_active_image_quality_evaluator() -> ImageQualityEvaluator:
+def get_active_image_quality_evaluator() -> Optional[ImageQualityEvaluator]:
     """Retrieve and instantiate the active image quality evaluator based on current settings.
     
     This function:
     1. Fetches the active profile settings.
     2. Extracts the 'image_quality_evaluator' key (defaults to 'brisque' if missing).
-    3. Resolves the evaluator class via the registry.
-    4. Instantiates and returns the evaluator.
-    5. Falls back to 'brisque' on invalid keys, logging a warning.
+    3. If key == 'none', returns None, indicating no quality evaluation.
+    4. Otherwise, resolves the evaluator class via the registry.
+    5. Instantiates and returns the evaluator.
+    6. Falls back to 'brisque' on invalid keys, logging a warning.
     
     All evaluators return normalized scores where higher values indicate higher image quality.
+    Returns None if 'none' is selected, indicating no quality evaluation.
     
     If settings retrieval fails (e.g., no active profile), initializes a default profile
     and uses 'brisque'.
     
     Returns
     -------
-    ImageQualityEvaluator
-        Instantiated evaluator (e.g., BRISQUEImageQualityEvaluator).
+    Optional[ImageQualityEvaluator]
+        Instantiated evaluator (e.g., BRISQUEImageQualityEvaluator) or None if 'none' selected.
     
     Raises
     ------
@@ -76,10 +78,13 @@ def get_active_image_quality_evaluator() -> ImageQualityEvaluator:
     Examples
     --------
     # Default usage
-    evaluator = get_active_image_quality_evaluator()  # BRISQUE instance
+    evaluator = get_active_image_quality_evaluator()  # BRISQUE instance or None
     
-    # With custom settings (e.g., 'image_quality_evaluator': 'custom' in profile)
-    score = evaluator.evaluate("/path/to/img.jpg")  # Normalized higher-better score
+    # With custom settings (e.g., 'image_quality_evaluator': 'none' in profile)
+    if evaluator is None:
+        print("Quality evaluation disabled")
+    else:
+        score = evaluator.evaluate("/path/to/img.jpg")  # Normalized higher-better score
     
     # Fallback logging (if settings has invalid key)
     # Logs: "Invalid evaluator 'invalid_key'; falling back to 'brisque'"
@@ -97,11 +102,16 @@ def get_active_image_quality_evaluator() -> ImageQualityEvaluator:
                 _logger.warning("Settings 'image_quality_evaluator' is not a string; using default 'brisque'")
                 key = "brisque"
 
-        # Step 3: Resolve and instantiate
+        # Step 3: Handle 'none' specially
+        if key == "none":
+            _logger.debug("Image quality evaluation disabled ('none' selected)")
+            return None
+
+        # Step 4: Resolve and instantiate
         evaluator_class = ImageQualityEvaluatorRegistry.get_evaluator_class(key)
         evaluator = evaluator_class()  # Assumes no-args constructor; extend if params needed
 
-        # Step 4: Log selection
+        # Step 5: Log selection
         _logger.debug(f"Selected image quality evaluator: '{key}' ({evaluator_class.__name__})")
 
         return evaluator
@@ -127,31 +137,32 @@ def get_active_image_quality_evaluator() -> ImageQualityEvaluator:
             raise ImageQualityProviderError(f"Critical failure in provider; cannot instantiate any evaluator: {fallback_e}") from fallback_e
 
 
-def set_active_evaluator(key: str) -> ImageQualityEvaluator:
+def set_active_evaluator(key: str) -> Optional[ImageQualityEvaluator]:
     """Set the active image quality evaluator by updating settings and return the new instance.
 
     This function:
-    1. Validates the key against the registry.
-    2. Updates the active profile settings with the new key.
-    3. Instantiates and returns the evaluator.
-    4. Logs the change.
+    1. Handles 'none' specially by updating settings without instantiation.
+    2. Validates the key against the registry for non-'none' keys.
+    3. Updates the active profile settings with the new key.
+    4. Instantiates and returns the evaluator (or None for 'none').
+    5. Logs the change.
 
-    If the key is invalid, raises ValueError. If settings update fails, rolls back and raises.
+    If the key is invalid (non-'none' and unregistered), raises ValueError. If settings update fails, rolls back and raises.
 
     Parameters
     ----------
     key : str
-        The evaluator key to set (e.g., 'brisque', 'custom'). Must be registered.
+        The evaluator key to set (e.g., 'none', 'brisque', 'custom'). 'none' disables evaluation.
 
     Returns
     -------
-    ImageQualityEvaluator
-        The newly instantiated evaluator for the set key.
+    Optional[ImageQualityEvaluator]
+        The newly instantiated evaluator for the set key, or None if 'none' selected.
 
     Raises
     ------
     ValueError
-        If the key is unknown (not registered).
+        If the key is unknown (not registered and not 'none').
     ImageQualityProviderError
         If settings update or instantiation fails.
     RuntimeError
@@ -162,11 +173,14 @@ def set_active_evaluator(key: str) -> ImageQualityEvaluator:
     # Switch to a registered evaluator
     evaluator = set_active_evaluator("brisque")  # Updates settings, returns BRISQUE
 
+    # Disable evaluation
+    evaluator = set_active_evaluator("none")  # Updates settings, returns None
+
     # Error on unknown key
     try:
         set_active_evaluator("unknown")
     except ValueError as e:
-        # e.message: "Unknown image quality evaluator: 'unknown'"
+        # e.message: "Invalid evaluator key 'unknown'; must be registered"
         pass
 
     Notes
@@ -175,7 +189,34 @@ def set_active_evaluator(key: str) -> ImageQualityEvaluator:
     - If no active profile exists, creates a default one first.
     - Subsequent calls to get_active_image_quality_evaluator() will use the new setting.
     """
-    # Step 1: Validate key
+    # Step 1: Handle 'none' specially
+    if key == "none":
+        try:
+            # Update settings without instantiation
+            from pk_py_lib.core.settings_profiles import SettingsProfilesManager, DatabaseManager
+            db = DatabaseManager()
+            mgr = SettingsProfilesManager(db)
+            active_profile = mgr.get_active_profile()
+            if active_profile is None:
+                # Ensure default profile exists
+                active_profile = mgr.ensure_default_profile()
+
+            # Update json_data with 'none' (assumes JSON format; migrates if legacy)
+            if not active_profile.is_json_format():
+                # Migrate legacy to JSON if needed
+                active_profile = mgr.migrate_to_json_format(active_profile.id)
+
+            settings = active_profile.json_data.copy()
+            settings["image_quality_evaluator"] = "none"
+            mgr.update_structured_profile(active_profile.id, settings)
+
+            _logger.info(f"Disabled image quality evaluation ('none'); updated profile {active_profile.id}")
+            return None
+        except Exception as e:
+            _logger.error(f"Failed to update settings for evaluator 'none': {e}", exc_info=True)
+            raise ImageQualityProviderError(f"Settings update failed for key 'none': {e}") from e
+
+    # Step 2: Validate key for non-'none'
     try:
         evaluator_class = ImageQualityEvaluatorRegistry.get_evaluator_class(key)
     except ValueError as e:
@@ -183,7 +224,7 @@ def set_active_evaluator(key: str) -> ImageQualityEvaluator:
         raise ValueError(f"Invalid evaluator key '{key}'; must be registered") from e
 
     try:
-        # Step 2: Update settings (this handles profile creation if needed)
+        # Step 3: Update settings (this handles profile creation if needed)
         from pk_py_lib.core.settings_profiles import SettingsProfilesManager, DatabaseManager
         db = DatabaseManager()
         mgr = SettingsProfilesManager(db)
@@ -201,7 +242,7 @@ def set_active_evaluator(key: str) -> ImageQualityEvaluator:
         settings["image_quality_evaluator"] = key
         mgr.update_structured_profile(active_profile.id, settings)
 
-        # Step 3: Instantiate and return
+        # Step 4: Instantiate and return
         evaluator = evaluator_class()
         _logger.info(f"Set active image quality evaluator to '{key}' ({evaluator_class.__name__}); updated profile {active_profile.id}")
 

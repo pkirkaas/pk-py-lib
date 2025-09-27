@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.pk_py_lib.core.database import DatabaseManager
+from src.pk_py_lib.core.image import get_active_image_quality_evaluator
 from src.pk_py_lib.core.image.similarity import (
     find_similar_images,
     get_image_metadata,
@@ -89,11 +90,13 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
 
     Notes
     -----
-    * Deletion requests invoke the base dialog’s safe deletion workflow, moving
+    * Deletion requests invoke the base dialog's safe deletion workflow, moving
       selected files to the platform recycle bin so the operation remains reversible.
     * When a database manager is provided the **Compute Groups** button will query the
       cache database for perceptual hashes and recompute clusters with the selected
       algorithm and threshold.
+    * The Quality column shows normalized score (e.g., 74.5) if BRISQUE selected; '-' otherwise.
+      Scores are computed on-the-fly using the active evaluator from settings profiles.
     """
 
     _DEFAULT_ALGORITHMS: Tuple[str, str] = ("phash", "whash")
@@ -196,6 +199,17 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         self._threshold_spin.setValue(default_threshold)
         layout.addWidget(self._threshold_spin)
 
+        layout.addSpacing(12)
+        quality_label = QLabel("Image Quality Evaluator:", controls_widget)
+        quality_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(quality_label)
+
+        self._quality_combo = QComboBox(controls_widget)
+        self._quality_combo.addItem("None", "none")
+        self._quality_combo.addItem("BRISQUE", "brisque")
+        self._quality_combo.currentTextChanged.connect(self._on_quality_changed)
+        layout.addWidget(self._quality_combo)
+
         self._compute_button = QPushButton("Compute Groups", controls_widget)
         self._compute_button.clicked.connect(self._on_compute_clicked)
         layout.addWidget(self._compute_button)
@@ -207,6 +221,18 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         layout.addStretch(1)
 
         self._apply_direction_to_combo(PoolDirection.ALL)
+
+        # Load initial quality evaluator selection
+        from src.pk_py_lib.core.settings_profiles import get_active_profile_settings
+        try:
+            settings = get_active_profile_settings()
+            key = settings.get("image_quality_evaluator", "brisque") if isinstance(settings, dict) else "brisque"
+            text = "BRISQUE" if key == "brisque" else "None"
+            self._quality_combo.setCurrentText(text)
+        except Exception:
+            # Fallback to default
+            self._quality_combo.setCurrentText("BRISQUE")
+
         return controls_widget
 
     def _build_content_area(self, parent_layout: QVBoxLayout) -> None:
@@ -325,6 +351,22 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         algorithm = self._algorithm_combo.currentData()
         default = self._DEFAULT_THRESHOLDS.get(str(algorithm), self._threshold_spin.value())
         self._threshold_spin.setValue(default)
+
+    def _on_quality_changed(self, text: str) -> None:
+        """Handle image quality evaluator selection change."""
+        from src.pk_py_lib.core.image.quality.provider import set_active_evaluator
+        key = "none" if text == "None" else "brisque"
+        try:
+            set_active_evaluator(key)
+            LOGGER.debug(f"Set image quality evaluator to '{key}'")
+            self._refresh_quality_scores()
+        except Exception as e:
+            LOGGER.error(f"Failed to set image quality evaluator '{key}': {e}")
+            # Revert to previous selection on error
+            current_index = self._quality_combo.currentIndex()
+            self._quality_combo.blockSignals(True)
+            self._quality_combo.setCurrentIndex(current_index)
+            self._quality_combo.blockSignals(False)
 
     def _on_compute_clicked(self) -> None:
         """Compute similarity groups via database hashes."""
@@ -543,6 +585,52 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             return float(threshold) if threshold is not None else None
         except Exception:  # pylint: disable=broad-except
             return None
+
+
+    def _refresh_quality_scores(self) -> None:
+        """
+        Refresh the quality scores in the table based on the current evaluator.
+
+        Iterates over all visible tree items and recomputes quality scores using
+        the active evaluator. Displays formatted scores (e.g., "74.50") or "-" on
+        failure or when no evaluator is selected. Group-level quality remains "-"
+        for simplicity in PoC phase.
+
+        Raises:
+            No explicit raises; errors are logged and cells set to "-".
+
+        Notes:
+            Called on evaluator combo change. For efficiency in production, consider
+            caching scores in FileItem, but on-the-fly computation is used here.
+        """
+        if not self._model.groups:
+            return
+
+        tree = self._group_view.tree_widget
+        evaluator = get_active_image_quality_evaluator()
+
+        for i in range(tree.topLevelItemCount()):
+            group_item = tree.topLevelItem(i)
+            # Set group quality to average or —, but for now —
+            group_item.setText(7, "—")
+
+            for j in range(group_item.childCount()):
+                child = group_item.child(j)
+                path = child.data(0, Qt.UserRole)
+                if not isinstance(path, str):
+                    continue
+
+                if evaluator is None:
+                    child.setText(7, "—")
+                    continue
+
+                try:
+                    score = evaluator.evaluate(path)
+                    child.setText(7, f"{score:.2f}")
+                    LOGGER.info(f"Quality score {score} for {path}")
+                except Exception as e:
+                    LOGGER.warning(f"Failed to compute quality for {path}: {e}")
+                    child.setText(7, "—")
 
 
 # Mapping used for direction combo labels (shared between duplicates/similarity)

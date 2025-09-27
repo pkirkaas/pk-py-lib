@@ -90,6 +90,11 @@ class FileGroupView(QWidget):
     rely solely on Qt's default styling to avoid the maintenance burden of custom
     delegates.
 
+    In similarity mode, includes a "Quality" column displaying computed image quality
+    scores (float, higher better) using the active evaluator; shows "-" if none selected
+    or on error. Scores are computed on-the-fly during population and refreshed on
+    evaluator changes.
+
     Args:
         selection_store: Shared selection store used across dialogs.
         display_mode: ``"duplicates"`` for metadata-only layout or ``"similarity"``
@@ -267,6 +272,7 @@ class FileGroupView(QWidget):
                 "Resolution",
                 "Modified",
                 "Score",
+                "Quality",
             ]
             hidden_columns = set()
 
@@ -322,17 +328,20 @@ class FileGroupView(QWidget):
         group_item.setText(3, _format_bytes(group.stats.total_size))
         if self._display_mode == "duplicates":
             group_item.setText(5, _format_bytes(group.stats.savings))
+            group_item.setText(6, "—")
+            group_item.setText(7, "—")
         else:
             if group.stats.avg_score:
                 group_item.setText(6, f"{group.stats.avg_score * 100:.1f}%")
             else:
                 group_item.setText(6, "—")
+            group_item.setText(7, "—")
 
         group_item.setData(0, Qt.UserRole, group.ref_path)
         group_item.setFlags(Qt.ItemIsEnabled)
         for column in range(self.tree_widget.columnCount()):
             group_item.setFont(column, font)
-            if column in (3, 5, 6):
+            if column in (3, 5, 6, 7):
                 group_item.setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
             else:
                 group_item.setTextAlignment(column, Qt.AlignLeft | Qt.AlignVCenter)
@@ -341,6 +350,10 @@ class FileGroupView(QWidget):
     def _build_file_item(self, file_item: FileItem) -> QTreeWidgetItem:
         """
         Create a child row for the provided file.
+
+        In similarity mode, computes and sets the quality score in the last column
+        using the active image quality evaluator. Displays formatted score (e.g., "74.50")
+        or "-" on error or no evaluator. Aligns quality right for numeric display.
 
         Args:
             file_item: Immutable file metadata used to populate the row.
@@ -361,6 +374,7 @@ class FileGroupView(QWidget):
             tree_item.setText(4, file_type_value.upper() if file_type_value else "—")
             tree_item.setText(5, _format_bytes(file_item.savings))
             tree_item.setText(6, "100.0%")
+            tree_item.setText(7, "—")
         else:
             tree_item.setText(4, file_item.resolution or "—")
             tree_item.setText(5, file_item.mod_date or "—")
@@ -369,9 +383,27 @@ class FileGroupView(QWidget):
             else:
                 tree_item.setText(6, "—")
 
+            # Compute quality score
+            quality_text = "—"
+            try:
+                from src.pk_py_lib.core.image import get_active_image_quality_evaluator
+                evaluator = get_active_image_quality_evaluator()
+                if evaluator is not None:
+                    score = evaluator.evaluate(file_item.path)
+                    quality_text = f"{score:.2f}"
+                    logger.debug(f"Quality score {score:.2f} for {file_item.path}")
+                else:
+                    quality_text = "—"
+            except Exception as e:
+                logger.warning(f"Failed to compute quality for {file_item.path}: {e}")
+                quality_text = "—"
+            tree_item.setText(7, quality_text)
+
         tooltip = f"{file_item.path}\nSize: {_format_bytes(file_item.size)}"
         for column in range(self.tree_widget.columnCount()):
             tree_item.setTextAlignment(column, Qt.AlignLeft | Qt.AlignVCenter)
+            if column == 7:
+                tree_item.setTextAlignment(7, Qt.AlignRight | Qt.AlignVCenter)
             tree_item.setToolTip(column, tooltip)
 
         tree_item.setFlags(
@@ -657,7 +689,7 @@ class SimilarityPreviewPane(QWidget):
             label.setPixmap(cached)
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning(
-                "Failed to render preview for %s: %s", file_item.path, exc, exc_info=exc
+                f"Failed to render preview for {file_item.path}: {exc}", exc_info=exc
             )
             label.setText("Preview error")
         return label

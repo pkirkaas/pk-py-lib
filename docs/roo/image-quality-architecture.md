@@ -140,6 +140,33 @@ sequenceDiagram
    - Expose new selector via future GUI work; design ensures JSON payload already includes the field.
    - Provide API docs update referencing `[docs/roo/img-app-api-specifications.md](docs/roo/img-app-api-specifications.md:1543)` in subsequent documentation tasks.
 
+## GUI Integration
+
+### Quality Column in Similarity Results Table
+
+The image quality evaluator integrates with the Similarity Manager dialog in `img_app` by adding a "Quality" column to the results table. This column displays the computed quality score for each image when an evaluator (e.g., BRISQUE) is active; otherwise, it shows "-".
+
+**Feature Description:**
+- Located as the last column in similarity mode (after "Score").
+- Right-aligned for numeric display.
+- Group rows show "-" (no aggregate quality computed in PoC).
+- Individual image rows compute scores on-the-fly using `get_active_image_quality_evaluator().evaluate(path)`.
+
+**Computation Logic:**
+- During table population (`_build_file_item` in [`FileGroupView`](src/pk_py_lib/gui/widgets.py:84)), fetch the active evaluator.
+- If evaluator is None, set cell to "-".
+- Else, try `evaluator.evaluate(image_path)`; format as "{score:.2f}".
+- Catch exceptions (e.g., [`ImageQualityError`](src/pk_py_lib/core/image/quality/exceptions.py:1)), log warning, set to "-".
+- On evaluator change (combo selection), call `_refresh_quality_scores()` in [`SimilarityManagerDialog`](img_app/img_app/widgets/similarity_manager.py:61) to iterate visible rows and recompute/update cells.
+
+**Display and Error Handling:**
+- Scores are normalized floats (higher better, e.g., 74.50 for BRISQUE).
+- Errors/tooltips show path; selectable text per guidelines.
+- Logging: INFO for successful scores, WARNING for failures with path and exception.
+- Edge cases: Invalid paths during refresh → "-", no scan results → empty table, mid-scan changes → refresh disabled.
+
+This integration keeps computation simple (no caching) for PoC, with full error reporting to console/logs.
+
 ## Error Handling Strategy
 
 - `ImageQualityInputError`: raised when `path` does not exist, is unreadable, or fails OpenCV loading.

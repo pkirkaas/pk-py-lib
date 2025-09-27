@@ -128,8 +128,8 @@ SETTINGS_PROFILE_SCHEMA = {
         "image_quality_evaluator": {
             "type": "string",
             "default": "brisque",
-            "enum": ["brisque"],
-            "description": "The active image quality evaluator to use (e.g., 'brisque' for BRISQUE-based scoring). Scores are normalized such that higher floats indicate higher quality."
+            "enum": ["none", "brisque"],
+            "description": "The active image quality evaluator to use. Options: 'none' (disables quality evaluation), 'brisque' (BRISQUE-based scoring). Scores are normalized such that higher floats indicate higher quality when enabled."
         }
     },
 
