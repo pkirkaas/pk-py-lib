@@ -51,10 +51,11 @@ This document defines the architecture for a pluggable image quality evaluation 
     - `[class ImageQualityComputationError](src/pk_py_lib/core/image/quality/exceptions.py:50)` wrapping OpenCV failures.
     - `[class ImageQualityNotSupportedError](src/pk_py_lib/core/image/quality/exceptions.py:65)` for unknown evaluator keys.
 
-- `[class BRISQUEImageQualityEvaluator](src/pk_py_lib/core/image/quality/brisque.py:1)`  
-  - Loads OpenCV's default BRISQUE model and range files lazily via `cv2.samples.findFile`.
-  - Validates image readability with `cv2.imread(path, cv2.IMREAD_GRAYSCALE)`.
-  - Computes BRISQUE score via `cv2.quality.QualityBRISQUE_compute`.
+- `[class BRISQUEImageQualityEvaluator](src/pk_py_lib/core/image/quality/brisque.py:1)`
+  - Implements robust asset management to ensure the required BRISQUE SVM model (`brisque_model_live.yml`) and range file (`brisque_range_live.yml`) are present and valid.
+  - Automatically downloads and repairs corrupted or missing assets from the official OpenCV repository if necessary.
+  - If asset repair fails, it logs a critical error and falls back to using Laplacian variance (sharpness) for quality assessment.
+  - Computes BRISQUE score via `cv2.quality.QualityBRISQUE_create` and `compute`.
   - Uses `[get_logger](src/pk_py_lib/core/logging/logger.py:388)` for traceability.
 
 - `[class ImageQualityEvaluatorRegistry](src/pk_py_lib/core/image/quality/registry.py:1)`  
@@ -183,24 +184,29 @@ This integration keeps computation simple (no caching) for PoC, with full error 
 
 ## BRISQUE Evaluator Workflow
 
-1. **Model Discovery**  
-   - Use `cv2.samples.findFile("qualitymodels/BRISQUE_model_live.yml", required=False)` and similar for range file.
-   - Validate both paths; raise `ImageQualityModelError` with instructions to reinstall `opencv-contrib-python` if absent.
+1. **Asset Management and Repair**
+   - The evaluator uses internal utility functions (`_ensure_asset`) to check for the presence and integrity of `brisque_model_live.yml` and `brisque_range_live.yml` in the local `models/` directory.
+   - If an asset is missing or appears corrupted (e.g., contains HTML content from a failed download, or is too small), the evaluator attempts to automatically download the official files from the OpenCV GitHub repository.
+   - If the repair succeeds, an `INFO` message is logged. If the repair fails, a `RuntimeError` is raised, which is caught during initialization.
 
-2. **Engine Initialization**  
-   - Lazily load `cv2.quality.QualityBRISQUE_load` inside a locked section to ensure thread safety.
-   - Cache engine instance for subsequent evaluations; optionally refresh if model files change (future improvement).
+2. **Engine Initialization**
+   - The `[class BRISQUEImageQualityEvaluator](src/pk_py_lib/core/image/quality/brisque.py:1)` constructor attempts to initialize `cv2.quality.QualityBRISQUE_create` using the validated local model paths.
+   - If initialization fails (e.g., due to an OpenCV error like "Input file is invalid" even after repair), a detailed `ERROR` is logged with traceback, and the evaluator instance falls back to `None`, triggering Laplacian variance fallback during evaluation.
 
-3. **Evaluation Steps**  
-   - Validate input path; raise `ImageQualityInputError` on failure.
-   - Load grayscale image via `cv2.imread(path, cv2.IMREAD_GRAYSCALE)`; log metadata.
-   - Compute score `score = cv2.quality.QualityBRISQUE_compute(image, model_path, range_path)[0]`.
-   - Return `float(score)`, ensuring lower values denote better quality (per BRISQUE semantics).
+3. **Evaluation Steps**
+   - Validate input path; raise `ImageQualityFileError` on failure.
+   - Load image via `cv2.imread(path, cv2.IMREAD_COLOR)`.
+   - If BRISQUE engine is active:
+     - Compute score `score, *args = self.brisque.compute(image)`. The score is extracted as a float, handling potential tuple wrapping inconsistencies in OpenCV bindings.
+     - Normalize score: `100.0 - raw_score`, clamped to [0.0, 100.0].
+   - If BRISQUE engine is inactive (fallback):
+     - Compute Laplacian variance on grayscale image.
+     - Normalize variance empirically to a 0-100 scale.
+   - Return normalized score (higher = better quality).
 
-4. **Edge Cases**  
-   - Empty or corrupted images → error.
-   - Non-image files (cv2.imread returning `None`) → input error.
-   - OpenCV runtime errors (bad model) → computation error.
+4. **Error Handling**
+   - All initialization failures are logged as `ERROR` with full traceback.
+   - Computation failures (e.g., during `compute`) are logged as `WARNING` and trigger the Laplacian fallback.
 
 ## Code Skeletons
 

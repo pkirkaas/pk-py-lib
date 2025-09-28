@@ -25,11 +25,183 @@ Raises:
 import os
 import cv2
 import numpy as np
+import textwrap
 from typing import Optional
+from urllib.request import urlopen
+from urllib.error import URLError, HTTPError
 
 from pk_py_lib.core.image.quality.base import ImageQualityEvaluator
 from pk_py_lib.core.image.quality.exceptions import ImageQualityFileError, ImageQualityComputationError
 from pk_py_lib.core.logging import get_logger
+
+
+_BRISQUE_MODEL_FILENAME = "brisque_model_live.yml"
+_BRISQUE_RANGE_FILENAME = "brisque_range_live.yml"
+_BRISQUE_MODEL_URL = "https://raw.githubusercontent.com/opencv/opencv_extra/4.x/testdata/cv/quality/brisque_model_live.yml"
+_BRISQUE_RANGE_URL = "https://raw.githubusercontent.com/opencv/opencv_extra/4.x/testdata/cv/quality/brisque_range_live.yml"
+_SIGNATURE_PREVIEW_BYTES = 96
+_MIN_VALID_BYTES = 512
+
+
+def _read_signature_preview(path: str, preview_bytes: int = _SIGNATURE_PREVIEW_BYTES) -> str:
+    """
+    Read a short ASCII preview of the file contents for diagnostic logging.
+
+    Parameters
+    ----------
+    path : str
+        Path to the file whose signature should be read.
+    preview_bytes : int
+        Number of bytes to read from the file head.
+
+    Returns
+    -------
+    str
+        ASCII-safe preview string with whitespace condensed for logs.
+    """
+    try:
+        with open(path, "rb") as handle:
+            snippet = handle.read(preview_bytes)
+        sanitized = snippet.decode("ascii", errors="replace")
+        sanitized = sanitized.replace("\r", "\\r").replace("\n", "\\n")
+        return textwrap.shorten(sanitized, width=preview_bytes, placeholder="…")
+    except Exception as exc:  # pragma: no cover - purely diagnostic
+        return f"<error reading signature: {exc}>"
+
+
+def _is_suspect_asset(path: str, signature: str, min_bytes: int = _MIN_VALID_BYTES) -> bool:
+    """
+    Determine whether the on-disk asset appears invalid or corrupted.
+
+    Parameters
+    ----------
+    path : str
+        Absolute path to the asset.
+    signature : str
+        Preview signature obtained from `_read_signature_preview`.
+    min_bytes : int
+        Minimum acceptable file size in bytes.
+
+    Returns
+    -------
+    bool
+        True if the asset looks invalid and should be repaired.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return True
+
+    if size < min_bytes:
+        return True
+
+    lowered = signature.lower()
+    if "404" in lowered or "not found" in lowered or "<html" in lowered:
+        return True
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+            first_line = handle.readline().strip()
+    except OSError:
+        return True
+
+    return not first_line.startswith("%YAML")
+
+
+def _download_asset(destination: str, url: str) -> None:
+    """
+    Download the BRISQUE asset from the official OpenCV repository.
+
+    Parameters
+    ----------
+    destination : str
+        Destination path for the downloaded file.
+    url : str
+        Remote URL for the asset.
+
+    Raises
+    ------
+    RuntimeError
+        If the download fails or returns empty content.
+    """
+    try:
+        with urlopen(url) as response:
+            content = response.read()
+    except HTTPError as exc:
+        raise RuntimeError(f"HTTP error {exc.code} while downloading {url}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Failed to reach {url}: {exc.reason}") from exc
+    except Exception as exc:  # pragma: no cover - defensive
+        raise RuntimeError(f"Unexpected error while downloading {url}: {exc}") from exc
+
+    if not content:
+        raise RuntimeError(f"Downloaded zero bytes from {url}")
+
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    with open(destination, "wb") as handle:
+        handle.write(content)
+
+
+def _ensure_asset(directory: str, filename: str, url: str, logger) -> str:
+    """
+    Ensure that a BRISQUE asset exists and is valid, repairing it if necessary.
+
+    Parameters
+    ----------
+    directory : str
+        Target directory containing the model assets.
+    filename : str
+        Name of the asset file.
+    url : str
+        Remote source URL for automatic repair.
+    logger :
+        Project logger instance for diagnostics.
+
+    Returns
+    -------
+    str
+        Absolute path to the validated asset.
+
+    Raises
+    ------
+    RuntimeError
+        If the asset cannot be downloaded or repaired.
+    """
+    os.makedirs(directory, exist_ok=True)
+    asset_path = os.path.join(directory, filename)
+    needs_repair = False
+
+    if os.path.exists(asset_path):
+        signature = _read_signature_preview(asset_path)
+        size = os.path.getsize(asset_path)
+        logger.debug(
+            f"BRISQUE asset diagnostics: path={asset_path} size={size} signature='{signature}'"
+        )
+        if _is_suspect_asset(asset_path, signature):
+            logger.warning(
+                f"Detected invalid BRISQUE asset at {asset_path} (size={size}, signature='{signature}'); "
+                f"attempting repair via {url}"
+            )
+            needs_repair = True
+    else:
+        logger.warning(
+            f"BRISQUE asset missing: {asset_path}. Attempting to download from {url}"
+        )
+        needs_repair = True
+
+    if needs_repair:
+        _download_asset(asset_path, url)
+        signature = _read_signature_preview(asset_path)
+        size = os.path.getsize(asset_path)
+        if _is_suspect_asset(asset_path, signature):
+            raise RuntimeError(
+                f"Asset {asset_path} remains invalid after download (size={size}, signature='{signature}')"
+            )
+        logger.info(
+            f"Repaired BRISQUE asset at {asset_path} (size={size}, signature='{signature}')"
+        )
+
+    return asset_path
 
 
 class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
@@ -55,36 +227,46 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
 
     def __init__(self):
         """
-        Initialize the BRISQUE evaluator with bundled SVM model.
+        Initialize the BRISQUE evaluator with validated bundled model assets.
 
-        Loads brisque_model_live.yml from models/ using cv2.ml.SVM_load, then creates
-        QualityBRISQUE_create(svm, 100.0) (LIVE range).
-        If file missing or load fails, sets fallback to Laplacian.
-        Logs the mode used.
+        Ensures both brisque_model_live.yml and brisque_range_live.yml are present and valid.
+        Automatically repairs corrupted assets by downloading the official OpenCV copies
+        from the opencv_extra repository if they are missing or appear corrupted (e.g., HTML content).
+        
+        Creates the BRISQUE evaluator using the file-path overload to leverage OpenCV's
+        native parsing of the SVM and range data. Falls back to Laplacian variance if any
+        step fails despite repair attempts, with detailed error logging including traceback.
         """
         self.logger = get_logger(__name__)
         self.brisque = None
-        model_dir = os.path.join(os.path.dirname(__file__), 'models')
-        model_path = os.path.join(model_dir, 'brisque_model_live.yml')
+        model_dir = os.path.join(os.path.dirname(__file__), "models")
 
-        if os.path.exists(model_path):
-            try:
-                # Load SVM model from YML file
-                svm = cv2.ml.SVM_load(model_path)
-                if svm is None:
-                    raise ValueError(f"Failed to load SVM from {model_path}.")
-
-                # Create QualityBRISQUE with loaded SVM and LIVE range (100.0)
-                self.brisque = cv2.quality.QualityBRISQUE_create(svm, 100.0)
-                self.logger.debug("BRISQUE evaluator initialized with bundled SVM model.")
-            except Exception as e:
-                self.logger.warning(f"Failed to load bundled BRISQUE SVM model {model_path}: {str(e)}. Falling back to Laplacian.")
-                self.brisque = None
-        else:
-            self.logger.warning(
-                f"BRISQUE model file missing: {model_path}. "
-                "Download from https://github.com/opencv/opencv_contrib/blob/master/modules/quality/src/brisque_model_live.yml. "
-                "Falling back to Laplacian variance."
+        try:
+            model_path = _ensure_asset(
+                model_dir,
+                _BRISQUE_MODEL_FILENAME,
+                _BRISQUE_MODEL_URL,
+                self.logger,
+            )
+            range_path = _ensure_asset(
+                model_dir,
+                _BRISQUE_RANGE_FILENAME,
+                _BRISQUE_RANGE_URL,
+                self.logger,
+            )
+            self.logger.debug(
+                f"Initializing QualityBRISQUE with model='{model_path}' range='{range_path}'"
+            )
+            self.brisque = cv2.quality.QualityBRISQUE_create(model_path, range_path)
+            self.logger.info(
+                "BRISQUE evaluator initialized successfully with bundled assets."
+            )
+        except Exception as exc:
+            # Log the failure with full traceback for detailed diagnostics
+            self.logger.error(
+                "Failed to initialize BRISQUE evaluator. Falling back to Laplacian variance.",
+                exception=exc,
+                exc_info=True
             )
             self.brisque = None
 
@@ -126,7 +308,18 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
 
         if self.brisque is not None:
             try:
-                raw_score = self.brisque.compute(image)
+                # OpenCV's QualityBRISQUE.compute() returns (score, features, ...).
+                # Score can be a float or a 1-element sequence (tuple/list/ndarray).
+                result = self.brisque.compute(image)
+                
+                # Extract the score component (first element of the result tuple)
+                raw_score = result[0]
+                
+                # If the score component is a sequence (e.g., (score,)), extract the scalar value
+                if isinstance(raw_score, (list, tuple, np.ndarray)):
+                    raw_score = raw_score[0]
+                
+                # Ensure final score is a float
                 raw_score = float(raw_score)
                 normalized = max(0.0, min(100.0, 100.0 - raw_score))
                 self.logger.debug(f"BRISQUE raw: {raw_score:.2f}, normalized: {normalized:.2f} for {path}")
