@@ -79,6 +79,8 @@ class StructuredProfileEditorWidget(QWidget):
     - load_profile(profile: dict)
     - is_dirty() -> bool
     - gather_changes() -> dict
+    - get_profile_data() -> dict
+    - set_dirty(dirty: bool)
     - reset_dirty()
     """
 
@@ -674,6 +676,17 @@ class StructuredProfileEditorWidget(QWidget):
         """Return True if there are unsaved changes."""
         return self._dirty
 
+    def set_dirty(self, dirty: bool) -> None:
+        """
+        Set the dirty state explicitly.
+        
+        Parameters
+        ----------
+        dirty : bool
+            The new dirty state.
+        """
+        self._set_dirty(dirty)
+
     def reset_dirty(self) -> None:
         """Reset dirty state."""
         self._original_profile = self._current_profile.copy()
@@ -683,6 +696,18 @@ class StructuredProfileEditorWidget(QWidget):
         """Return the current profile data for saving."""
         # Include generated/schema-required fields so downstream API has a complete payload
         return self._get_complete_profile(for_validation=False)
+
+    def get_profile_data(self) -> Dict[str, Any]:
+        """
+        Return the current profile data for saving. Alias for gather_changes().
+        
+        Returns
+        -------
+        Dict[str, Any]
+            Complete profile dictionary ready for saving.
+        """
+        return self.gather_changes()
+
     def get_validation_status(self) -> Tuple[bool, list]:
         """
         Return schema validation status and errors for the current form state.

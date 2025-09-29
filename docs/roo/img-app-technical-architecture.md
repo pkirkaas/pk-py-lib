@@ -76,6 +76,7 @@ class ApplicationManager:
         self.config_manager: ConfigurationManager
         self.database_manager: DatabaseManager
         self.cache_manager: CacheManager
+        self.flat_cache_manager: Optional[FlatCacheManager] = None
         self.processing_engine: ProcessingEngine
         self.profile_manager: ProfileManager
         self.event_bus: EventBus
@@ -105,11 +106,21 @@ class ApplicationManager:
         self.config_manager = ConfigurationManager(self.database_manager)
         app_settings = self.config_manager.get_app_settings()
         
-        # Initialize cache with configured size
+        # Initialize transient cache with configured size
         self.cache_manager = CacheManager(
             self.data_locations.cache_dir,
             max_size_mb=app_settings.cache_size_mb
         )
+        
+        # Initialize persistent flat cache if enabled in active profile
+        active_profile = self.profile_manager.get_active_profile().json_data
+        if active_profile.get("use_flat_cache", False):
+            from pk_py_lib.core.flat_cache import FlatCacheManager
+            self.flat_cache_manager = FlatCacheManager(
+                db_path=self.data_locations.flat_cache_db
+            )
+        else:
+            self.flat_cache_manager = None
         
     def startup_validation(self) -> ValidationResult:
         """Perform comprehensive startup validation.
@@ -150,6 +161,7 @@ class DataLocations:
         self.settings_db = self.data_dir / "settings.db"
         self.sessions_db = self.data_dir / "sessions.db"
         self.cache_db = self.cache_dir / "cache.db"
+        self.flat_cache_db = self.data_dir / "flat_cache.db" # Persistent cache location
         self.backups_dir = self.data_dir / "backups"
         self.thumbnails_dir = self.cache_dir / "thumbnails"
         
@@ -159,6 +171,34 @@ class DataLocations:
         self.backups_dir.mkdir(exist_ok=True)
         self.thumbnails_dir.mkdir(exist_ok=True)
 ```
+
+#### 2.1.2 Data Directory Structure
+
+All runtime data, configuration, caches, and logs are stored in a unified, cross-platform data directory managed by `platformdirs`.
+
+The base directory is determined by `platformdirs.user_data_dir("pk_py_lib", "Pk")`.
+
+**Override:** The base directory can be overridden by setting the environment variable `PK_PY_LIB_HOME`. If set, the application uses this path directly.
+
+**Cross-Platform Examples (Base Directory):**
+
+| OS | Example Path |
+| :--- | :--- |
+| Windows 10/11 | `C:\Users\&lt;User&gt;\AppData\Local\Pk\pk_py_lib` |
+| Linux (XDG) | `~/.local/share/pk_py_lib` |
+| macOS | `~/Library/Application Support/pk_py_lib` |
+
+**Runtime Files and Directories (Relative to Base Directory):**
+
+| Path | Purpose | Persistence |
+| :--- | :--- | :--- |
+| `settings.db` | Primary database for application settings, profiles, and global configuration. | Persistent |
+| `sessions.db` | Database storing scan session history, results, and operation history. | Persistent |
+| `cache.db` | Transient database for image metadata, similarity hashes, and thumbnail references. Subject to size limits and eviction. | Transient |
+| `flat_cache.db` | Persistent cache for computed, file-stat validated metadata (e.g., perceptual hashes, quality scores). | Persistent |
+| `logs/` | Directory for application log files, including terminal invocation logs. | Persistent |
+| `backups/` | Directory for database backups created before schema migrations. | Persistent |
+| `thumbnails/` | Directory for file-backed thumbnail images, managed by `CacheManager`. | Transient |
 
 #### 2.1.2 Configuration Manager
 ```python
@@ -661,11 +701,14 @@ CREATE TABLE similarity_cache (
 );
 ```
 
-#### 2.3.3 Cache Manager
+#### 2.3.3 Cache Manager (Legacy/Transient)
 ```python
 class CacheManager:
     """
-    Manages thumbnail and result caching with size limits.
+    Manages thumbnail and transient result caching with size limits.
+    
+    This manager handles in-memory and file-backed transient data (e.g., thumbnails,
+    temporary hashes). It is distinct from the persistent FlatCacheManager.
     
     Features:
     - File-backed thumbnail storage
@@ -746,6 +789,24 @@ class CacheManager:
         - mtime_ns changed
         - inode changed (where available)
         """
+```
+
+#### 2.3.4 Flat Cache Manager (Persistent Metadata)
+
+The Flat Cache Manager (`[class FlatCacheManager](src/pk_py_lib/core/flat_cache.py:149)`) provides a persistent, file-stat validated cache for computed file metadata, specifically hashes (perceptual and content) and image quality scores.
+ 
+This cache is now **enabled by default** via the `use_flat_cache` setting in the active profile. Core processing functions (e.g., similarity and quality evaluation) prioritize lookup and storage in the Flat Cache over transient caching mechanisms.
+
+**Key Features:**
+- **Unified Storage**: Stores all computed hashes and quality scores in a single SQLite database (`flat_cache.db`).
+- **Validation**: Entries are validated against file size, modification date, inode, and device ID to ensure freshness.
+- **Concurrency**: Uses SQLite WAL mode for improved read/write concurrency.
+- **Cleanup**: Supports automatic cleanup of old/stale entries.
+
+**Integration:**
+- The `FlatCacheManager` instance is initialized by the `ApplicationManager` if the active profile enables `use_flat_cache`.
+- It is passed as an optional parameter (`flat_cache_manager: Optional[FlatCacheManager]`) to core computation functions like `[compute_phash](src/pk_py_lib/core/image/similarity.py:239)` and `[ImageQualityEvaluator.evaluate](src/pk_py_lib/core/image/quality/base.py:75)`.
+- See [Flat Cache Implementation](docs/roo/flat-cache-implementation.md:1) for detailed schema and API documentation.
 ```
 
 ### 2.4 GUI Components (`img_app/gui/`)

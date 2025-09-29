@@ -32,6 +32,9 @@ from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerControl
 from src.pk_py_lib.core.database import DatabaseManager
 from src.pk_py_lib.core.configuration import ConfigurationManager
 from src.pk_py_lib.core.cache import CacheManager
+from src.pk_py_lib.core.flat_cache import FlatCacheManager
+from src.pk_py_lib.core.logging.logger import configure_logging, LogLevel
+from src.pk_py_lib.core import get_data_dir # Unified data directory function
 
 
 def _ensure_application(argv: Optional[list[str]] = None) -> QApplication:
@@ -92,48 +95,108 @@ def main() -> int:
     - The application now launches directly with settings management integrated into the main window.
     - Robust error handling: any fatal error during DB/API startup is shown via QMessageBox, and the app exits.
     """
-    parser = argparse.ArgumentParser(description="KDC Image Organizer")
-    parser.add_argument("-l", "--location", action="store_true", help="List all local data paths used by the application")
-    parser.add_argument("-d", "--default", action="store_true", help="Automatically run/start the last profile used when the GUI is started")
+    description = """
+KDC Image Organizer (img_app) CLI Interface
+
+This application provides a graphical user interface (GUI) for managing and organizing images.
+It also supports several command-line interface (CLI) options for diagnostics and automated startup.
+
+Usage:
+  pdm run imgapp [OPTIONS] [QT_FLAGS]
+
+Examples:
+  pdm run imgapp --help
+  pdm run imgapp --location
+  pdm run imgapp --default
+"""
+    parser = argparse.ArgumentParser(
+        description=description,
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    
+    # CLI Options
+    parser.add_argument(
+        "-l",
+        "--location",
+        action="store_true",
+        help=(
+            "List all local data paths (databases, caches, logs) used by the application "
+            "and check their existence status. This flag runs in CLI mode and exits immediately. "
+            "Type: Flag (Boolean), Default: False."
+        )
+    )
+    parser.add_argument(
+        "-d",
+        "--default",
+        action="store_true",
+        help=(
+            "Automatically start the last operation/profile used when the GUI is launched. "
+            "This is useful for automated or rapid startup. "
+            "Type: Flag (Boolean), Default: False."
+        )
+    )
     args, qt_argv = parser.parse_known_args()
     
+    # --- Logging Configuration (Must happen early) ---
+    # Use the unified data directory for logs
+    DATA_DIR = get_data_dir()
+    LOG_FILE_PATH = DATA_DIR / "logs" / "img_app-terminal.log"
+    
+    try:
+        configure_logging(
+            console=True,
+            file_path=LOG_FILE_PATH,
+            level=LogLevel.INFO,
+            rich_console=True
+        )
+    except Exception as exc:
+        # Log configuration failure is critical but should not stop the app if possible
+        print(f"Warning: Failed to configure logging: {exc}", file=sys.stderr)
+
     if args.location:
         # CLI mode: initialize managers and print actual paths
         try:
-            db_mgr = DatabaseManager()
+            # Use the unified DATA_DIR for path reporting
+            data_dir = DATA_DIR.resolve()
+            
+            # Initialize DatabaseManager (uses DATA_DIR internally now)
+            db_mgr = DatabaseManager(data_dir=data_dir)
             db_mgr.initialize()
             
+            # Initialize ConfigurationManager to get cache size
             config_mgr = None
+            cache_mgr = None
             try:
                 config_mgr = ConfigurationManager(db_mgr)
-                cache_dir = db_mgr.cache_dir
                 max_mb = int(getattr(config_mgr, "get_app_setting", lambda k: 5120)("cache_size_mb") or 5120)
-                cache_mgr = CacheManager(cache_dir, max_size_mb=max_mb)
+                # CacheManager now uses data_dir/cache.db, but still needs a base dir for thumbnails
+                cache_mgr = CacheManager(db_mgr.cache_dir, max_size_mb=max_mb)
             except Exception:
-                cache_mgr = None
+                pass
             
             # Collect and print actual resolved paths with existence checks
-            data_dir = db_mgr.data_dir.resolve()
             settings_db = db_mgr.settings_db.resolve()
             cache_db = db_mgr.cache_db.resolve()
-            sessions_db = (db_mgr.data_dir / 'sessions.db').resolve()
-            backups_dir = (db_mgr.data_dir / 'backups').resolve()
-            logs_dir = (db_mgr.data_dir / 'logs').resolve()
-            img_app_log = (logs_dir / 'img_app.log').resolve()
-            pk_py_lib_log = (logs_dir / 'pk_py_lib.log').resolve()
-            cache_dir = cache_mgr.cache_dir.resolve() if cache_mgr else db_mgr.cache_dir.resolve()
-            thumbnails_dir = cache_mgr.thumb_base.resolve() if cache_mgr else (cache_dir / 'thumbnails').resolve()
+            backups_dir = (data_dir / 'backups').resolve()
+            sessions_db = (data_dir / 'sessions.db').resolve() # Assuming sessions.db is also in data_dir
+            
+            # Log file path
+            app_log = LOG_FILE_PATH.resolve()
+            
+            # Thumbnail path (CacheManager uses db_mgr.cache_dir, which is now DATA_DIR)
+            thumbnails_dir = cache_mgr.thumb_base.resolve() if cache_mgr else (data_dir / 'thumbnails').resolve()
             
             def status(path: Path):
                 return " ✓" if path.exists() else " ✗ (does not exist)"
             
-            print(f"{settings_db}{status(settings_db)}")
-            print(f"{cache_db}{status(cache_db)}")
-            print(f"{backups_dir}{status(backups_dir)}")
-            print(f"{img_app_log}{status(img_app_log)}")
-            print(f"{pk_py_lib_log}{status(pk_py_lib_log)}")
-            print(f"{thumbnails_dir}{status(thumbnails_dir)}")
-            print(f"{sessions_db}{status(sessions_db)}")  # Planned, likely ✗
+            print(f"--- Unified Data Directory ---")
+            print(f"Base Data Dir: {data_dir}{status(data_dir)}")
+            print(f"Settings DB: {settings_db}{status(settings_db)}")
+            print(f"Cache DB: {cache_db}{status(cache_db)}")
+            print(f"Backups Dir: {backups_dir}{status(backups_dir)}")
+            print(f"Log File: {app_log}{status(app_log)}")
+            print(f"Thumbnails Dir: {thumbnails_dir}{status(thumbnails_dir)}")
+            print(f"Sessions DB: {sessions_db}{status(sessions_db)}")
             sys.exit(0)
         except Exception as exc:
             print(f"Error initializing managers for --location: {exc}", file=sys.stderr)
@@ -146,6 +209,7 @@ def main() -> int:
     db_mgr = None
     config_mgr = None
     cache_mgr = None
+    flat_cache_mgr = None # Add FlatCacheManager
     controller = None # New variable for the controller
     active_profile: Optional[Dict[str, Any]] = None
     
@@ -197,6 +261,10 @@ def main() -> int:
             except Exception:
                 max_mb = 5120
             cache_mgr = CacheManager(cache_dir, max_size_mb=max_mb)
+            
+            # Initialize FlatCacheManager (uses default path: ~/.pk_py_lib/flat_cache.db)
+            flat_cache_mgr = FlatCacheManager()
+            
         except Exception as exc:
             import logging
             logging.getLogger("img_app.app").exception("Optional manager init failed: %s", exc)
@@ -218,6 +286,9 @@ def main() -> int:
         setattr(window, "configuration_manager", config_mgr)
     if cache_mgr is not None:
         setattr(window, "cache_manager", cache_mgr)
+    
+    if flat_cache_mgr is not None:
+        setattr(window, "flat_cache_manager", flat_cache_mgr)
 
     if controller is not None:
         setattr(window, "controller", controller)

@@ -13,6 +13,8 @@ import os
 from .base import ImageQualityEvaluator
 from pk_py_lib.core.image.quality.exceptions import ImageQualityComputationError
 from pk_py_lib.core.logging import get_logger
+from pk_py_lib.core.flat_cache import FlatCacheManager
+from typing import Optional
 
 
 class PIQEImageQualityEvaluator(ImageQualityEvaluator):
@@ -48,9 +50,16 @@ class PIQEImageQualityEvaluator(ImageQualityEvaluator):
             error_msg, path="N/A", original_error=NotImplementedError(error_msg)
         )
 
-    def evaluate(self, path: str) -> float:
+    def evaluate(self, path: str, flat_cache_manager: Optional[FlatCacheManager] = None) -> float:
         """
         Evaluate the quality of the image at the given path using PIQE.
+
+        Parameters
+        ----------
+        path : str
+            The absolute or relative path to the image file to evaluate.
+        flat_cache_manager : Optional[FlatCacheManager]
+            Optional FlatCacheManager instance (ignored as this is a stub).
 
         Raises
         ------
@@ -58,6 +67,7 @@ class PIQEImageQualityEvaluator(ImageQualityEvaluator):
             Always raised to indicate that this evaluator is currently disabled.
         """
         error_msg = "PIQE evaluator is currently disabled and cannot compute scores."
+        # Note: flat_cache_manager is accepted for API compatibility but ignored.
         raise ImageQualityComputationError(
             error_msg, path=path, original_error=NotImplementedError(error_msg)
         )

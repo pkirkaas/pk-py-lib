@@ -15,7 +15,6 @@ This document defines the architecture for a pluggable image quality evaluation 
 
 ## Non-Goals
 
-- Implement evaluator-specific persistence or caching (future work).
 - Deliver execution code beyond design scope; this document outlines architecture and implementation plan only.
 - Replace existing similarity or duplicate detection logic; integration points remain orthogonal.
 
@@ -246,7 +245,7 @@ class ImageQualityEvaluator(ABC):
     """Abstract base interface for all image quality evaluators."""
 
     @abstractmethod
-    def evaluate(self, path: str, *, context: Optional[ImageQualityContext] = None) -> float:
+    def evaluate(self, path: str, flat_cache_manager: Optional[FlatCacheManager] = None) -> float:
         """Compute quality score for a single image path."""
 
     def batch_evaluate(
@@ -438,9 +437,14 @@ def get_active_image_quality_evaluator(
 
 ```python
 from pk_py_lib.core.image.quality import get_active_image_quality_evaluator
+from pk_py_lib.core.flat_cache import FlatCacheManager
+from pathlib import Path
+
+# Initialize cache manager (assuming path resolution is handled elsewhere)
+flat_cache = FlatCacheManager(Path.home() / ".pk_py_lib" / "flat_cache.db")
 
 evaluator = get_active_image_quality_evaluator()
-score = evaluator.evaluate("C:/photos/example.jpg")
+score = evaluator.evaluate("C:/photos/example.jpg", flat_cache_manager=flat_cache)
 print(f"BRISQUE score: {score:.2f}")
 ```
 
@@ -469,7 +473,7 @@ This convention simplifies downstream usage (e.g., sorting images by quality) an
 from pk_py_lib.core.image.quality import get_active_image_quality_evaluator
 
 evaluator = get_active_image_quality_evaluator()
-score = evaluator.evaluate("C:/photos/example.jpg")
+score = evaluator.evaluate("C:/photos/example.jpg", flat_cache_manager=flat_cache)
 print(f"Normalized quality score: {score:.2f}")  # e.g., 74.7 (higher is better)
 ```
 
@@ -506,7 +510,15 @@ print(f"Normalized quality score: {score:.2f}")  # e.g., 74.7 (higher is better)
 
 - Future evaluators (e.g., Laplacian, SSIM) simply implement `[class ImageQualityEvaluator]` and register under new keys; schema update extends enum list.
 - Introduce runtime options via `ImageQualityContext.runtime_options` enabling per-profile configuration (e.g., Laplacian window size).
-- Consider caching evaluation results leveraging `[CacheManager](src/pk_py_lib/core/cache.py:1)` in later milestones.
+
+## Caching Integration
+
+The quality evaluation system integrates directly with the unified [`FlatCacheManager`](docs/roo/flat-cache-implementation.md:1) to ensure persistence and avoid redundant computation.
+
+1.  **Cache Dependency**: The `[def evaluate](src/pk_py_lib/core/image/quality/base.py:75)` method accepts an optional `flat_cache_manager` instance.
+2.  **Lookup**: If the manager is provided, the evaluator first attempts to retrieve a valid `brisque_score` (or equivalent metric score) from the cache, validating the entry against the current file stats (size, mtime, inode, device).
+3.  **Update**: If a cache miss occurs (not found or stale), the evaluator computes the score and updates the cache entry with the new score, the algorithm name, and the current file stats.
+4.  **Settings Control**: This caching behavior is globally enabled or disabled via the `use_flat_cache` setting in the active profile.
 
 ## Open Questions
 

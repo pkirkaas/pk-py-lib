@@ -153,7 +153,7 @@ class ScanWorker(QThread):
     error = Signal(str)
     finished = Signal(str, dict)
 
-    def __init__(self, db_manager, profile_json: dict, algorithm: str = "sha256", mode: str = 'duplicates', compute_hashes: bool = False, profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
+    def __init__(self, db_manager, flat_cache_manager, profile_json: dict, algorithm: str = "sha256", mode: str = 'duplicates', compute_hashes: bool = False, profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
         """
         Initialize worker.
      
@@ -161,6 +161,8 @@ class ScanWorker(QThread):
         ----------
         db_manager : DatabaseManager
             Database manager providing cache_db path and connection helper.
+        flat_cache_manager : Optional[FlatCacheManager]
+            Flat cache manager for file stat validation and hash caching.
         profile_json : dict
             Structured Settings Profile (Option A) JSON object.
         algorithm : str
@@ -177,6 +179,7 @@ class ScanWorker(QThread):
         """
         super().__init__(parent)
         self.db_manager = db_manager
+        self.flat_cache_manager = flat_cache_manager
         self.profile = profile_json or {}
         self.algorithm = (algorithm or "sha256").lower().strip()
         self.mode = mode
@@ -350,6 +353,7 @@ class ScanWorker(QThread):
                 algorithms=self.profile.get('similarity', {}).get('enabled_algorithms', ['phash']) if effective_compute_hashes else None,
                 db_manager=self.db_manager,
                 cache_manager=None,  # Not used here
+                flat_cache_manager=self.flat_cache_manager, # Pass the flat cache manager
                 settings=self.profile,
                 follow_symlinks=False,  # Default; can add from profile if needed
                 include_hidden=False,
@@ -928,6 +932,7 @@ class MainWindow(QMainWindow):
         self.profiles: List[Dict[str, Any]] = []
         self.controller = None  # Will be set when database manager is available
         self.structured_editor = None
+        self.flat_cache_manager = None # Will be set by app.py
         # Shared selection store for file management dialogs
         self.dialog_selection_store: SelectionStore = SelectionStore()
         # Track whether we've connected structured_editor.dirtyChanged to avoid spurious disconnect warnings
@@ -1564,8 +1569,13 @@ class MainWindow(QMainWindow):
         self._current_scan_mode = mode
         compute_hashes = mode == 'similarity'
 
+        flat_cache_mgr = getattr(self, "flat_cache_manager", None)
+        if flat_cache_mgr is None:
+            self.logger.warning("FlatCacheManager not available on MainWindow. Proceeding without cache.")
+
         self._scan_worker = ScanWorker(
             db_manager=db_mgr,
+            flat_cache_manager=flat_cache_mgr,
             profile_json=payload,
             algorithm="sha256",
             mode=mode,

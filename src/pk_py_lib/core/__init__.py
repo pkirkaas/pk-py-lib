@@ -15,9 +15,12 @@ from . import image
 from . import io
 from . import utils
 
+from .utils import get_data_dir # Import the unified path function
+
 __all__ = [
+    "get_data_dir",
     "filesystem",
-    "logging", 
+    "logging",
     "image",
     "io",
     "utils"

@@ -22,7 +22,8 @@ import datetime
 import uuid
 import json
 import os
-from platformdirs import user_data_dir, user_cache_dir
+
+from .utils import get_data_dir # Import the new unified path function
 
 logger = logging.getLogger("pk_py_lib.core.database")
 
@@ -630,44 +631,29 @@ class DatabaseManager:
         Parameters
         ----------
         data_dir : Optional[Path]
-            Base directory for application data (settings, backups). When not provided,
-            it defaults to platformdirs.user_data_dir('Img App', 'Pk') unless PK_IMG_APP_HOME is set.
+            Base directory for application data (settings, backups, cache). When not provided,
+            it defaults to the unified path provided by get_data_dir().
         cache_dir : Optional[Path]
-            Base directory for cache data (cache.db, thumbnails). When not provided,
-            it defaults to platformdirs.user_cache_dir('Img App', 'Pk') unless PK_IMG_APP_HOME is set.
+            This parameter is deprecated. Cache files are now placed directly in the data_dir.
 
         Behavior
         --------
-        - If PK_IMG_APP_HOME is set and neither data_dir nor cache_dir is provided, use:
-            data_dir = $PK_IMG_APP_HOME/data
-            cache_dir = $PK_IMG_APP_HOME/cache
-        - If data_dir is provided but cache_dir is not, default cache_dir = data_dir / 'cache'
-          (useful for tests and ephemeral environments).
+        - Uses get_data_dir() (which respects PK_PY_LIB_HOME) to determine the base directory.
+        - All database files (settings.db, cache.db) are placed directly in this base directory.
         """
-        # Resolve locations with environment override when explicit dirs are not provided
-        if data_dir is None and cache_dir is None:
-            base = os.environ.get("PK_IMG_APP_HOME")
-            if base:
-                base_path = Path(base).expanduser().resolve()
-                self.data_dir = base_path / "data"
-                self.cache_dir = base_path / "cache"
-            else:
-                self.data_dir = Path(user_data_dir("Img App", "Pk")).expanduser().resolve()
-                self.cache_dir = Path(user_cache_dir("Img App", "Pk")).expanduser().resolve()
+        # Resolve base directory using the unified function (handles PK_PY_LIB_HOME override)
+        if data_dir is None:
+            self.data_dir = get_data_dir()
         else:
-            if data_dir is None:
-                self.data_dir = Path(user_data_dir("Img App", "Pk")).expanduser().resolve()
-            else:
-                self.data_dir = Path(data_dir).expanduser().resolve()
+            self.data_dir = Path(data_dir).expanduser().resolve()
 
-            if cache_dir is None:
-                # Preserve test behavior: keep cache under data_dir when an explicit data_dir is supplied
-                self.cache_dir = self.data_dir / "cache"
-            else:
-                self.cache_dir = Path(cache_dir).expanduser().resolve()
+        # Cache directory is now unified with data_dir for simplicity, as per instructions.
+        # We set cache_dir = data_dir for internal consistency, although it's mostly unused now.
+        self.cache_dir = self.data_dir
 
+        # Database paths: settings.db directly in data_dir, cache.db directly in data_dir
         self.settings_db = self.data_dir / "settings.db"
-        self.cache_db = self.cache_dir / "cache.db"
+        self.cache_db = self.data_dir / "cache.db"
         self.schema = SchemaManager()
 
     def initialize(self) -> None:

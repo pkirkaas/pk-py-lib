@@ -13,7 +13,8 @@ All evaluators operate on image file paths, returning a float score normalized s
 """
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Optional
+from pk_py_lib.core.flat_cache import FlatCacheManager
 
 
 class ImageQualityEvaluator(ABC):
@@ -71,7 +72,7 @@ class ImageQualityEvaluator(ABC):
         pass
 
     @abstractmethod
-    def evaluate(self, path: str) -> float:
+    def evaluate(self, path: str, flat_cache_manager: Optional[FlatCacheManager] = None) -> float:
         """Evaluate the quality of the image at the given path.
         
         This method performs file validation, loads the image, computes the quality score,
@@ -83,6 +84,8 @@ class ImageQualityEvaluator(ABC):
         path : str
             The absolute or relative path to the image file to evaluate.
             Supports common formats like JPG, PNG, etc., via cv2.imread.
+        flat_cache_manager : Optional[FlatCacheManager]
+            Optional FlatCacheManager instance for cache lookup and storage.
         
         Returns
         -------

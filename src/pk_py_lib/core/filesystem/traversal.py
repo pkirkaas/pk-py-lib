@@ -19,6 +19,7 @@ from ..logging import get_logger
 from ..image import similarity
 from ..database import DatabaseManager
 from ..cache import CacheManager
+from ..flat_cache import FlatCacheManager # Import FlatCacheManager
 import hashlib
 
 # Logger instance 'log = get_logger(__name__)' is used for consistent logging throughout the module, including DB storage errors in scan_directory
@@ -685,6 +686,7 @@ def scan_directory(
     algorithms: Optional[List[str]] = None,
     db_manager: Optional[DatabaseManager] = None,
     cache_manager: Optional[CacheManager] = None,
+    flat_cache_manager: Optional[FlatCacheManager] = None, # Add FlatCacheManager
     settings: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
     stop_event: Optional[Callable[[], bool]] = None,
@@ -707,6 +709,7 @@ def scan_directory(
         algorithms (Optional[List[str]]): Algorithms to compute ('phash', 'whash'; default from settings or ['phash']).
         db_manager (Optional[DatabaseManager]): For storing metadata/hashes in cache.db.
         cache_manager (Optional[CacheManager]): For caching computed hashes.
+        flat_cache_manager (Optional[FlatCacheManager]): For caching computed hashes using file stats validation.
         settings (Optional[Dict[str, Any]]): Settings dict; if algorithms None, uses settings['similarity']['enabled_algorithms'].
         progress_callback (Optional[Callable[[int, int, str, str], None]]): Callback function for progress updates.
             Signature: progress_callback(current_count, total_count, current_file_path, status_message).
@@ -821,9 +824,9 @@ def scan_directory(
                 for alg in algorithms:
                     try:
                         if alg == 'phash':
-                            hash_val = similarity.compute_phash(str(path), settings=settings, cache_manager=cache_manager)
+                            hash_val = similarity.compute_phash(str(path), settings=settings, cache_manager=cache_manager, flat_cache_manager=flat_cache_manager)
                         elif alg == 'whash':
-                            hash_val = similarity.compute_whash(str(path), settings=settings, cache_manager=cache_manager)
+                            hash_val = similarity.compute_whash(str(path), settings=settings, cache_manager=cache_manager, flat_cache_manager=flat_cache_manager)
                         else:
                             continue
                         hashes[alg] = hash_val

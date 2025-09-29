@@ -130,6 +130,11 @@ SETTINGS_PROFILE_SCHEMA = {
             "default": "brisque",
             "enum": ["none", "brisque"],
             "description": "The active image quality evaluator to use. Options: 'none' (disables quality evaluation), 'brisque' (BRISQUE-based scoring). Scores are normalized such that higher floats indicate higher quality when enabled."
+        },
+        "use_flat_cache": {
+            "type": "boolean",
+            "default": True,
+            "description": "Enable flat SQLite cache for hashes and quality metrics (stored per file path/stats)."
         }
     },
 
@@ -447,6 +452,7 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     output = normalized.setdefault("output", {})
     output.setdefault("mode", "report_only")
     normalized.setdefault("image_quality_evaluator", "brisque")
+    normalized.setdefault("use_flat_cache", True)
     
     return normalized
 
@@ -511,7 +517,8 @@ def create_default_profile(name: str, description: Optional[str] = None) -> Dict
         "output": {
             "mode": "report_only"
         },
-        "image_quality_evaluator": "brisque"
+        "image_quality_evaluator": "brisque",
+        "use_flat_cache": True
     }
     
     return normalize_settings(profile)

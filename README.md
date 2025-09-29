@@ -7,6 +7,7 @@ A comprehensive library of reusable Python components for image processing, file
 - **Advanced File Operations**: Path manipulation, safe operations, real-time monitoring
 - **Flexible Logging**: Multi-output logging with variable watching and rich formatting
 - **GUI Components**: Reusable widgets and dialogs for image manipulation
+- **Persistent Caching**: File-stat validated cache for computed hashes and quality scores, now enabled by default (`use_flat_cache` setting).
 - **Component Showcase**: Interactive GUI test framework for component development
 
 ## Quick Start

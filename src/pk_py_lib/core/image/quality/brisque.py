@@ -33,6 +33,8 @@ from urllib.error import URLError, HTTPError
 from .base import ImageQualityEvaluator
 from pk_py_lib.core.image.quality.exceptions import ImageQualityFileError, ImageQualityComputationError
 from pk_py_lib.core.logging import get_logger
+from pk_py_lib.core.flat_cache import FlatCacheManager, FlatCacheEntry, FlatCacheDBError
+from pathlib import Path
 
 
 _BRISQUE_MODEL_FILENAME = "brisque_model_live.yml"
@@ -275,9 +277,12 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
             )
             self.brisque = None
 
-    def evaluate(self, path: str) -> float:
+    def evaluate(self, path: str, flat_cache_manager: Optional[FlatCacheManager] = None) -> float:
         """
         Evaluate the quality of the image at the given path using BRISQUE or fallback.
+
+        Supports caching via FlatCacheManager, checking for a valid 'brisque_score'
+        before computation.
 
         If BRISQUE loaded:
             - Loads image, computes raw score (lower = better).
@@ -289,6 +294,8 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
 
         Args:
             path (str): Path to image file.
+            flat_cache_manager (Optional[FlatCacheManager]): Optional FlatCacheManager instance
+                to check and store the quality score.
 
         Returns:
             float: Normalized quality score (0-100, higher = better).
@@ -300,6 +307,18 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
         Example:
             score = evaluator.evaluate('/path/to/blurry.jpg')  # e.g., 45.2 (low sharpness)
         """
+        # --- 1. Check Flat Cache (Priority) ---
+        if flat_cache_manager:
+            try:
+                entry = flat_cache_manager.get_entry(path)
+                if entry and entry.brisque_score is not None and entry.quality_algorithm == self.name:
+                    self.logger.debug(f"Flat cache hit for {self.name} on {path}")
+                    return entry.brisque_score
+            except FlatCacheDBError as e:
+                self.logger.warning(f"Flat cache DB error during {self.name} lookup for {path}. Error: {e}")
+            except Exception as e:
+                self.logger.warning(f"Unexpected error during flat cache {self.name} lookup for {path}. Error: {e}")
+
         # File validation
         if not os.path.exists(path):
             raise ImageQualityFileError(f"File not found: {path}", path=path)
@@ -310,6 +329,8 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
         image = cv2.imread(path, cv2.IMREAD_COLOR)
         if image is None or image.size == 0:
             raise ImageQualityFileError(f"Failed to load image: {path}", path=path)
+
+        normalized_score = None
 
         if self.brisque is not None:
             try:
@@ -326,19 +347,43 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
                 
                 # Ensure final score is a float
                 raw_score = float(raw_score)
-                normalized = max(0.0, min(100.0, 100.0 - raw_score))
-                self.logger.debug(f"BRISQUE raw: {raw_score:.2f}, normalized: {normalized:.2f} for {path}")
-                return normalized
+                normalized_score = max(0.0, min(100.0, 100.0 - raw_score))
+                self.logger.debug(f"BRISQUE raw: {raw_score:.2f}, normalized: {normalized_score:.2f} for {path}")
             except Exception as e:
                 self.logger.warning(f"BRISQUE compute failed for {path}: {str(e)}. Falling back to Laplacian.")
+        
         # Fallback: Laplacian variance
-        try:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-            normalized = min(100.0, lap_var / 100.0)  # Scale typical var to 0-100
-            self.logger.debug(f"Laplacian fallback: var={lap_var:.2f}, normalized={normalized:.2f} for {path}")
-            return normalized
-        except Exception as e:
-            raise ImageQualityComputationError(
-                f"Laplacian fallback failed for {path}: {str(e)}", path=path, original_error=e
-            ) from e
+        if normalized_score is None:
+            try:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+                normalized_score = min(100.0, lap_var / 100.0)  # Scale typical var to 0-100
+                self.logger.debug(f"Laplacian fallback: var={lap_var:.2f}, normalized={normalized_score:.2f} for {path}")
+            except Exception as e:
+                raise ImageQualityComputationError(
+                    f"Laplacian fallback failed for {path}: {str(e)}", path=path, original_error=e
+                ) from e
+
+        # --- 2. Update Flat Cache ---
+        if flat_cache_manager and normalized_score is not None:
+            try:
+                # Get current entry or create a new one with file stats
+                current_entry = flat_cache_manager.get_entry(path)
+                if current_entry is None:
+                    # If get_entry failed validation or was missing, create a new base entry
+                    # Note: We rely on FlatCacheManager's internal _get_file_stats, but we need to handle the case
+                    # where get_entry returns None due to validation failure, but the file still exists.
+                    # Since we already validated file existence above, we can safely call _get_file_stats.
+                    size, mtime, inode, device = flat_cache_manager._get_file_stats(path)
+                    current_entry = FlatCacheEntry(
+                        file=path, size=size, mod_date=mtime, file_inode=inode, file_device=device
+                    )
+                
+                current_entry.brisque_score = normalized_score
+                current_entry.quality_algorithm = self.name
+                flat_cache_manager.set_entry(current_entry)
+                self.logger.debug(f"Flat cache updated for {self.name} on {path}")
+            except Exception as e:
+                self.logger.warning(f"Failed to update flat cache for {self.name} on {path}: {e}")
+
+        return normalized_score

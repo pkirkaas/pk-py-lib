@@ -343,13 +343,15 @@ The repository will host a development-only, extractable desktop GUI application
 
 - Branding vs internal ID
   - UI brand: KDC Image Organizer
-  - Platform paths: Vendor "Pk", App "Img App" (internal identity for platformdirs)
-  - Environment override: PK_IMG_APP_HOME to relocate both data and cache trees
-  - Canonical reference: [canonical-decisions.md](docs/roo/canonical-decisions.md:14)
+  - Platform paths: Vendor "Pk", App "pk_py_lib" (internal identity for platformdirs)
+  - Environment override: PK_PY_LIB_HOME to relocate the unified data directory
+  - Canonical reference: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:175) (Data Directory Structure)
 
 - Directory structure and databases
   - settings.db and sessions.db in user_data_dir
-  - cache.db in user_cache_dir
+  - All runtime data (settings.db, sessions.db, flat_cache.db, logs/, backups/, thumbnails/) is located under the unified data directory determined by `platformdirs.user_data_dir("pk_py_lib", "Pk")` or the `PK_PY_LIB_HOME` override.
+  - **flat_cache.db** (persistent metadata cache) in user_data_dir
+  - cache.db (transient cache) in user_cache_dir
   - backups subfolder under data dir for DB snapshots
   - Thumbnails stored on disk under cache/thumbnails/{size}/; database stores metadata
   - Canonical reference: [img-app-specification.md](docs/roo/img-app-specification.md:54), [img-app-data-model.md](docs/roo/img-app-data-model.md:287)
@@ -365,6 +367,7 @@ The repository will host a development-only, extractable desktop GUI application
   - Algorithm: SHA-256 (canonical)
   - Staged prefilters: size grouping → partial SHA-256 (first/last 256 KiB) for files ≥ 512 KiB → full-file SHA-256 for candidates
   - Cache both partial and full hashes; invalidate on absolute_path, file_size, mtime_ns, inode changes
+  - **Persistent Cache**: The new [`FlatCacheManager`](docs/roo/flat-cache-implementation.md:1) provides file-stat validated persistence for all computed hashes (BLAKE3, XXH3, pHash, wHash) and image quality scores. This feature is now **enabled by default** via the `use_flat_cache` setting, replacing the need for the old `image_metadata` table for these specific computed values.
   - Canonical reference: [canonical-decisions.md](docs/roo/canonical-decisions.md:93)
 
 - Pools and results semantics

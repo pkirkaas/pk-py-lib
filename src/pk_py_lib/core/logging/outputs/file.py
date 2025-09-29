@@ -9,6 +9,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Union
 from ..logger import LogOutput, LogEntry, LogLevel
+from pk_py_lib.core.utils import get_data_dir # Import unified data directory function
+import sys # For invocation command
 
 
 class FileOutput(LogOutput):
@@ -47,6 +49,9 @@ class FileOutput(LogOutput):
         # Rotate if file is too large
         if self.max_size_mb and self._should_rotate():
             self._rotate_file()
+        
+        # Apply project logging rules: rename existing log and write header
+        self._prepare_log_file()
     
     def _should_rotate(self) -> bool:
         """Check if file should be rotated."""
@@ -77,6 +82,55 @@ class FileOutput(LogOutput):
             backup_file.unlink()
         self.file_path.rename(backup_file)
     
+    def _prepare_log_file(self) -> None:
+        """
+        Implements project logging rules:
+        1. Renames existing log file by adding a timestamp to the basename.
+        2. Creates a new log file.
+        3. Writes the full terminal invocation command as the first line.
+        4. Writes a formatted date & time stamp as the second line, followed by a blank newline.
+        """
+        if self.file_path.exists():
+            # 1. Rename existing log file
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            base_name = self.file_path.stem
+            suffix = self.file_path.suffix
+            
+            new_name = self.file_path.parent / f"{base_name}.{ts}{suffix}"
+            
+            try:
+                self.file_path.rename(new_name)
+                # Log this action to stderr/stdout since the file is being renamed
+                print(f"Renamed existing log file to {new_name}", file=sys.stderr)
+            except Exception as e:
+                print(f"Warning: Could not rename existing log file {self.file_path}: {e}", file=sys.stderr)
+                # If rename fails, we proceed to overwrite the existing file content below.
+        
+        # 2. A new logfile is implicitly created when we open in 'a' mode below,
+        # but we ensure it's fresh by writing the header.
+        
+        # 3. Get full terminal invocation command
+        invocation_command = " ".join(sys.argv)
+        
+        # 4. Get formatted date & time stamp
+        current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z")
+        
+        header = [
+            f"Invocation Command: {invocation_command}",
+            f"Start Time: {current_time_str}",
+            "", # Blank newline after timestamp
+            "--- Log Start ---"
+        ]
+        
+        try:
+            # Write header to the new file, overwriting if rename failed or file was missing
+            with open(self.file_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(header) + '\n')
+                f.flush()
+        except Exception as e:
+            print(f"Critical: Failed to write log file header to {self.file_path}: {e}", file=sys.stderr)
+            # If header write fails, subsequent writes will likely fail too, but we continue.
+
     def write(self, entry: LogEntry) -> None:
         """Write log entry to file."""
         # Check if rotation is needed
