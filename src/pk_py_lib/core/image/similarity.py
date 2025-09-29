@@ -561,8 +561,11 @@ def find_similar_phash(
     if use_lsh:
         try:
             logger.info(f"Using LSH for n={n}")
-            num_perm = settings['similarity'].get('lsh_num_perm', 128) if settings else 128
-            lsh_threshold = settings['similarity'].get('lsh_threshold') if settings and settings['similarity'].get('lsh_threshold') is not None else (1 - threshold / 64.0)
+            similarity_settings = settings.get('similarity', {}) if settings else {}
+            num_perm = similarity_settings.get('lsh_num_perm', 128)
+            lsh_threshold = similarity_settings.get('lsh_threshold')
+            if lsh_threshold is None:
+                lsh_threshold = 1 - threshold / 64.0
             logger.debug(f"LSH params: num_perm={num_perm}, threshold={lsh_threshold}")
             lsh = MinHashLSH(threshold=lsh_threshold, num_perm=num_perm)
             minhases = {}
@@ -1049,8 +1052,11 @@ def find_similar_whash(
     if use_lsh:
         try:
             logger.info(f"Using LSH for n={n}")
-            num_perm = settings['similarity'].get('lsh_num_perm', 128) if settings else 128
-            lsh_threshold = settings['similarity'].get('lsh_threshold') if settings and settings['similarity'].get('lsh_threshold') is not None else (1 - threshold / 64.0)
+            similarity_settings = settings.get('similarity', {}) if settings else {}
+            num_perm = similarity_settings.get('lsh_num_perm', 128)
+            lsh_threshold = similarity_settings.get('lsh_threshold')
+            if lsh_threshold is None:
+                lsh_threshold = 1 - threshold / 64.0
             logger.debug(f"LSH params: num_perm={num_perm}, threshold={lsh_threshold}")
             lsh = MinHashLSH(threshold=lsh_threshold, num_perm=num_perm)
             minhases = {}

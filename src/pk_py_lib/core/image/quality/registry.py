@@ -34,8 +34,6 @@ import logging
 
 from .base import ImageQualityEvaluator
 from .brisque import BRISQUEImageQualityEvaluator
-from .niqe import NIQEImageQualityEvaluator
-from .piqe import PIQEImageQualityEvaluator
 from pk_py_lib.core.logging import get_logger
 
 
@@ -226,15 +224,6 @@ class ImageQualityEvaluatorRegistry:
 # Auto-register default evaluators on module import
 # Inline comment: Ensures 'brisque' and 'niqe' are always available if their dependencies are met.
 ImageQualityEvaluatorRegistry.register_evaluator("brisque", BRISQUEImageQualityEvaluator)
-ImageQualityEvaluatorRegistry.register_evaluator("niqe", NIQEImageQualityEvaluator)
-
-# Conditionally register PIQE if available in the current OpenCV build
-if PIQEImageQualityEvaluator.IS_AVAILABLE:
-    ImageQualityEvaluatorRegistry.register_evaluator("piqe", PIQEImageQualityEvaluator)
-else:
-    ImageQualityEvaluatorRegistry._logger.warning(
-        "PIQE evaluator is unavailable in the current environment and was not registered."
-    )
 
 
 __all__ = ["ImageQualityEvaluatorRegistry"]

@@ -7,7 +7,7 @@ This document defines the architecture for a pluggable image quality evaluation 
 ## Goals
 
 - Provide a standard evaluator interface (`[class ImageQualityEvaluator](src/pk_py_lib/core/image/quality/base.py:1)`) that enforces a single method `evaluate(path: str) -> float`.
-- Implement production-ready evaluators: BRISQUE, NIQE, and PIQE, built on `cv2.quality` modules.
+- Implement production-ready evaluators: BRISQUE, built on `cv2.quality` modules. NIQE and PIQE are currently stubbed and disabled.
 - Expose a registry/factory (`[class ImageQualityEvaluatorRegistry](src/pk_py_lib/core/image/quality/registry.py:1)`) and provider utilities that resolve the active evaluator using settings profiles.
 - Extend `[SETTINGS_PROFILE_SCHEMA](src/pk_py_lib/core/settings_schema.py:28)` to support the key `image_quality_evaluator` with default `'brisque'`, including normalization and validation.
 - Surface errors via a clear taxonomy rooted in `[class ImageQualityError](src/pk_py_lib/core/image/quality/exceptions.py:1)` while also logging diagnostic detail through `[get_logger](src/pk_py_lib/core/logging/logger.py:388)`.
@@ -29,8 +29,8 @@ This document defines the architecture for a pluggable image quality evaluation 
 | [`src/pk_py_lib/core/image/quality/base.py`](src/pk_py_lib/core/image/quality/base.py:1) | Define `[class ImageQualityEvaluator]` interface, `[class ImageQualityContext](src/pk_py_lib/core/image/quality/base.py:40)` dataclass, and base evaluation helpers. |
 | [`src/pk_py_lib/core/image/quality/exceptions.py`](src/pk_py_lib/core/image/quality/exceptions.py:1) | Provide `[class ImageQualityError]` hierarchy (input, model, computation, unsupported). |
 | [`src/pk_py_lib/core/image/quality/brisque.py`](src/pk_py_lib/core/image/quality/brisque.py:1) | Implement BRISQUE evaluator that loads OpenCV's default models and guards runtime errors. |
-| [`src/pk_py_lib/core/image/quality/niqe.py`](src/pk_py_lib/core/image/quality/niqe.py:1) | Implement NIQE evaluator, including asset management for model files. |
-| [`src/pk_py_lib/core/image/quality/piqe.py`](src/pk_py_lib/core/image/quality/piqe.py:1) | Implement PIQE evaluator. **Note: This evaluator is conditionally registered based on the availability of `cv2.quality.QualityPIQE` in the current OpenCV installation.** |
+| [`src/pk_py_lib/core/image/quality/niqe.py`](src/pk_py_lib/core/image/quality/niqe.py:1) | Non-functional stub for NIQE evaluator (disabled). |
+| [`src/pk_py_lib/core/image/quality/piqe.py`](src/pk_py_lib/core/image/quality/piqe.py:1) | Non-functional stub for PIQE evaluator (disabled). |
 | [`src/pk_py_lib/core/image/quality/registry.py`](src/pk_py_lib/core/image/quality/registry.py:1) | Manage evaluator registration, construction, and lifecycle caching. |
 | [`src/pk_py_lib/core/image/quality/provider.py`](src/pk_py_lib/core/image/quality/provider.py:1) | Bridge settings profiles to registry, exposing `get_active_image_quality_evaluator()`. |
 | [`src/pk_py_lib/core/settings_schema.py`](src/pk_py_lib/core/settings_schema.py:28) | Add schema entry and normalization logic for `image_quality_evaluator`. |
@@ -61,14 +61,10 @@ This document defines the architecture for a pluggable image quality evaluation 
   - Uses `[get_logger](src/pk_py_lib/core/logging/logger.py:388)` for traceability.
 
 - `[class NIQEImageQualityEvaluator](src/pk_py_lib/core/image/quality/niqe.py:1)`
-  - Implements asset management for NIQE model files (`niqe_model.xml`, `niqe_range.xml`).
-  - Normalizes lower-better native score (0-100+) to higher-better (0-100).
-  - Does not implement a fallback; initialization failure raises `ImageQualityComputationError`.
+  - Currently a non-functional stub. Initialization raises `ImageQualityComputationError`.
 
 - `[class PIQEImageQualityEvaluator](src/pk_py_lib/core/image/quality/piqe.py:1)`
-  - **Conditional Availability**: Checks for `cv2.quality.QualityPIQE` at module load. If unavailable, the class is not registered in the `ImageQualityEvaluatorRegistry`.
-  - Uses `cv2.quality.QualityPIQE()` (no external models required).
-  - Normalizes lower-better native score (0-100) to higher-better (0-100).
+  - Currently a non-functional stub. Initialization raises `ImageQualityComputationError`.
 
 - `[class ImageQualityEvaluatorRegistry](src/pk_py_lib/core/image/quality/registry.py:1)`  
   - Maintains `Dict[str, Callable[[ImageQualityContext], ImageQualityEvaluator]]` for constructors.
@@ -138,7 +134,7 @@ sequenceDiagram
      ```json
      "image_quality_evaluator": {
          "type": "string",
-         "enum": ["brisque", "niqe", "piqe"],
+         "enum": ["none", "brisque"],
          "default": "brisque"
      }
      ```
@@ -458,7 +454,7 @@ To ensure consistency across the pluggable system, all evaluators normalize thei
 
 - **BRISQUE Example**: Native BRISQUE scores are lower-better (0: pristine, 100: distorted). The `[class BRISQUEImageQualityEvaluator](src/pk_py_lib/core/image/quality/brisque.py:1)` inverts this via `normalized_score = 100.0 - raw_score`, clamping to [0.0, 100.0] for edge cases (e.g., raw >100 or <0). Both raw and normalized values are logged for debugging.
 
-- **NIQE/PIQE Examples**: Both NIQE and PIQE native scores are lower-better. They are normalized identically to BRISQUE: `normalized_score = 100.0 - raw_score`, clamped to [0.0, 100.0].
+- **Other Evaluators**: Future lower-better metrics will be normalized identically to BRISQUE: `normalized_score = 100.0 - raw_score`, clamped to [0.0, 100.0].
 
 - **Future Evaluators**:
   - For higher-better natives (e.g., some sharpness metrics), pass through or scale to 0-100.

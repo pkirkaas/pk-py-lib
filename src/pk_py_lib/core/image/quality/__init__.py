@@ -4,8 +4,6 @@ Image Quality Assessment Module Initialization.
 Exports core components for image quality evaluation:
 - ImageQualityEvaluator (Base ABC)
 - BRISQUEImageQualityEvaluator
-- NIQEImageQualityEvaluator
-- PIQEImageQualityEvaluator
 - ImageQualityEvaluatorRegistry
 - get_active_image_quality_evaluator (Provider entry point)
 - set_active_evaluator (Provider entry point)
@@ -14,8 +12,6 @@ Exports core components for image quality evaluation:
 
 from .base import ImageQualityEvaluator
 from .brisque import BRISQUEImageQualityEvaluator
-from .niqe import NIQEImageQualityEvaluator
-from .piqe import PIQEImageQualityEvaluator
 from .registry import ImageQualityEvaluatorRegistry
 from .provider import get_active_image_quality_evaluator, set_active_evaluator
 from .exceptions import (
@@ -27,8 +23,6 @@ from .exceptions import (
 __all__ = [
     "ImageQualityEvaluator",
     "BRISQUEImageQualityEvaluator",
-    "NIQEImageQualityEvaluator",
-    "PIQEImageQualityEvaluator",
     "ImageQualityEvaluatorRegistry",
     "get_active_image_quality_evaluator",
     "set_active_evaluator",

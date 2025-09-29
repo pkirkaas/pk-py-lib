@@ -20,14 +20,13 @@ from src.pk_py_lib.core.image.quality.base import ImageQualityContext
 # Define a non-existent path for testing input validation
 NON_EXISTENT_PATH = str(Path("tests") / "data" / "non_existent_image.jpg")
 
-@pytest.mark.parametrize("evaluator_key", ["brisque", "niqe", "piqe"])
-def test_evaluator_initialization_and_input_validation(evaluator_key: str):
+@pytest.mark.parametrize("evaluator_key", ["brisque"])
+def test_brisque_initialization_and_input_validation(evaluator_key: str):
     """
     Test that all registered evaluators can be initialized and correctly raise
     ImageQualityInputError when given a non-existent file path.
     
-    This implicitly verifies that NIQE and PIQE models/assets are correctly handled
-    during initialization (or lazy loading if applicable) without crashing.
+    This verifies that BRISQUE initializes correctly and handles basic input validation.
     """
     
     # 1. Initialization check (retrieval from registry)
@@ -50,3 +49,23 @@ def test_evaluator_initialization_and_input_validation(evaluator_key: str):
     
     # Check that the context is correctly passed/used
     assert evaluator.context.evaluator_key == evaluator_key
+
+def test_niqe_and_piqe_are_not_registered():
+    """
+    Verify that NIQE and PIQE evaluators are explicitly not registered in the registry,
+    confirming they are disabled as per current project requirements.
+    """
+    registry = ImageQualityEvaluatorRegistry
+    
+    # Check that only 'brisque' and 'none' (if applicable, but registry only holds classes) are available
+    registered_keys = registry.get_registered_keys()
+    assert registered_keys == ["brisque"]
+    
+    # Explicitly check for non-existent keys
+    with pytest.raises(ValueError) as excinfo_niqe:
+        registry.get_evaluator_class("niqe")
+    assert "Unknown image quality evaluator: 'niqe'" in str(excinfo_niqe.value)
+    
+    with pytest.raises(ValueError) as excinfo_piqe:
+        registry.get_evaluator_class("piqe")
+    assert "Unknown image quality evaluator: 'piqe'" in str(excinfo_piqe.value)

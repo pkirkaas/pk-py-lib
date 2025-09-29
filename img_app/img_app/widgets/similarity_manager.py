@@ -208,9 +208,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         self._quality_combo = QComboBox(controls_widget)
         self._quality_combo.addItem("None", "none")
         self._quality_combo.addItem("BRISQUE", "brisque")
-        # NIQE and PIQE temporarily disabled due to library compatibility issues.
-        # self._quality_combo.addItem("NIQE", "niqe")
-        # self._quality_combo.addItem("PIQE", "piqe")
+        # NIQE and PIQE implementations are currently disabled and removed from GUI options.
         self._quality_combo.currentTextChanged.connect(self._on_quality_changed)
         layout.addWidget(self._quality_combo)
 
