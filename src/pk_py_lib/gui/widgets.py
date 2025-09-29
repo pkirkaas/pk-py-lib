@@ -273,6 +273,7 @@ class FileGroupView(QWidget):
                 "Modified",
                 "Score",
                 "Quality",
+                "Algorithm",
             ]
             hidden_columns = set()
 
@@ -336,6 +337,7 @@ class FileGroupView(QWidget):
             else:
                 group_item.setText(6, "—")
             group_item.setText(7, "—")
+            group_item.setText(8, "—") # New: Algorithm column placeholder
 
         group_item.setData(0, Qt.UserRole, group.ref_path)
         group_item.setFlags(Qt.ItemIsEnabled)
@@ -383,21 +385,15 @@ class FileGroupView(QWidget):
             else:
                 tree_item.setText(6, "—")
 
-            # Compute quality score
+            # Display quality score and algorithm name from FileItem (populated by dialog)
             quality_text = "—"
-            try:
-                from src.pk_py_lib.core.image import get_active_image_quality_evaluator
-                evaluator = get_active_image_quality_evaluator()
-                if evaluator is not None:
-                    score = evaluator.evaluate(file_item.path)
-                    quality_text = f"{score:.2f}"
-                    logger.debug(f"Quality score {score:.2f} for {file_item.path}")
-                else:
-                    quality_text = "—"
-            except Exception as e:
-                logger.warning(f"Failed to compute quality for {file_item.path}: {e}")
-                quality_text = "—"
+            if file_item.quality_score is not None:
+                quality_text = f"{file_item.quality_score:.2f}"
+            
+            algorithm_text = file_item.quality_algorithm.upper() if file_item.quality_algorithm else "—"
+            
             tree_item.setText(7, quality_text)
+            tree_item.setText(8, algorithm_text)
 
         tooltip = f"{file_item.path}\nSize: {_format_bytes(file_item.size)}"
         for column in range(self.tree_widget.columnCount()):

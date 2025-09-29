@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 
 from src.pk_py_lib.core.database import DatabaseManager
 from src.pk_py_lib.core.image import get_active_image_quality_evaluator
+from src.pk_py_lib.core.image.quality.registry import ImageQualityEvaluatorRegistry
 from src.pk_py_lib.core.image.similarity import (
     find_similar_images,
     get_image_metadata,
@@ -207,6 +208,9 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         self._quality_combo = QComboBox(controls_widget)
         self._quality_combo.addItem("None", "none")
         self._quality_combo.addItem("BRISQUE", "brisque")
+        # NIQE and PIQE temporarily disabled due to library compatibility issues.
+        # self._quality_combo.addItem("NIQE", "niqe")
+        # self._quality_combo.addItem("PIQE", "piqe")
         self._quality_combo.currentTextChanged.connect(self._on_quality_changed)
         layout.addWidget(self._quality_combo)
 
@@ -224,13 +228,22 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
 
         # Load initial quality evaluator selection
         from src.pk_py_lib.core.settings_profiles import get_active_profile_settings
+        
+        # Map registered keys to their display names (e.g., 'brisque' -> 'BRISQUE')
+        key_to_display = {k: k.upper() for k in ImageQualityEvaluatorRegistry.get_registered_keys()}
+        key_to_display["none"] = "None"
+        
         try:
             settings = get_active_profile_settings()
+            # Default to 'brisque' if setting is missing or settings is not a dict
             key = settings.get("image_quality_evaluator", "brisque") if isinstance(settings, dict) else "brisque"
-            text = "BRISQUE" if key == "brisque" else "None"
+            
+            # Map the key from settings to the display text, defaulting to 'None' if key is unknown
+            text = key_to_display.get(key, "None")
+            
             self._quality_combo.setCurrentText(text)
         except Exception:
-            # Fallback to default
+            # Fallback to default display text
             self._quality_combo.setCurrentText("BRISQUE")
 
         return controls_widget
@@ -355,7 +368,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
     def _on_quality_changed(self, text: str) -> None:
         """Handle image quality evaluator selection change."""
         from src.pk_py_lib.core.image.quality.provider import set_active_evaluator
-        key = "none" if text == "None" else "brisque"
+        key = str(self._quality_combo.currentData())
         try:
             set_active_evaluator(key)
             LOGGER.debug(f"Set image quality evaluator to '{key}'")
@@ -382,7 +395,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         threshold = int(self._threshold_spin.value())
         LOGGER.info(
             "Computing similarity groups",
-            extra={"algorithm": algorithm, "threshold": threshold},
+            variables={"algorithm": algorithm, "threshold": threshold},
         )
         try:
             groups, pool_map = self._compute_groups_from_database(algorithm, threshold)
@@ -457,11 +470,18 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
     ) -> List[Group]:
         """Convert core similarity groups into dialog-friendly immutable groups."""
         converted: List[Group] = []
+        
+        # Determine the active quality evaluator algorithm name for FileItem creation
+        evaluator = get_active_image_quality_evaluator()
+        quality_algorithm = evaluator.name if evaluator else None
+        
         for index, sim_group in enumerate(similarity_groups, start=1):
             file_items: List[FileItem] = []
             for image in sim_group.images:
                 metadata = self._safe_image_metadata(image.path, image.size, image.resolution, image.mod_date)
                 file_type = Path(image.path).suffix.lstrip(".").upper() or ""
+                
+                # Note: quality_score is computed later in _refresh_quality_scores
                 file_items.append(
                     FileItem(
                         path=image.path,
@@ -471,6 +491,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                         score=image.score,
                         file_type=file_type,
                         savings=0,
+                        quality_algorithm=quality_algorithm,
                     )
                 )
 
@@ -589,48 +610,69 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
 
     def _refresh_quality_scores(self) -> None:
         """
-        Refresh the quality scores in the table based on the current evaluator.
+        Refresh the quality scores and algorithm names in the table based on the current evaluator.
 
-        Iterates over all visible tree items and recomputes quality scores using
-        the active evaluator. Displays formatted scores (e.g., "74.50") or "-" on
-        failure or when no evaluator is selected. Group-level quality remains "-"
-        for simplicity in PoC phase.
+        Iterates over all visible tree items, recomputes quality scores using the active
+        evaluator, updates the underlying FileItem data, and refreshes the table display
+        for columns 7 (Score) and 8 (Algorithm).
 
         Raises:
             No explicit raises; errors are logged and cells set to "-".
 
         Notes:
-            Called on evaluator combo change. For efficiency in production, consider
-            caching scores in FileItem, but on-the-fly computation is used here.
+            This method updates both the visual representation (QTreeWidgetItem) and the
+            underlying data (FileItem stored in UserRole + 1) to ensure consistency
+            for components like the preview pane.
         """
         if not self._model.groups:
             return
 
         tree = self._group_view.tree_widget
         evaluator = get_active_image_quality_evaluator()
+        algorithm_name = evaluator.name if evaluator else None
+        algorithm_display = algorithm_name.upper() if algorithm_name else "—"
 
         for i in range(tree.topLevelItemCount()):
             group_item = tree.topLevelItem(i)
-            # Set group quality to average or —, but for now —
+            # Set group quality/algorithm placeholders
             group_item.setText(7, "—")
+            group_item.setText(8, "—")
 
             for j in range(group_item.childCount()):
                 child = group_item.child(j)
                 path = child.data(0, Qt.UserRole)
-                if not isinstance(path, str):
+                file_item: Optional[FileItem] = child.data(0, Qt.UserRole + 1)
+
+                if not isinstance(path, str) or file_item is None:
                     continue
 
+                score = None
+                score_display = "—"
+                
                 if evaluator is None:
-                    child.setText(7, "—")
-                    continue
-
-                try:
-                    score = evaluator.evaluate(path)
-                    child.setText(7, f"{score:.2f}")
-                    LOGGER.info(f"Quality score {score} for {path}")
-                except Exception as e:
-                    LOGGER.warning(f"Failed to compute quality for {path}: {e}")
-                    child.setText(7, "—")
+                    # If no evaluator, set algorithm name from FileItem (which was set during model creation)
+                    # and keep score as None.
+                    new_file_item = replace(file_item, quality_score=None, quality_algorithm=algorithm_name)
+                    algorithm_display_for_item = "—"
+                else:
+                    try:
+                        score = evaluator.evaluate(path)
+                        score_display = f"{score:.2f}"
+                        LOGGER.info(f"Quality score {score} for {path} using {evaluator.name}")
+                        new_file_item = replace(file_item, quality_score=score, quality_algorithm=algorithm_name)
+                        algorithm_display_for_item = algorithm_display
+                    except Exception as e:
+                        LOGGER.warning(f"Failed to compute quality for {path} using {evaluator.name}: {e}")
+                        # If computation fails, keep algorithm name but set score to None
+                        new_file_item = replace(file_item, quality_score=None, quality_algorithm=algorithm_name)
+                        algorithm_display_for_item = algorithm_display
+                
+                # Update the underlying data model item stored in the tree widget
+                child.setData(0, Qt.UserRole + 1, new_file_item)
+                
+                # Update the visual representation
+                child.setText(7, score_display)
+                child.setText(8, algorithm_display_for_item)
 
 
 # Mapping used for direction combo labels (shared between duplicates/similarity)

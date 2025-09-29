@@ -21,6 +21,8 @@ import imagehash
 from pk_py_lib.core.cache import CacheManager
 from pk_py_lib.core.logging.logger import get_logger
 from pk_py_lib.gui.dialog_models import FileItem, Group, GroupStats
+from pk_py_lib.core.image.quality.provider import get_active_image_quality_evaluator
+from pk_py_lib.core.image.quality.base import ImageQualityEvaluator
 
 try:
     from datasketch import MinHash, MinHashLSH
@@ -141,6 +143,40 @@ def get_image_metadata(path: str) -> Dict[str, any]:
         raise IOError(f"Failed to access file {path}: {e}")
     except Exception as e:
         raise InvalidImageError(path, f"Metadata extraction failed: {e}")
+
+def get_image_quality_score(path: str, evaluator: Optional[ImageQualityEvaluator]) -> tuple[Optional[float], Optional[str]]:
+    """
+    Compute the image quality score using the provided evaluator.
+
+    If the evaluator is None (quality evaluation disabled), returns (None, None).
+    If evaluation fails, logs an error and returns (None, evaluator.name).
+
+    Args:
+        path (str): Path to the image file.
+        evaluator (Optional[ImageQualityEvaluator]): Instantiated quality evaluator or None.
+
+    Returns:
+        tuple[Optional[float], Optional[str]]: (quality_score, algorithm_name)
+            quality_score is normalized (higher is better).
+            algorithm_name is the evaluator's name (e.g., 'brisque').
+
+    Example:
+        >>> evaluator = get_active_image_quality_evaluator()
+        >>> score, name = get_image_quality_score("/path/to/img.jpg", evaluator)
+        >>> print(f"Score: {score}, Algorithm: {name}")
+        Score: 75.5, Algorithm: brisque
+    """
+    if evaluator is None:
+        return None, None
+
+    try:
+        score = evaluator.evaluate(path)
+        return score, evaluator.name
+    except Exception as e:
+        logger.error(f"Image quality evaluation failed for {path} using {evaluator.name}: {e}", exception=e)
+        # Return None score but keep the algorithm name for reporting the failure context
+        return None, evaluator.name
+
 
 
 def compute_group_stats(images: List[FileItem]) -> GroupStats:
@@ -482,6 +518,9 @@ def find_similar_phash(
         raise ValueError("hashes list cannot be empty")
 
     n = len(hashes)
+    
+    # Retrieve the active quality evaluator once for the entire batch
+    quality_evaluator = get_active_image_quality_evaluator()
 
     # Validate input
     for i, h in enumerate(hashes):
@@ -607,6 +646,8 @@ def find_similar_phash(
                 dist = hamming_distance(ref_hash, h_dict['hash'])
                 score = 1.0 - (dist / 64.0)
                 meta = get_image_metadata(h_dict['path'])
+                quality_score, quality_algorithm = get_image_quality_score(h_dict['path'], quality_evaluator)
+                
                 file_item = FileItem(
                     path=h_dict['path'],
                     size=meta['size'],
@@ -615,6 +656,8 @@ def find_similar_phash(
                     score=score,
                     file_type="",
                     savings=0,
+                    quality_score=quality_score,
+                    quality_algorithm=quality_algorithm,
                 )
                 images.append(file_item)
                 valid_count += 1
@@ -963,6 +1006,9 @@ def find_similar_whash(
         raise ValueError("hashes list cannot be empty")
 
     n = len(hashes)
+    
+    # Retrieve the active quality evaluator once for the entire batch
+    quality_evaluator = get_active_image_quality_evaluator()
 
     # Validate input
     for i, h in enumerate(hashes):
@@ -1088,6 +1134,8 @@ def find_similar_whash(
                 dist = hamming_distance(ref_hash, h_dict['hash'])
                 score = 1.0 - (dist / 64.0)
                 meta = get_image_metadata(h_dict['path'])
+                quality_score, quality_algorithm = get_image_quality_score(h_dict['path'], quality_evaluator)
+                
                 file_item = FileItem(
                     path=h_dict['path'],
                     size=meta['size'],
@@ -1096,6 +1144,8 @@ def find_similar_whash(
                     score=score,
                     file_type="",
                     savings=0,
+                    quality_score=quality_score,
+                    quality_algorithm=quality_algorithm,
                 )
                 images.append(file_item)
                 valid_count += 1
@@ -1222,6 +1272,9 @@ def find_exact_duplicates(
 
     from collections import defaultdict
 
+    # Retrieve the active quality evaluator once for the entire batch
+    quality_evaluator = get_active_image_quality_evaluator()
+
     hash_to_paths = defaultdict(list)
     for h in hashes:
         if 'path' not in h or 'hash' not in h or not isinstance(h['path'], str):
@@ -1241,6 +1294,8 @@ def find_exact_duplicates(
             try:
                 meta = get_image_metadata(path)
                 score = 1.0
+                quality_score, quality_algorithm = get_image_quality_score(path, quality_evaluator)
+                
                 file_item = FileItem(
                     path=path,
                     size=meta['size'],
@@ -1249,6 +1304,8 @@ def find_exact_duplicates(
                     score=score,
                     file_type="",
                     savings=0,
+                    quality_score=quality_score,
+                    quality_algorithm=quality_algorithm,
                 )
                 images.append(file_item)
             except Exception as e:

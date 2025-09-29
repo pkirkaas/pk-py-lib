@@ -1450,6 +1450,16 @@ class MainWindow(QMainWindow):
             import logging
             logging.getLogger("img_app.main_window").exception("Error in _on_copy_profile")
 
+    def start_default_operation(self) -> None:
+        """
+        Public method to initiate the default operation (scan/comparison)
+        based on the currently active profile settings.
+        
+        This method is typically called on application startup if the --default
+        CLI flag is provided. It delegates to the internal _on_start handler.
+        """
+        self._on_start()
+
     @gui_error_handler(component_name="MainWindow", operation="start_scan")
     def _on_start(self) -> None:
         """

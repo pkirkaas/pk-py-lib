@@ -40,6 +40,8 @@ class FileItem:
         score: Similarity score (0-100) for similarity mode, None for duplicates
         file_type: File extension/type
         savings: Potential savings in bytes for duplicate mode
+        quality_score: Optional image quality score (normalized, higher is better)
+        quality_algorithm: Name of the quality algorithm used (e.g., 'brisque')
     
     Example:
         >>> item = FileItem(
@@ -64,6 +66,8 @@ class FileItem:
     score: Optional[float] = None
     file_type: str = ""
     savings: int = 0
+    quality_score: Optional[float] = None
+    quality_algorithm: Optional[str] = None
     
     @property
     def basename(self) -> str:

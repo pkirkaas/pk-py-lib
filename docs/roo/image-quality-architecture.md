@@ -7,7 +7,7 @@ This document defines the architecture for a pluggable image quality evaluation 
 ## Goals
 
 - Provide a standard evaluator interface (`[class ImageQualityEvaluator](src/pk_py_lib/core/image/quality/base.py:1)`) that enforces a single method `evaluate(path: str) -> float`.
-- Implement a production-ready BRISQUE evaluator (`[class BRISQUEImageQualityEvaluator](src/pk_py_lib/core/image/quality/brisque.py:1)`) built on `cv2.quality.QualityBRISQUE`.
+- Implement production-ready evaluators: BRISQUE, NIQE, and PIQE, built on `cv2.quality` modules.
 - Expose a registry/factory (`[class ImageQualityEvaluatorRegistry](src/pk_py_lib/core/image/quality/registry.py:1)`) and provider utilities that resolve the active evaluator using settings profiles.
 - Extend `[SETTINGS_PROFILE_SCHEMA](src/pk_py_lib/core/settings_schema.py:28)` to support the key `image_quality_evaluator` with default `'brisque'`, including normalization and validation.
 - Surface errors via a clear taxonomy rooted in `[class ImageQualityError](src/pk_py_lib/core/image/quality/exceptions.py:1)` while also logging diagnostic detail through `[get_logger](src/pk_py_lib/core/logging/logger.py:388)`.
@@ -29,6 +29,8 @@ This document defines the architecture for a pluggable image quality evaluation 
 | [`src/pk_py_lib/core/image/quality/base.py`](src/pk_py_lib/core/image/quality/base.py:1) | Define `[class ImageQualityEvaluator]` interface, `[class ImageQualityContext](src/pk_py_lib/core/image/quality/base.py:40)` dataclass, and base evaluation helpers. |
 | [`src/pk_py_lib/core/image/quality/exceptions.py`](src/pk_py_lib/core/image/quality/exceptions.py:1) | Provide `[class ImageQualityError]` hierarchy (input, model, computation, unsupported). |
 | [`src/pk_py_lib/core/image/quality/brisque.py`](src/pk_py_lib/core/image/quality/brisque.py:1) | Implement BRISQUE evaluator that loads OpenCV's default models and guards runtime errors. |
+| [`src/pk_py_lib/core/image/quality/niqe.py`](src/pk_py_lib/core/image/quality/niqe.py:1) | Implement NIQE evaluator, including asset management for model files. |
+| [`src/pk_py_lib/core/image/quality/piqe.py`](src/pk_py_lib/core/image/quality/piqe.py:1) | Implement PIQE evaluator. **Note: This evaluator is conditionally registered based on the availability of `cv2.quality.QualityPIQE` in the current OpenCV installation.** |
 | [`src/pk_py_lib/core/image/quality/registry.py`](src/pk_py_lib/core/image/quality/registry.py:1) | Manage evaluator registration, construction, and lifecycle caching. |
 | [`src/pk_py_lib/core/image/quality/provider.py`](src/pk_py_lib/core/image/quality/provider.py:1) | Bridge settings profiles to registry, exposing `get_active_image_quality_evaluator()`. |
 | [`src/pk_py_lib/core/settings_schema.py`](src/pk_py_lib/core/settings_schema.py:28) | Add schema entry and normalization logic for `image_quality_evaluator`. |
@@ -57,6 +59,16 @@ This document defines the architecture for a pluggable image quality evaluation 
   - If asset repair fails, it logs a critical error and falls back to using Laplacian variance (sharpness) for quality assessment.
   - Computes BRISQUE score via `cv2.quality.QualityBRISQUE_create` and `compute`.
   - Uses `[get_logger](src/pk_py_lib/core/logging/logger.py:388)` for traceability.
+
+- `[class NIQEImageQualityEvaluator](src/pk_py_lib/core/image/quality/niqe.py:1)`
+  - Implements asset management for NIQE model files (`niqe_model.xml`, `niqe_range.xml`).
+  - Normalizes lower-better native score (0-100+) to higher-better (0-100).
+  - Does not implement a fallback; initialization failure raises `ImageQualityComputationError`.
+
+- `[class PIQEImageQualityEvaluator](src/pk_py_lib/core/image/quality/piqe.py:1)`
+  - **Conditional Availability**: Checks for `cv2.quality.QualityPIQE` at module load. If unavailable, the class is not registered in the `ImageQualityEvaluatorRegistry`.
+  - Uses `cv2.quality.QualityPIQE()` (no external models required).
+  - Normalizes lower-better native score (0-100) to higher-better (0-100).
 
 - `[class ImageQualityEvaluatorRegistry](src/pk_py_lib/core/image/quality/registry.py:1)`  
   - Maintains `Dict[str, Callable[[ImageQualityContext], ImageQualityEvaluator]]` for constructors.
@@ -126,7 +138,7 @@ sequenceDiagram
      ```json
      "image_quality_evaluator": {
          "type": "string",
-         "enum": ["brisque"],
+         "enum": ["brisque", "niqe", "piqe"],
          "default": "brisque"
      }
      ```
@@ -151,14 +163,15 @@ The image quality evaluator integrates with the Similarity Manager dialog in `im
 - Located as the last column in similarity mode (after "Score").
 - Right-aligned for numeric display.
 - Group rows show "-" (no aggregate quality computed in PoC).
-- Individual image rows compute scores on-the-fly using `get_active_image_quality_evaluator().evaluate(path)`.
+- Individual image rows retrieve pre-computed scores from the `FileItem` object, which were calculated during the similarity grouping phase (`find_similar_phash`, `find_similar_whash`, `find_exact_duplicates`) using the active evaluator at that time.
 
 **Computation Logic:**
-- During table population (`_build_file_item` in [`FileGroupView`](src/pk_py_lib/gui/widgets.py:84)), fetch the active evaluator.
-- If evaluator is None, set cell to "-".
-- Else, try `evaluator.evaluate(image_path)`; format as "{score:.2f}".
-- Catch exceptions (e.g., [`ImageQualityError`](src/pk_py_lib/core/image/quality/exceptions.py:1)), log warning, set to "-".
-- On evaluator change (combo selection), call `_refresh_quality_scores()` in [`SimilarityManagerDialog`](img_app/img_app/widgets/similarity_manager.py:61) to iterate visible rows and recompute/update cells.
+- The quality score (`quality_score`) and the algorithm name (`quality_algorithm`) are pre-calculated and stored in the `FileItem` object within `src/pk_py_lib/core/image/similarity.py`.
+- During table population, the GUI reads `FileItem.quality_score` and `FileItem.quality_algorithm`.
+- If `FileItem.quality_score` is None (either evaluation was disabled or failed), the cell displays "-".
+- If `FileItem.quality_score` is present, it is formatted as "{score:.2f}".
+- The `quality_algorithm` is used to display context (e.g., in a tooltip or header).
+- On evaluator change, the similarity grouping process must be re-run to update the scores, as they are now pre-computed.
 
 **Display and Error Handling:**
 - Scores are normalized floats (higher better, e.g., 74.50 for BRISQUE).
@@ -166,7 +179,7 @@ The image quality evaluator integrates with the Similarity Manager dialog in `im
 - Logging: INFO for successful scores, WARNING for failures with path and exception.
 - Edge cases: Invalid paths during refresh → "-", no scan results → empty table, mid-scan changes → refresh disabled.
 
-This integration keeps computation simple (no caching) for PoC, with full error reporting to console/logs.
+This integration shifts the quality computation from the GUI thread to the background processing thread during similarity/duplicate scanning, improving GUI responsiveness. Full error reporting is maintained via the `quality_score=None` and `quality_algorithm` fields in `FileItem`.
 
 ## Error Handling Strategy
 
@@ -444,6 +457,8 @@ To ensure consistency across the pluggable system, all evaluators normalize thei
 - **Base Interface**: The `[class ImageQualityEvaluator](src/pk_py_lib/core/image/quality/base.py:1)` docstring mandates normalization in the `evaluate` method. Subclasses must transform native scores accordingly.
 
 - **BRISQUE Example**: Native BRISQUE scores are lower-better (0: pristine, 100: distorted). The `[class BRISQUEImageQualityEvaluator](src/pk_py_lib/core/image/quality/brisque.py:1)` inverts this via `normalized_score = 100.0 - raw_score`, clamping to [0.0, 100.0] for edge cases (e.g., raw >100 or <0). Both raw and normalized values are logged for debugging.
+
+- **NIQE/PIQE Examples**: Both NIQE and PIQE native scores are lower-better. They are normalized identically to BRISQUE: `normalized_score = 100.0 - raw_score`, clamped to [0.0, 100.0].
 
 - **Future Evaluators**:
   - For higher-better natives (e.g., some sharpness metrics), pass through or scale to 0-100.

@@ -1,20 +1,21 @@
 """
-BRISQUE Image Quality Evaluator.
+NIQE Image Quality Evaluator.
 
-This module implements the BRISQUEImageQualityEvaluator class, which uses OpenCV's
-QualityBRISQUE for blind/referenceless image quality assessment. BRISQUE extracts natural
-scene statistics from the image and uses a pre-trained SVR model to predict quality without
-a reference image. Native scores are lower-better (0-100); this implementation normalizes
-to higher-better for consistency with the ImageQualityEvaluator interface.
+This module implements the NIQEImageQualityEvaluator class, which uses OpenCV's
+QualityNIQE for blind/referenceless image quality assessment. NIQE extracts features
+from the image and compares them to a pre-trained model derived from natural images.
+Native scores are lower-better (closer to 0 means better quality); this implementation
+normalizes to higher-better (0-100) for consistency with the ImageQualityEvaluator interface.
 
-BRISQUE specifics:
+NIQE specifics:
 - Blind metric based on natural scene statistics (NSS).
-- Trained on LIVE dataset for common distortions (JPEG, blur, noise, etc.).
-- Loads bundled SVM model from brisque_model_live.yml in 'models/'. Range hardcoded to 100.0 (LIVE).
-  If model missing or load fails, falls back to Laplacian variance (sharpness measure, higher = better).
+- Loads bundled model from niqe_model.xml in 'models/'.
+- If model missing or load fails, it will raise an error, as NIQE requires a model.
+  Unlike BRISQUE, there is no simple, universally accepted fallback like Laplacian variance
+  that provides a similar quality assessment.
 
 Usage Example:
-    evaluator = BRISQUEImageQualityEvaluator()
+    evaluator = NIQEImageQualityEvaluator()
     score = evaluator.evaluate('/path/to/image.jpg')  # e.g., 74.7 (higher = better quality)
 
 Raises:
@@ -35,10 +36,10 @@ from pk_py_lib.core.image.quality.exceptions import ImageQualityFileError, Image
 from pk_py_lib.core.logging import get_logger
 
 
-_BRISQUE_MODEL_FILENAME = "brisque_model_live.yml"
-_BRISQUE_RANGE_FILENAME = "brisque_range_live.yml"
-_BRISQUE_MODEL_URL = "https://raw.githubusercontent.com/opencv/opencv_extra/4.x/testdata/cv/quality/brisque_model_live.yml"
-_BRISQUE_RANGE_URL = "https://raw.githubusercontent.com/opencv/opencv_extra/4.x/testdata/cv/quality/brisque_range_live.yml"
+_NIQE_MODEL_FILENAME = "niqe_model.xml"
+_NIQE_RANGE_FILENAME = "niqe_range.xml"
+_NIQE_MODEL_URL = "https://raw.githubusercontent.com/opencv/opencv_extra/master/testdata/cv/quality/niqe_model.xml"
+_NIQE_RANGE_URL = "https://raw.githubusercontent.com/opencv/opencv_extra/master/testdata/cv/quality/niqe_range.xml"
 _SIGNATURE_PREVIEW_BYTES = 96
 _MIN_VALID_BYTES = 512
 
@@ -105,12 +106,13 @@ def _is_suspect_asset(path: str, signature: str, min_bytes: int = _MIN_VALID_BYT
     except OSError:
         return True
 
-    return not first_line.startswith("%YAML")
+    # NIQE models are XML files, check for XML declaration
+    return not first_line.startswith("<?xml")
 
 
 def _download_asset(destination: str, url: str) -> None:
     """
-    Download the BRISQUE asset from the official OpenCV repository.
+    Download the NIQE asset from the official OpenCV repository.
 
     Parameters
     ----------
@@ -144,7 +146,7 @@ def _download_asset(destination: str, url: str) -> None:
 
 def _ensure_asset(directory: str, filename: str, url: str, logger) -> str:
     """
-    Ensure that a BRISQUE asset exists and is valid, repairing it if necessary.
+    Ensure that a NIQE asset exists and is valid, repairing it if necessary.
 
     Parameters
     ----------
@@ -175,17 +177,17 @@ def _ensure_asset(directory: str, filename: str, url: str, logger) -> str:
         signature = _read_signature_preview(asset_path)
         size = os.path.getsize(asset_path)
         logger.debug(
-            f"BRISQUE asset diagnostics: path={asset_path} size={size} signature='{signature}'"
+            f"NIQE asset diagnostics: path={asset_path} size={size} signature='{signature}'"
         )
         if _is_suspect_asset(asset_path, signature):
             logger.warning(
-                f"Detected invalid BRISQUE asset at {asset_path} (size={size}, signature='{signature}'); "
+                f"Detected invalid NIQE asset at {asset_path} (size={size}, signature='{signature}'); "
                 f"attempting repair via {url}"
             )
             needs_repair = True
     else:
         logger.warning(
-            f"BRISQUE asset missing: {asset_path}. Attempting to download from {url}"
+            f"NIQE asset missing: {asset_path}. Attempting to download from {url}"
         )
         needs_repair = True
 
@@ -198,94 +200,86 @@ def _ensure_asset(directory: str, filename: str, url: str, logger) -> str:
                 f"Asset {asset_path} remains invalid after download (size={size}, signature='{signature}')"
             )
         logger.info(
-            f"Repaired BRISQUE asset at {asset_path} (size={size}, signature='{signature}')"
+            f"Repaired NIQE asset at {asset_path} (size={size}, signature='{signature}')"
         )
 
     return asset_path
 
 
-class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
+class NIQEImageQualityEvaluator(ImageQualityEvaluator):
     """
-    BRISQUE-based image quality evaluator.
+    NIQE-based image quality evaluator.
 
-    Loads bundled SVM model for QualityBRISQUE. If model missing/load fails,
-    falls back to Laplacian variance (sharpness; higher variance = better quality).
-
+    Loads bundled XML model for QualityNIQE. NIQE scores are lower-better (closer to 0).
     Normalizes scores to higher-better scale (0-100).
 
     Args:
-        None (uses bundled model or fallback).
+        None (uses bundled model).
 
     Attributes:
-        brisque: The OpenCV QualityBRISQUE instance (or None if fallback).
+        niqe: The OpenCV QualityNIQE instance.
         logger: Project logger.
 
     Example:
-        evaluator = BRISQUEImageQualityEvaluator()
-        score = evaluator.evaluate('/path/to/img.jpg')  # e.g., 74.7 (BRISQUE) or 65.2 (Laplacian)
+        evaluator = NIQEImageQualityEvaluator()
+        score = evaluator.evaluate('/path/to/img.jpg')  # e.g., 74.7 (higher = better quality)
     """
 
     @property
     def name(self) -> str:
         """The human-readable name of the quality evaluation algorithm."""
-        return "BRISQUE"
+        return "NIQE"
 
     def __init__(self):
         """
-        Initialize the BRISQUE evaluator with validated bundled model assets.
+        Initialize the NIQE evaluator with validated bundled model assets.
 
-        Ensures both brisque_model_live.yml and brisque_range_live.yml are present and valid.
+        Ensures both niqe_model.xml and niqe_range.xml are present and valid.
         Automatically repairs corrupted assets by downloading the official OpenCV copies
-        from the opencv_extra repository if they are missing or appear corrupted (e.g., HTML content).
-        
-        Creates the BRISQUE evaluator using the file-path overload to leverage OpenCV's
-        native parsing of the SVM and range data. Falls back to Laplacian variance if any
-        step fails despite repair attempts, with detailed error logging including traceback.
+        from the opencv_extra repository if they are missing or appear corrupted.
+
+        Creates the NIQE evaluator using the file-path overload. If initialization fails,
+        it raises a ImageQualityComputationError, as NIQE cannot function without its model.
         """
         self.logger = get_logger(__name__)
-        self.brisque = None
+        self.niqe = None
         model_dir = os.path.join(os.path.dirname(__file__), "models")
 
         try:
             model_path = _ensure_asset(
                 model_dir,
-                _BRISQUE_MODEL_FILENAME,
-                _BRISQUE_MODEL_URL,
+                _NIQE_MODEL_FILENAME,
+                _NIQE_MODEL_URL,
                 self.logger,
             )
             range_path = _ensure_asset(
                 model_dir,
-                _BRISQUE_RANGE_FILENAME,
-                _BRISQUE_RANGE_URL,
+                _NIQE_RANGE_FILENAME,
+                _NIQE_RANGE_URL,
                 self.logger,
             )
             self.logger.debug(
-                f"Initializing QualityBRISQUE with model='{model_path}' range='{range_path}'"
+                f"Initializing QualityNIQE with model='{model_path}' range='{range_path}'"
             )
-            self.brisque = cv2.quality.QualityBRISQUE_create(model_path, range_path)
+            # QualityNIQE_create requires model and range paths
+            self.niqe = cv2.quality.QualityNIQE_create(model_path, range_path)
             self.logger.info(
-                "BRISQUE evaluator initialized successfully with bundled assets."
+                "NIQE evaluator initialized successfully with bundled assets."
             )
         except Exception as exc:
             # Log the failure with full traceback for detailed diagnostics
-            self.logger.error(
-                "Failed to initialize BRISQUE evaluator. Falling back to Laplacian variance.",
-                exception=exc,
-                exc_info=True
-            )
-            self.brisque = None
+            error_msg = "Failed to initialize NIQE evaluator. NIQE requires its model and cannot fall back."
+            self.logger.error(error_msg, exception=exc, exc_info=True)
+            # Re-raise as a computation error since the evaluator cannot be created
+            raise ImageQualityComputationError(
+                error_msg, path=model_dir, original_error=exc
+            ) from exc
 
     def evaluate(self, path: str) -> float:
         """
-        Evaluate the quality of the image at the given path using BRISQUE or fallback.
+        Evaluate the quality of the image at the given path using NIQE.
 
-        If BRISQUE loaded:
-            - Loads image, computes raw score (lower = better).
-            - Normalizes: 100 - raw, clamped to 0-100.
-
-        Fallback (Laplacian):
-            - Grayscale, Laplacian variance (higher = sharper/better).
-            - Normalizes: min(100, var / 100) (empirical for 0-10000 var range).
+        NIQE scores are lower-better. Normalization: 100 - raw_score, clamped to 0-100.
 
         Args:
             path (str): Path to image file.
@@ -298,7 +292,7 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
             ImageQualityComputationError: Computation failures.
 
         Example:
-            score = evaluator.evaluate('/path/to/blurry.jpg')  # e.g., 45.2 (low sharpness)
+            score = evaluator.evaluate('/path/to/good_image.jpg')  # e.g., 95.1
         """
         # File validation
         if not os.path.exists(path):
@@ -311,34 +305,32 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
         if image is None or image.size == 0:
             raise ImageQualityFileError(f"Failed to load image: {path}", path=path)
 
-        if self.brisque is not None:
-            try:
-                # OpenCV's QualityBRISQUE.compute() returns (score, features, ...).
-                # Score can be a float or a 1-element sequence (tuple/list/ndarray).
-                result = self.brisque.compute(image)
-                
-                # Extract the score component (first element of the result tuple)
-                raw_score = result[0]
-                
-                # If the score component is a sequence (e.g., (score,)), extract the scalar value
-                if isinstance(raw_score, (list, tuple, np.ndarray)):
-                    raw_score = raw_score[0]
-                
-                # Ensure final score is a float
-                raw_score = float(raw_score)
-                normalized = max(0.0, min(100.0, 100.0 - raw_score))
-                self.logger.debug(f"BRISQUE raw: {raw_score:.2f}, normalized: {normalized:.2f} for {path}")
-                return normalized
-            except Exception as e:
-                self.logger.warning(f"BRISQUE compute failed for {path}: {str(e)}. Falling back to Laplacian.")
-        # Fallback: Laplacian variance
         try:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-            normalized = min(100.0, lap_var / 100.0)  # Scale typical var to 0-100
-            self.logger.debug(f"Laplacian fallback: var={lap_var:.2f}, normalized={normalized:.2f} for {path}")
+            # OpenCV's QualityNIQE.compute() returns (score, features, ...).
+            # Score can be a float or a 1-element sequence (tuple/list/ndarray).
+            result = self.niqe.compute(image)
+            
+            # Extract the score component (first element of the result tuple)
+            raw_score = result[0]
+            
+            # If the score component is a sequence (e.g., (score,)), extract the scalar value
+            if isinstance(raw_score, (list, tuple, np.ndarray)):
+                raw_score = raw_score[0]
+            
+            # Ensure final score is a float
+            raw_score = float(raw_score)
+            
+            # NIQE is lower-better (0-100+). Normalize to higher-better (0-100).
+            # We assume 0 is perfect quality (100 normalized).
+            # Clamp the result to ensure it stays within 0-100 range.
+            normalized = max(0.0, min(100.0, 100.0 - raw_score))
+            
+            self.logger.debug(f"NIQE raw: {raw_score:.2f}, normalized: {normalized:.2f} for {path}")
             return normalized
         except Exception as e:
             raise ImageQualityComputationError(
-                f"Laplacian fallback failed for {path}: {str(e)}", path=path, original_error=e
+                f"NIQE computation failed for {path}: {str(e)}", path=path, original_error=e
             ) from e
+
+
+__all__ = ["NIQEImageQualityEvaluator"]

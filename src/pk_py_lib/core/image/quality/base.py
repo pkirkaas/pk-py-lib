@@ -55,6 +55,21 @@ class ImageQualityEvaluator(ABC):
     - Normalization ensures extensibility: future evaluators follow the higher-better convention.
     """
 
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """The human-readable name of the quality evaluation algorithm (e.g., 'BRISQUE').
+        
+        This property must be implemented by subclasses and should return a constant string.
+        It is used for logging, UI display, and identifying the metric used in results.
+        
+        Returns
+        -------
+        str
+            The name of the algorithm.
+        """
+        pass
+
     @abstractmethod
     def evaluate(self, path: str) -> float:
         """Evaluate the quality of the image at the given path.
