@@ -9,7 +9,7 @@ import os
 import sqlite3
 import traceback
 from pathlib import Path
-from typing import Iterator, Optional, List, Dict, Any, Pattern, Set, Union
+from typing import Iterator, Optional, List, Dict, Any, Pattern, Set, Union, Callable
 import fnmatch
 import re
 from collections import defaultdict, Counter
@@ -686,40 +686,50 @@ def scan_directory(
     db_manager: Optional[DatabaseManager] = None,
     cache_manager: Optional[CacheManager] = None,
     settings: Optional[Dict[str, Any]] = None,
+    progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
+    stop_event: Optional[Callable[[], bool]] = None,
     **walk_kwargs
-) -> Dict[str, Any]:
+) -> Optional[Dict[str, Any]]:
     """
     Scan a directory for image files and optionally compute perceptual hashes.
  
     Extends directory traversal to collect file metadata and compute/store similarity
     hashes (pHash/wHash) for images during scanning. Uses existing walk_files for
     efficient traversal with filtering. Results include basic file info and optional
-    hashes dict. Hashes are stored in DB/cache if managers provided.
+    hashes dict. Hashes are stored in DB/cache if managers provided. Supports cooperative
+    cancellation and real-time progress reporting.
  
     Args:
-        root (Path): Root directory to scan.
+        roots (Union[Path, List[Path]]): Root directory or list of roots to scan.
         patterns (Optional[List[str]]): Glob patterns for files (default: image extensions).
         compute_hashes (bool): If True, compute perceptual hashes for images (default: False).
+        exact_grouping (bool): If True, group files by exact SHA256 hash.
         algorithms (Optional[List[str]]): Algorithms to compute ('phash', 'whash'; default from settings or ['phash']).
         db_manager (Optional[DatabaseManager]): For storing metadata/hashes in cache.db.
         cache_manager (Optional[CacheManager]): For caching computed hashes.
         settings (Optional[Dict[str, Any]]): Settings dict; if algorithms None, uses settings['similarity']['enabled_algorithms'].
+        progress_callback (Optional[Callable[[int, int, str, str], None]]): Callback function for progress updates.
+            Signature: progress_callback(current_count, total_count, current_file_path, status_message).
+        stop_event (Optional[Callable[[], bool]]): Callable that returns True if cancellation is requested.
         **walk_kwargs: Additional kwargs passed to walk_files (e.g., exclude_patterns, max_depth).
  
     Returns:
-        List[Dict[str, Any]]: List of file dicts with keys: 'path' (str), 'size' (int),
-            'modified_time' (float), 'extension' (str), and if compute_hashes: 'hashes' (Dict[str, str]).
+        Optional[Dict[str, Any]]: Dictionary containing 'files', 'exact_groups', and 'error_details'
+            if successful, or None if the operation was cancelled.
  
     Raises:
         SimilarityError: If hash computation fails for an image (logged, but scan continues).
         ValueError: If invalid algorithms or root not dir.
  
     Example:
-        >>> results = scan_directory(Path("/photos"), compute_hashes=True, algorithms=['phash'])
-        >>> for res in results:
-        ...     print(res['path'], res.get('hashes', {}).get('phash'))
-        /photos/img1.jpg a1b2c3d4e5f67890
-        /photos/img2.jpg b2c3d4e5f6789012
+        >>> from threading import Event
+        >>> stop = Event()
+        >>> def progress(c, t, p, m): print(f"{c}/{t}: {m} ({p})")
+        >>> results = scan_directory(
+        ...     Path("/photos"), compute_hashes=True, algorithms=['phash'],
+        ...     progress_callback=progress, stop_event=stop.is_set
+        ... )
+        >>> if results is None: print("Scan cancelled.")
  
     Note:
         - Only image files (by extension) are included unless patterns override.
@@ -765,13 +775,25 @@ def scan_directory(
     error_details: List[Dict[str, Any]] = []
     file_count = len(unique_paths)
     log.info(f"Scanning {file_count} files from {len(roots)} roots")
+    
+    processed_count = 0
+    if progress_callback:
+        progress_callback(processed_count, file_count, "", f"Starting scan of {file_count} files...")
  
     groups: Dict[str, List[str]] = defaultdict(list) if exact_grouping else None
 
     for path in unique_paths:
+        # Check for cancellation
+        if stop_event and stop_event():
+            log.info("Scan cancelled by stop event.")
+            if progress_callback:
+                progress_callback(processed_count, file_count, str(path), "Scan cancelled.")
+            return None
+            
         try:
             file_info = FileInfo.from_path(path)
             if file_info.size == 0:
+                processed_count += 1
                 continue  # Skip empty/broken files
  
             # Always compute exact SHA256 hash
@@ -874,6 +896,15 @@ def scan_directory(
                     })
  
             results.append(result)
+            processed_count += 1
+            
+            # Report progress
+            if progress_callback:
+                status = f"Processing file {processed_count}/{file_count}"
+                if 'hashes' in result:
+                    status += f" (Hashes: {', '.join(result['hashes'].keys())})"
+                progress_callback(processed_count, file_count, str(path), status)
+                
         except Exception as e:
             import traceback
             log.error(f"Error processing {path}: {e}", exc_info=True)
@@ -882,6 +913,7 @@ def scan_directory(
                 'error': str(e),
                 'traceback': traceback.format_exc()
             })
+            processed_count += 1
             continue
 
     # Build exact groups if requested
@@ -900,6 +932,9 @@ def scan_directory(
     if compute_hashes:
         perceptual_count = sum(1 for r in results if 'hashes' in r)
         log.info(f"Perceptual hash computation complete: {perceptual_count} images processed")
+
+    if progress_callback:
+        progress_callback(file_count, file_count, "", "Scan completed successfully.")
 
     return {
         'files': results,

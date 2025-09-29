@@ -23,12 +23,6 @@ This is a Python project, with two primary components that will eventually be se
 - All generic, reusable functionality should be added to the library
 - Code specific for the application should be added to the img_app application, and import functionality from the library
 
-
-
-
-
-
-
 - The focus of the library will be to support manipulating huge collections of images - modify them, classify them, detect duplicates, detect features, etc.
 - All these functionalities will be available to GUI Windowed Desktop Applications, API Web based services, CLI/terminal applications, etc
 
@@ -52,3 +46,11 @@ When you complete a task that makes changes to the code, run the app in the VSCo
 ## Adding CLI Options/Arguments
 
 When asked to add a CLI option, add it to the `img_app/app.py` `main` function. Assure that options/parameters are passed both when invoking the application from the `imgapp` script AND the `pdm run imgapp` command in `pyproject.toml`
+
+## GUI Component Definitions
+The project has many GUI components - here are some definitions I will use when requesting GUI changes:
+- `Results Dialogs` - the results dialogs that appear after running the comparison. There are two sublcasses, for similarity results & duplicate results
+- `Similar Image Manager` - the dialog that pops up after running the similar image finder 
+- `Duplicate File Manager` - the dialog after running duplicate finder
+- Each results dialog is divided into vertical panes
+- The top pane is `Summary Report Pane`, tabbed with "Summary" & "Report"

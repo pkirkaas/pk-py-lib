@@ -22,8 +22,10 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
-    QTabWidget,
+    QStackedWidget,
+    QTabBar,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
     QMessageBox,
@@ -76,6 +78,9 @@ class BaseFileManagerDialog(QDialog):
         # Hold onto latest summary/report payloads for regeneration/export.
         self._summary_text: str = ""
         self._report_text: str = ""
+
+        # State for the collapsible top pane
+        self._is_collapsed: bool = True
 
         # Set window flags to enable Minimize and Maximize buttons
         self.setWindowFlags(
@@ -143,35 +148,73 @@ class BaseFileManagerDialog(QDialog):
         self._build_footer(self._main_layout)
 
     def _build_tabs(self, parent_layout: QVBoxLayout) -> None:
-        """Create the Summary/Report tab widget with selectable text."""
-        self.tab_widget = QTabWidget(self)
-        # Ensure the tab widget respects its minimum size (content height) but can expand
-        self.tab_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
+        """
+        Create the Summary/Report tab header and collapsible content area.
 
-        self.summary_edit = QTextEdit(self.tab_widget)
+        The header contains the QTabBar and a collapse button.
+        The content area is a QStackedWidget holding the Summary and Report QTextEdits.
+        """
+        # 1. Tab Content (Collapsible Area)
+        self._tab_content_stack = QStackedWidget(self)
+        # Ensure the stacked widget respects its minimum size (content height) but can expand
+        self._tab_content_stack.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
+
+        # Create Summary Text Edit
+        self.summary_edit = QTextEdit(self._tab_content_stack)
         self.summary_edit.setReadOnly(True)
         self.summary_edit.setAcceptRichText(False)
         self.summary_edit.setPlaceholderText("Summary information will appear here.")
         self.summary_edit.setTextInteractionFlags(
             Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
         )
-        self.tab_widget.addTab(self.summary_edit, "Summary")
+        self._tab_content_stack.addWidget(self.summary_edit) # Index 0
 
-        self.report_edit = QTextEdit(self.tab_widget)
+        # Create Report Text Edit
+        self.report_edit = QTextEdit(self._tab_content_stack)
         self.report_edit.setReadOnly(True)
         self.report_edit.setAcceptRichText(False)
         self.report_edit.setPlaceholderText("Detailed report output will appear here.")
         self.report_edit.setTextInteractionFlags(
             Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
         )
-        self.tab_widget.addTab(self.report_edit, "Report")
+        self._tab_content_stack.addWidget(self.report_edit) # Index 1
 
-        parent_layout.addWidget(self.tab_widget)
+        # 2. Tab Bar and Collapse Button (Header)
+        header_widget = QWidget(self)
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
+
+        self.tab_bar = QTabBar(self)
+        self.tab_bar.addTab("Summary") # Index 0
+        self.tab_bar.addTab("Report")  # Index 1
+        self.tab_bar.setShape(QTabBar.RoundedNorth)
+        
+        self._collapse_button = QToolButton(self)
+        self._collapse_button.setArrowType(Qt.DownArrow) # Start collapsed
+        self._collapse_button.setToolTip("Collapse/Expand Summary/Report Pane")
+        self._collapse_button.clicked.connect(self._toggle_collapse)
+
+        header_layout.addWidget(self.tab_bar)
+        header_layout.addStretch(1)
+        header_layout.addWidget(self._collapse_button)
+
+        # 3. Connect Signals
+        self.tab_bar.currentChanged.connect(self._tab_content_stack.setCurrentIndex)
+
+        # 4. Add Header and Content to Parent Layout
+        parent_layout.addWidget(header_widget)
+        parent_layout.addWidget(self._tab_content_stack)
+        
+        # Start collapsed by default
+        self._tab_content_stack.setVisible(False)
 
     def _build_controls(self) -> Optional[QWidget]:
         """
         Hook for subclasses to inject control toolbars/filters.
 
+    def _toggle_collapse(self) -> None:
+... (14 lines of content)
         Returns
         -------
         QWidget | None
@@ -209,6 +252,23 @@ class BaseFileManagerDialog(QDialog):
         footer_layout.addWidget(close_button)
 
         parent_layout.addWidget(footer_widget)
+
+    def _toggle_collapse(self) -> None:
+        """
+        Toggles the visibility of the tab content area (Summary/Report) and updates the collapse button icon.
+        
+        When collapsed, the QStackedWidget containing the summary/report QTextEdits is hidden,
+        but the QTabBar and collapse button remain visible.
+        """
+        self._is_collapsed = not self._is_collapsed
+        self._tab_content_stack.setVisible(not self._is_collapsed)
+
+        if self._is_collapsed:
+            # Collapsed state: show down arrow
+            self._collapse_button.setArrowType(Qt.DownArrow)
+        else:
+            # Expanded state: show up arrow
+            self._collapse_button.setArrowType(Qt.UpArrow)
 
     # ---------------------------------------------------------------------#
     # Signal wiring and status helpers

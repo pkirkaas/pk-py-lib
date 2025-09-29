@@ -698,3 +698,92 @@ The custom painting architecture provides theme-independent, consistent visual r
 - Provides consistent visual foundation for all group management dialogs
 
 This custom painting architecture represents a significant improvement in visual consistency and user experience, ensuring that the application maintains a professional appearance across all supported platforms and themes.
+
+---
+## BaseFileManagerDialog — Collapsible Summary/Report Pane Architecture (2025-09-29)
+
+Summary
+- The shared `BaseFileManagerDialog` (used by `Duplicate File Manager` and `Similar Image Manager`) has been refactored to make the top "Summary Report Pane" collapsible.
+- This pane is now structurally separated into a visible header and a collapsible content area, managed by a `QSplitter`.
+
+Architecture Details
+- **Main Layout**: The dialog uses a `QSplitter` (vertical) to divide the layout into two main sections:
+    1. Top Pane: Contains the Summary/Report header and content. This pane is set to be collapsible (`QSplitter.setCollapsible(0, True)`).
+    2. Content Area: Contains subclass-specific controls and the main results view (e.g., image group tree).
+- **Header Component**: The header remains visible even when collapsed and contains:
+    - A `QTabBar` for switching between "Summary" and "Report" views.
+    - A `QToolButton` (`self._collapse_button`) which toggles the visibility of the content area below it.
+- **Content Component**: The content area of the Summary/Report pane is a `QStackedWidget` (`self._tab_content_stack`) containing the `QTextEdit` widgets for Summary and Report output.
+- **Collapse Mechanism**:
+    - The `QToolButton`'s `clicked` signal is connected to `_toggle_collapse()`.
+    - `_toggle_collapse()` toggles the visibility of the `QStackedWidget` (`self._tab_content_stack.setVisible()`) and updates the `QToolButton`'s arrow icon (UpArrow for expanded, DownArrow for collapsed).
+- **Text Selectability**: Both the Summary and Report `QTextEdit` widgets maintain the project requirement for selectable text (`Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard`).
+
+Implementation Reference
+- [src/pk_py_lib/gui/dialogs/base_file_manager_dialog.py](src/pk_py_lib/gui/dialogs/base_file_manager_dialog.py:109) (`_build_ui` and `_build_tabs` methods)
+
+## Asynchronous Scan and Comparison Workflow with Progress Dialog (2025-09-29)
+
+Summary
+- The application's core operations (file scanning/hashing and image comparison) are now executed asynchronously using dedicated `QThread` workers to prevent GUI blocking.
+- A reusable modal dialog, `ProgressDialog`, provides real-time progress updates and supports cooperative cancellation for long-running tasks.
+- The `MainWindow` orchestrates the sequential execution of the two main phases: scanning and comparison.
+
+### Components and Responsibilities
+
+#### 1. [`ProgressDialog`](src/pk_py_lib/gui/dialogs/progress_dialog.py)
+- **Role**: A modal, reusable dialog that displays task progress (percentage, current file/status text) and provides a "Cancel" button.
+- **Mechanism**: It manages a `threading.Event` (`stop_event`) which is passed to the worker threads. Clicking "Cancel" sets this event, signaling the worker to stop cooperatively.
+- **Signals**: Emits signals to update the progress bar and status text from the worker thread.
+
+#### 2. `ScanWorker` (QThread subclass, defined in [`img_app/img_app/main_window.py`](img_app/img_app/main_window.py))
+- **Role**: Executes the file system traversal and hashing phase.
+- **Core Logic**: Calls the updated [`scan_directory`](src/pk_py_lib/core/filesystem/traversal.py) function, passing a `progress_callback` (to report progress back to the GUI) and the `stop_event` (for cancellation).
+- **Output**: Emits a signal upon completion, carrying the list of scanned files/hashes, or an error/cancellation status.
+
+#### 3. `ComparisonWorker` (QThread subclass, defined in [`img_app/img_app/main_window.py`](img_app/img_app/main_window.py))
+- **Role**: Executes the image comparison phase (e.g., pHash similarity or BLAKE3 duplicates) on the results from the `ScanWorker`.
+- **Core Logic**: Performs the comparison logic, respecting the `stop_event` for cooperative cancellation and using a progress callback for updates.
+- **Output**: Emits a signal upon completion, carrying the final results (groups of similar/duplicate images).
+
+#### 4. [`MainWindow`](img_app/img_app/main_window.py)
+- **Role**: The central orchestrator of the asynchronous workflow.
+- **Orchestration Flow**:
+    1. User triggers the operation (e.g., clicks "Run").
+    2. `MainWindow` instantiates and shows the `ProgressDialog`.
+    3. `MainWindow` instantiates `ScanWorker`, connects its signals to the `ProgressDialog` for updates, and starts the thread.
+    4. Upon `ScanWorker` completion (success or cancellation):
+        - If successful, `MainWindow` instantiates `ComparisonWorker`, connects its signals, and starts the thread, reusing the `ProgressDialog`.
+        - If cancelled or failed, the `ProgressDialog` is closed, and an appropriate message is displayed.
+    5. Upon `ComparisonWorker` completion:
+        - The `ProgressDialog` is closed.
+        - The results (or error) are passed to the appropriate results manager dialog (`Duplicate File Manager` or `Similar Image Manager`).
+
+### Workflow Diagram (Simplified)
+
+```mermaid
+graph TD
+    A[MainWindow: Run Operation] --> B(Instantiate & Show ProgressDialog);
+    B --> C(Instantiate ScanWorker);
+    C --> D{ScanWorker: Start Thread};
+    D --> E[ScanWorker: Traversal & Hashing];
+    E -- Progress/Status --> B;
+    E -- Cancellation Request --> E;
+    E -- Success --> F(MainWindow: Scan Complete);
+    E -- Failure/Cancel --> K(MainWindow: Handle Error/Cancel);
+    F --> G(Instantiate ComparisonWorker);
+    G --> H{ComparisonWorker: Start Thread};
+    H --> I[ComparisonWorker: Image Comparison];
+    I -- Progress/Status --> B;
+    I -- Cancellation Request --> I;
+    I -- Success --> J(MainWindow: Comparison Complete);
+    I -- Failure/Cancel --> K;
+    J --> L(Close ProgressDialog);
+    J --> M(Show Results Manager Dialog);
+    K --> L;
+```
+
+### Implementation References
+- `ProgressDialog` definition: [`src/pk_py_lib/gui/dialogs/progress_dialog.py`](src/pk_py_lib/gui/dialogs/progress_dialog.py)
+- `scan_directory` update (progress/cancellation support): [`src/pk_py_lib/core/filesystem/traversal.py`](src/pk_py_lib/core/filesystem/traversal.py)
+- `MainWindow` orchestration and worker definitions: [`img_app/img_app/main_window.py`](img_app/img_app/main_window.py)

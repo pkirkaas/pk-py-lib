@@ -1,3 +1,4 @@
+
 """
 Main window implementation for the KDC Image Organizer (img_app).
 
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
 from typing import Optional, Dict, Any, List, Tuple, Mapping, Sequence
 from pathlib import Path
 from src.pk_py_lib.gui.utils.messages import show_selectable_info, show_selectable_error, gui_error_handler, gui_error_context
+from src.pk_py_lib.gui.dialogs.progress_dialog import ProgressDialog
 from src.pk_py_lib.core.database import CACHE_SCHEMA
 from src.pk_py_lib.core.filesystem.paths import PathOperations
 from src.pk_py_lib.core.filesystem.traversal import DirectoryTraversal, IMAGE_EXTENSIONS
@@ -339,6 +341,7 @@ class ScanWorker(QThread):
             from pk_py_lib.core.filesystem.traversal import scan_directory
             # Compute hashes for both similarity (perceptual) and duplicates (exact SHA256) modes to enable grouping
             effective_compute_hashes = self.compute_hashes or self.exact_grouping
+            # Pass the progress signal emitter and the stop flag callable to enable real-time updates and cancellation
             scan_result = scan_directory(
                 roots=roots,
                 patterns=patterns,
@@ -350,53 +353,57 @@ class ScanWorker(QThread):
                 settings=self.profile,
                 follow_symlinks=False,  # Default; can add from profile if needed
                 include_hidden=False,
+                progress_callback=lambda processed, total, path, message: self.progress.emit(processed, total, path, message),
+                stop_event=lambda: self._stop,
             )
             
-            files = scan_result['files']
-            # Add 'files' to summary for post-scan duplicate grouping
-            stats['files'] = scan_result['files']
-            if self.exact_grouping:
-                stats['groups_data'] = scan_result.get('groups', {})
-            
-            total = len(files)
-            stats["found"] = total
-            # Record current run file set
-            try:
-                run_paths = [f['path'] for f in files]
-            except Exception:
-                run_paths = []
-            stats["run_paths"] = run_paths
-            stats["algorithm"] = self.algorithm
-            if getattr(self, "profile_id", None):
-                stats["profile_id"] = self.profile_id
-            
-            # Populate pool map post-scan (from metadata if available, else from roots)
-            self._file_pool_map = {}
-            for f in files:
-                path = f.get('path', '')
-                # Default to 'A' for single-pool; can enhance with DB pool later
-                self._file_pool_map[path] = 'A'
-            
-            # For duplicates, include groups_data in summary
-            # groups_data is computed post-scan in main_window._on_scan_finished via _compute_duplicate_groups_from_files
-            if self.exact_grouping:
-                stats['groups_data'] = []
-                # Note: scan_result.get('groups', {}) already set earlier; this ensures empty list if no pre-computed groups
-                logger.debug(f"Exact groups included in summary: {len(stats['groups_data'])} groups")
-            
-            # Collect errors from scan_result
-            stats["error_details"] = scan_result.get('error_details', [])
-            stats["errors"] = len(stats["error_details"])
-            
-            # Simulate progress (since scan_directory is sync; future: extend with callback)
-            for idx in range(1, total + 1):
-                if self._stop:
-                    break
-                current_path = files[idx-1]['path'] if idx <= total else ''
-                self.progress.emit(idx, total, current_path, "Processed")
-            
-            stats["processed"] = total  # All files processed by scan_directory
-            
+            if scan_result is None:
+                # Scan was cancelled by stop_event. Set cancellation flag and proceed to emit finished signal.
+                stats["processed"] = 0
+                stats["cancelled"] = True
+                logger.info("ScanWorker run cancelled by user request.")
+                # We rely on the last progress callback to have emitted the final status
+                # (e.g., "Scan cancelled.)
+                
+            else:
+                files = scan_result['files']
+                # Add 'files' to summary for post-scan duplicate grouping
+                stats['files'] = scan_result['files']
+                if self.exact_grouping:
+                    # Note: scan_directory now returns 'exact_groups' for exact grouping
+                    stats['groups_data'] = scan_result.get('exact_groups', {})
+                
+                total = len(files)
+                stats["found"] = total
+                # Record current run file set
+                try:
+                    run_paths = [f['path'] for f in files]
+                except Exception:
+                    run_paths = []
+                stats["run_paths"] = run_paths
+                stats["algorithm"] = self.algorithm
+                if getattr(self, "profile_id", None):
+                    stats["profile_id"] = self.profile_id
+                
+                # Populate pool map post-scan (from metadata if available, else from roots)
+                self._file_pool_map = {}
+                for f in files:
+                    path = f.get('path', '')
+                    # Default to 'A' for single-pool; can enhance with DB pool later
+                    self._file_pool_map[path] = 'A'
+                
+                # For duplicates, include groups_data in summary
+                if self.exact_grouping:
+                    # groups_data is now populated from scan_result['exact_groups'] above
+                    logger.debug(f"Exact groups included in summary: {len(stats['groups_data'])} groups")
+                
+                # Collect errors from scan_result
+                stats["error_details"] = scan_result.get('error_details', [])
+                stats["errors"] = len(stats["error_details"])
+                
+                # The progress is now handled inside scan_directory, so we just set the final processed count
+                stats["processed"] = total  # All files processed by scan_directory
+                
         except Exception as e:
             # Top-level fatal error
             self.error.emit(str(e))
@@ -412,6 +419,156 @@ class ScanWorker(QThread):
         stats['mode'] = self.mode
         stats['compute_hashes'] = self.compute_hashes
         self.finished.emit(self.profile_name, stats)
+class ComparisonWorker(QThread):
+    """
+    Background worker that handles the synchronous comparison phase (exact duplicate
+    detection or perceptual similarity grouping) asynchronously.
+
+    This worker performs the heavy computation off the GUI thread to keep the UI responsive.
+    It relies on pre-scanned results (hashes, file paths) and the active profile settings.
+
+    Signals
+    -------
+    progress(processed: int, total: int, message: str)
+        Emitted frequently to update progress UI (0-100%).
+    finished(results: dict)
+        Emitted once on completion or cancellation. The results dict includes:
+        - 'cancelled': bool (True if stopped early)
+        - 'groups': List[Group]
+        - 'comparison_type': str
+        - 'summary': dict
+    error(message: str)
+        Emitted on error.
+    """
+
+    progress = Signal(int, int, str)
+    finished = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self, main_window_instance: 'MainWindow', scan_results: dict, comparison_type: str, parent=None):
+        """
+        Initialize worker.
+
+        Parameters
+        ----------
+        main_window_instance : MainWindow
+            The instance of MainWindow to access necessary methods (e.g., _get_duplicate_groups_single_pool,
+            _compute_similarity_groups) and the database manager.
+        scan_results : dict
+            The summary dictionary returned by ScanWorker, containing 'files', 'groups_data', etc.
+        comparison_type : str
+            The type of comparison to perform ('duplicate' or 'similarity').
+        parent : Optional[QObject]
+            Optional Qt parent object.
+        """
+        super().__init__(parent)
+        self.main_window = main_window_instance
+        self.scan_results = scan_results
+        self.comparison_type = comparison_type
+        self._stop = False
+        self.logger = get_logger("img_app.comparison_worker")
+
+    def stop(self) -> None:
+        """
+        Request cooperative stop.
+        """
+        self._stop = True
+
+    def run(self) -> None:
+        """
+        Execute the comparison logic based on comparison_type.
+        """
+        results = {
+            'cancelled': False,
+            'groups': [],
+            'comparison_type': self.comparison_type,
+            'summary': self.scan_results,
+        }
+        
+        try:
+            if self._stop:
+                results['cancelled'] = True
+                self.logger.info("ComparisonWorker cancelled before start.")
+                return
+            
+            if self.comparison_type == 'duplicate':
+                self._run_duplicate_comparison(results)
+            elif self.comparison_type == 'similarity':
+                self._run_similarity_comparison(results)
+            else:
+                raise ValueError(f"Unknown comparison type: {self.comparison_type}")
+
+        except Exception as e:
+            self.error.emit(f"Fatal error during comparison: {e}")
+            self.logger.error("ComparisonWorker fatal error", exception=e)
+            results['cancelled'] = True # Treat fatal error as cancellation/failure
+        finally:
+            self.finished.emit(results)
+
+    def _run_duplicate_comparison(self, results: dict) -> None:
+        """
+        Handles exact duplicate detection.
+        """
+        self.progress.emit(0, 100, "Starting exact duplicate detection...")
+        
+        # Simulate work and check for cancellation
+        import time
+        time.sleep(0.1)
+        if self._stop:
+            results['cancelled'] = True
+            self.logger.info("Duplicate comparison cancelled.")
+            self.progress.emit(100, 100, "Duplicate comparison cancelled.")
+            return
+
+        # Fetch groups using MainWindow's method (which relies on self._last_run_paths being set)
+        raw_duplicate_groups = self.main_window._get_duplicate_groups_single_pool()
+        
+        # Convert raw dicts to immutable Group objects and extract pool map
+        dialog_groups, pool_map = self.main_window._convert_raw_groups_to_dialog_groups(raw_duplicate_groups)
+        
+        results['groups'] = dialog_groups
+        results['pool_map'] = pool_map
+        
+        self.progress.emit(100, 100, f"Duplicate detection finished. Found {len(dialog_groups)} groups.")
+        self.logger.info(f"Duplicate comparison finished. Found {len(dialog_groups)} groups.")
+
+    def _run_similarity_comparison(self, results: dict) -> None:
+        """
+        Handles perceptual similarity grouping.
+        """
+        self.progress.emit(0, 100, "Starting perceptual similarity grouping...")
+        
+        # 1. Prepare parameters
+        profile_payload = self.main_window.active_profile # Assuming active_profile holds the payload
+        run_paths = self.scan_results.get('run_paths', [])
+        db_mgr = getattr(self.main_window, "database_manager", None)
+        
+        if not profile_payload or not run_paths or not db_mgr:
+            self.error.emit("Missing required context (profile, paths, or database manager) for similarity comparison.")
+            self.progress.emit(100, 100, "Similarity comparison failed.")
+            return
+
+        # Simulate work and check for cancellation
+        import time
+        time.sleep(0.1)
+        if self._stop:
+            results['cancelled'] = True
+            self.logger.info("Similarity comparison cancelled.")
+            self.progress.emit(100, 100, "Similarity comparison cancelled.")
+            return
+
+        # 2. Compute similarity groups using MainWindow's method
+        dialog_groups = self.main_window._compute_similarity_groups(profile_payload, run_paths, db_mgr)
+        
+        # 3. Extract pool map
+        pool_map = self.main_window._extract_pool_map_from_groups(dialog_groups)
+        
+        results['groups'] = dialog_groups
+        results['pool_map'] = pool_map
+        
+        self.progress.emit(100, 100, f"Similarity grouping finished. Found {len(dialog_groups)} groups.")
+        self.logger.info(f"Similarity comparison finished. Found {len(dialog_groups)} groups.")
+
 class MainWindow(QMainWindow):
     """
     QMainWindow for the KDC Image Organizer.
@@ -474,6 +631,282 @@ class MainWindow(QMainWindow):
     # Signal emitted when the active profile changes
     profile_changed = Signal(dict)
 
+    def _make_noop_action(self, text: str) -> QAction:
+        """
+        Creates a QAction that is disabled and does nothing when triggered.
+        Used for menu placeholders.
+        
+        Parameters
+        ----------
+        text : str
+            The text to display on the action.
+            
+        Returns
+        -------
+        QAction
+            The disabled, no-op action.
+        """
+        action = QAction(text, self)
+        action.setEnabled(False)
+        return action
+
+    def _on_clear_cache(self) -> None:
+        """
+        Handles the 'Clear Cache' menu action.
+        
+        Currently a placeholder that shows an info message.
+        """
+        show_selectable_info(self, "Cache Operation", "Clear Cache functionality is not yet implemented.")
+
+    def _on_clean_cache(self) -> None:
+        """
+        Handles the 'Clean Cache' menu action.
+        
+        Currently a placeholder that shows an info message.
+        """
+        show_selectable_info(self, "Cache Operation", "Clean Cache functionality is not yet implemented.")
+
+    def _show_about(self) -> None:
+        """
+        Handles the 'About' menu action.
+        
+        Currently a placeholder that shows an info message.
+        """
+        show_selectable_info(self, "About KDC Image Organizer", "KDC Image Organizer\nVersion: Development Prototype\n\nThis application is currently in the Proof-of-Concept phase.")
+
+    def _on_rename_profile(self) -> None:
+        """Placeholder for renaming the active profile."""
+        show_selectable_info(self, "Profile Operation", "Rename Profile functionality is not yet implemented.")
+
+    def _on_delete_profile(self) -> None:
+        """Placeholder for deleting the active profile."""
+        show_selectable_info(self, "Profile Operation", "Delete Profile functionality is not yet implemented.")
+
+    def _on_set_active_profile(self) -> None:
+        """Placeholder for setting the selected profile as active."""
+        show_selectable_info(self, "Profile Operation", "Set Active Profile functionality is not yet implemented.")
+
+    @gui_error_handler(component_name="MainWindow", operation="save_profile")
+    def _on_save_profile(self) -> None:
+        """
+        Save changes from the structured editor to the current profile via the controller.
+        """
+        if self.structured_editor is None or not self.structured_editor.is_dirty():
+            self.status_label.setText("No changes to save.")
+            return
+
+        if self.active_profile is None:
+            self.status_label.setText("Cannot save: No active profile selected.")
+            return
+
+        # 1. Get pending changes from the editor
+        profile_id = self.active_profile['id']
+        try:
+            # The editor provides the full updated JSON payload
+            updated_payload = self.structured_editor.get_profile_data()
+        except Exception as exc:
+            show_selectable_error(self, "Save Error", f"Failed to retrieve data from editor: {exc}")
+            return
+
+        # 2. Validate and save via controller
+        resp = self.controller.update_structured_profile(profile_id, updated_payload)
+        
+        if resp.success:
+            self.status_label.setText(f"Profile '{updated_payload.get('name', 'Unnamed')}' saved successfully.")
+            # Update internal active profile state
+            self.active_profile = resp.data
+            # Clear dirty state in editor and update UI buttons
+            self.structured_editor.set_dirty(False)
+            # Reload profiles to update the name/active status in the combobox
+            self.load_profiles()
+        else:
+            show_selectable_error(self, "Save Failed", f"Failed to save profile: {resp.message}")
+
+    @gui_error_handler(component_name="MainWindow", operation="cancel_changes")
+    def _on_cancel_changes(self) -> None:
+        """
+        Discard changes in the structured editor by reloading the current profile data.
+        """
+        if self.structured_editor is None or not self.structured_editor.is_dirty():
+            self.status_label.setText("No changes to discard.")
+            return
+
+        if self.active_profile is None:
+            self.status_label.setText("Cannot cancel: No active profile selected.")
+            return
+
+        # Reload the profile data from the database
+        self._load_profile_into_editor(self.active_profile['id'])
+        self.status_label.setText(f"Changes discarded for profile: {self.active_profile.get('name', 'Unnamed')}")
+
+    def _get_duplicate_groups_single_pool(self) -> List[Dict[str, Any]]:
+        """
+        Retrieves the pre-computed exact duplicate groups from the last scan run.
+        
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of raw group dictionaries (hash, count, files).
+        """
+        # We rely on the data prepared during the scan phase in _on_scan_finished_with_comparison_start
+        # We prioritize the prepared data, falling back to the fallback data if necessary.
+        prepared = getattr(self, '_last_groups_data_prepared', [])
+        if prepared:
+            return prepared
+        return getattr(self, '_last_groups_data_fallback', [])
+
+    def _convert_raw_groups_to_dialog_groups(self, raw_groups: List[Dict[str, Any]]) -> Tuple[List[Group], Dict[str, str]]:
+        """
+        Converts raw group dictionaries (from scan/comparison) into immutable Group objects
+        and extracts the path->pool map.
+        
+        Parameters
+        ----------
+        raw_groups : List[Dict[str, Any]]
+            List of raw group dictionaries.
+            
+        Returns
+        -------
+        Tuple[List[Group], Dict[str, str]]
+            (List of immutable Group objects, Path to Pool map)
+        """
+        dialog_groups: List[Group] = []
+        pool_map: Dict[str, str] = {}
+        
+        for index, raw_group in enumerate(raw_groups):
+            group_files: List[FileItem] = []
+            total_size = 0
+            
+            for raw_file in raw_group.get("files", []):
+                path = str(raw_file.get("path", "")).strip()
+                if not path:
+                    continue
+                
+                # Use cached metadata if available, otherwise use raw data
+                size, modified = self._metadata_cache.get(path, (0, 0))
+                
+                # Fallback to raw data if cache miss or raw data is better
+                raw_size = int(raw_file.get("size", 0) or 0)
+                raw_modified = MainWindow._to_int_timestamp(raw_file.get("modified", 0))
+                
+                size = max(size, raw_size)
+                modified = max(modified, raw_modified)
+                
+                pool = str(raw_file.get("pool", "A") or "A")
+                
+                file_item = FileItem(
+                    path=path,
+                    size=size,
+                    resolution="—", # Not available in raw data
+                    mod_date=format_timestamp(modified),
+                    score=raw_file.get("score", 1.0), # Default to 1.0 for exact duplicates
+                    file_type=Path(path).suffix.lstrip(".").upper() or "",
+                    savings=0,
+                )
+                group_files.append(file_item)
+                total_size += size
+                pool_map[path] = pool
+            
+            if group_files:
+                stats = GroupStats(
+                    total_size=total_size,
+                    savings=total_size - group_files[0].size, # Savings is total size minus one file
+                    min_score=1.0,
+                    max_score=1.0,
+                    avg_score=1.0,
+                    file_count=len(group_files),
+                )
+                
+                dialog_groups.append(
+                    Group(
+                        id=raw_group.get("hash", f"dup_{index}"),
+                        items=tuple(group_files),
+                        stats=stats,
+                        ref_path=group_files[0].path if group_files else "",
+                    )
+                )
+                
+        return dialog_groups, pool_map
+
+    def _compute_similarity_groups(self, profile_payload: Dict[str, Any], run_paths: List[str], db_manager: Any) -> List[Group]:
+        """
+        Fetches perceptual hashes from the cache DB for the run paths and computes similarity clusters.
+        
+        Since pk_py_lib.core.image.similarity.find_similar_images already returns List[Group]
+        (enriched with metadata), this method primarily handles data fetching and dispatch.
+        
+        Parameters
+        ----------
+        profile_payload : Dict[str, Any]
+            The settings profile payload used for the run.
+        run_paths : List[str]
+            List of file paths included in the current scan run.
+        db_manager : Any
+            The DatabaseManager instance.
+            
+        Returns
+        -------
+        List[Group]
+            List of immutable Group objects representing similarity clusters.
+        """
+        from src.pk_py_lib.core.image.similarity import find_similar_images
+        
+        # 1. Extract algorithm and threshold from profile
+        criteria = profile_payload.get("criteria", {})
+        algorithm = criteria.get("algorithm", "phash")
+        
+        # Default to 10 for phash, 12 for whash (Hamming distance)
+        default_threshold = 10 if algorithm == "phash" else 12
+        
+        # Try to get the threshold from criteria, assuming it's the Hamming distance (int)
+        threshold_int = criteria.get(f"{algorithm}_threshold", default_threshold)
+        
+        # 2. Fetch hashes from DB for the run paths
+        hashes: List[Dict[str, str]] = []
+        
+        if not run_paths:
+            return []
+            
+        placeholders = ",".join("?" for _ in run_paths)
+        
+        with db_manager.get_connection(db_manager.cache_db) as conn:
+            # Restrict to current run paths
+            conn.execute("CREATE TEMP TABLE IF NOT EXISTS temp_run_files (file_path TEXT PRIMARY KEY)")
+            conn.execute("DELETE FROM temp_run_files")
+            conn.executemany(
+                "INSERT OR IGNORE INTO temp_run_files(file_path) VALUES (?)",
+                [(p,) for p in run_paths]
+            )
+            
+            rows = conn.execute(
+                f"""
+                SELECT im.file_path AS path,
+                       ih.hash_value AS hash,
+                       im.pool AS pool
+                FROM image_hashes ih
+                JOIN image_metadata im ON im.id = ih.image_id
+                JOIN temp_run_files tr ON tr.file_path = im.file_path
+                WHERE ih.algorithm = ?
+                  AND ih.hash_value IS NOT NULL
+                """,
+                (algorithm,),
+            ).fetchall()
+            
+            for row in rows:
+                path = str(row["path"])
+                hash_value = str(row["hash"])
+                hashes.append({"path": path, "hash": hash_value})
+                
+        # 3. Compute similarity groups
+        # find_similar_images returns List[Group] directly, enriched with metadata
+        dialog_groups: List[Group] = find_similar_images(
+            hashes=hashes,
+            algorithm=algorithm,
+            threshold=threshold_int, # Pass Hamming distance (int)
+            settings=profile_payload,
+        )
+                
+        return dialog_groups
     def __init__(self, parent: QWidget | None = None, active_profile: Optional[Dict[str, Any]] = None, cli_args: Optional[argparse.Namespace] = None) -> None:
         """
         Initialize MainWindow.
@@ -502,12 +935,15 @@ class MainWindow(QMainWindow):
         self._last_run_file_map: Dict[str, Dict[str, Any]] = {}
         # Cache resolved filesystem metadata for the most recent scan to avoid repeated DB/stat lookups
         self._metadata_cache: Dict[str, Tuple[int, int]] = {}
+        # Progress and Worker management
+        self._progress_dialog: Optional[ProgressDialog] = None
+        self._scan_worker: Optional[ScanWorker] = None
+        self._comparison_worker: Optional[ComparisonWorker] = None
         
         self._setup_window()
         self._setup_menu_bar()
         self._setup_status_bar()
         self._setup_profile_toolbar()
-        self._setup_progress_section()
         self._setup_central_widget()
 
         # App-wide palette override for readable, dark non-selected text in item views (QTreeWidget, QTableView, etc.)
@@ -604,41 +1040,6 @@ class MainWindow(QMainWindow):
         # Attach the toolbar to the main window (keeps the menu bar visible)
         self.addToolBar(Qt.TopToolBarArea, toolbar)
 
-    def _setup_progress_section(self) -> None:
-        """
-        Create the progress reporting section with progress bar and status labels.
-        """
-        # Create a progress section widget (initially hidden)
-        self.progress_section = QWidget(self)
-        self.progress_section.setVisible(False)
-        progress_layout = QVBoxLayout(self.progress_section)
-        progress_layout.setContentsMargins(10, 5, 10, 5)
-        progress_layout.setSpacing(5)
-
-        # Progress bar
-        self.progress_bar = QProgressBar(self)
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        progress_layout.addWidget(self.progress_bar)
-
-        # Status labels in a horizontal layout
-        status_layout = QHBoxLayout()
-        
-        self.progress_status_label = QLabel("Ready", self)
-        status_layout.addWidget(self.progress_status_label)
-        
-        self.file_count_label = QLabel("Files processed: 0", self)
-        status_layout.addWidget(self.file_count_label)
-        
-        self.eta_label = QLabel("Estimated time: --", self)
-        status_layout.addWidget(self.eta_label)
-        
-        status_layout.addStretch(1)
-        progress_layout.addLayout(status_layout)
-
-        # Add the progress section below the toolbar
-        # We'll use a dock widget or place it in the central area temporarily
-        # For now, we'll add it to the central widget's layout later
 
     def _setup_window(self) -> None:
         """Configure basic window properties."""
@@ -743,17 +1144,13 @@ class MainWindow(QMainWindow):
         Create the central widget with progress section and main content.
 
         The central widget now includes:
-        1. Progress section (initially hidden)
-        2. Stacked widget for main content (file selector/placeholder and structured editor)
+        1. Stacked widget for main content (file selector/placeholder and structured editor)
         """
         # Create a container widget for the central area
         container = QWidget(self)
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
-
-        # Add progress section to the container
-        container_layout.addWidget(self.progress_section)
 
         # Create stacked widget for main content
         self.stacked_widget = QStackedWidget(self)
@@ -800,7 +1197,7 @@ class MainWindow(QMainWindow):
         # Set the container as the central widget
         self.setCentralWidget(container)
 
-    def _load_profiles(self) -> None:
+    def load_profiles(self) -> None:
         """
         Load available profiles from the database and populate the combobox.
         """
@@ -885,6 +1282,70 @@ class MainWindow(QMainWindow):
             # Load the profile into the structured editor
             self._load_profile_into_editor(profile_id)
 
+    def _load_profile_into_editor(self, profile_id: str) -> None:
+        """
+        Fetch the full profile data and load it into the StructuredProfileEditorWidget.
+        
+        If the editor widget does not exist, it is created and replaces the placeholder.
+        """
+        try:
+            if self.controller is None:
+                self.status_label.setText("Controller not available for editor load")
+                return
+
+            if StructuredProfileEditorWidget is None:
+                self.status_label.setText("Structured editor component not available")
+                return
+
+            # 1. Fetch profile data
+            resp = self.controller.get_profile(profile_id)
+            if not resp.success or not resp.data:
+                self.status_label.setText(f"Failed to load profile data for editor: {resp.message}")
+                return
+
+            profile_data = resp.data.get('json_data') if isinstance(resp.data, dict) and resp.data.get('format') == 'json' and 'json_data' in resp.data else resp.data
+            
+            if not profile_data:
+                self.status_label.setText("Profile data is empty or invalid")
+                return
+
+            # 2. Initialize editor if needed
+            if self.structured_editor is None:
+                self.structured_editor = StructuredProfileEditorWidget(
+                    api=self.controller.api,
+                    parent=self
+                )
+                # Replace the placeholder with the actual editor
+                self.stacked_widget.removeWidget(self.structured_editor_placeholder)
+                self.stacked_widget.addWidget(self.structured_editor)
+                
+                # Connect signals only once
+                self.structured_editor.dirtyChanged.connect(self._on_editor_dirty_changed)
+                self._editor_dirty_connected = True
+                
+            # 3. Load data and switch view
+            self.structured_editor.load_profile(profile_data)
+            self.stacked_widget.setCurrentWidget(self.structured_editor)
+            self.status_label.setText(f"Editor loaded for profile: {profile_data.get('name', 'Unnamed')}")
+
+        except Exception as exc:
+            self.status_label.setText(f"Error loading editor: {exc}")
+            import logging
+            logging.getLogger("img_app.main_window").exception("Error in _load_profile_into_editor")
+
+    def _on_editor_dirty_changed(self, is_dirty: bool) -> None:
+        """
+        Handle the dirty state change from the structured editor.
+        Enables/disables Save and Cancel buttons.
+        """
+        self.save_btn.setEnabled(is_dirty)
+        self.cancel_btn.setEnabled(is_dirty)
+        if is_dirty:
+            self.status_label.setText("Unsaved changes in profile settings.")
+        else:
+            # Restore status bar text to active profile name
+            name = self.active_profile.get("name") if self.active_profile else "Ready"
+            self.status_label.setText(f"Active profile: {name}")
     def _on_create_profile(self) -> None:
         """
         Handle create new profile button click.
@@ -923,7 +1384,7 @@ class MainWindow(QMainWindow):
                 
                 if create_resp.success:
                     self.status_label.setText(f"Profile '{name}' created")
-                    self._load_profiles()  # Reload profiles to include the new one
+                    self.load_profiles()  # Reload profiles to include the new one
                 else:
                     self.status_label.setText(f"Failed to create profile: {create_resp.message}")
             else:
@@ -979,7 +1440,7 @@ class MainWindow(QMainWindow):
                 
                 if copy_resp.success:
                     self.status_label.setText(f"Profile '{new_name}' created from copy")
-                    self._load_profiles()  # Reload profiles to include the new one
+                    self.load_profiles()  # Reload profiles to include the new one
                 else:
                     self.status_label.setText(f"Failed to copy profile: {copy_resp.message}")
             else:
@@ -1055,13 +1516,10 @@ class MainWindow(QMainWindow):
                 self.start_btn.setEnabled(True)
                 return
 
-        # 2) Show progress section and prepare scan
-        self.progress_section.setVisible(True)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
-        self.progress_status_label.setText("Starting operation...")
-        self.file_count_label.setText("Files processed: 0")
-        self.eta_label.setText("Estimated time: --")
+        # 2) Create and show modal ProgressDialog
+        self._progress_dialog = ProgressDialog(self, title="Image Organizer Operation")
+        self._progress_dialog.set_indeterminate("Starting operation...")
+        self._progress_dialog.cancellation_requested.connect(self._on_cancellation_requested)
         self.start_btn.setEnabled(False)
 
         # 3) Resolve full profile JSON for the run (now guaranteed to include saved changes)
@@ -1106,46 +1564,14 @@ class MainWindow(QMainWindow):
             profile_id=(self.active_profile.get('id') if self.active_profile else None),
             parent=self
         )
-        self._scan_worker.progress.connect(self._on_scan_progress)
+        # Connect ScanWorker signals to the new progress and finished handlers
+        self._scan_worker.progress.connect(self._update_progress_dialog)
         self._scan_worker.error.connect(self._on_scan_error)
-        self._scan_worker.finished.connect(self._on_scan_finished)
+        self._scan_worker.finished.connect(self._on_scan_finished_with_comparison_start)
         self._scan_worker.start()
-
-    def _on_scan_progress(self, processed: int, total: int, current_path: str, message: str) -> None:
-        """
-        Update progress UI from ScanWorker signals.
-
-        Parameters
-        ----------
-        processed : int
-            Number of files processed so far.
-        total : int
-            Total files discovered for processing.
-        current_path : str
-            The path of the file currently being processed.
-        message : str
-            Short status message from the worker.
-        """
-        import time
-        percent = int((processed / total) * 100) if total > 0 else 0
-        if percent < 0:
-            percent = 0
-        if percent > 100:
-            percent = 100
-        self.progress_bar.setValue(percent)
-        self.file_count_label.setText(f"Files processed: {processed}/{total}")
-        # ETA
-        try:
-            elapsed = time.time() - getattr(self, "start_time", time.time())
-            if processed > 0 and total > 0:
-                remaining = max(total - processed, 0)
-                per_item = elapsed / max(processed, 1)
-                eta = per_item * remaining
-                self.eta_label.setText(f"Estimated time: {eta:.1f}s remaining")
-        except Exception:
-            pass
-        # Status
-        self.progress_status_label.setText(f"{message}: {current_path}")
+        
+        # Show the modal dialog (blocks until accepted/rejected/closed)
+        self._progress_dialog.exec()
 
     def _on_scan_error(self, message: str) -> None:
         """
@@ -1157,19 +1583,94 @@ class MainWindow(QMainWindow):
             self._scan_errors = [message]
         self.status_label.setText(f"Error: {message}")
 
-    def _on_scan_finished(self, profile_name: str, summary: dict) -> None:
+    @gui_error_handler(component_name="MainWindow", operation="cancellation_request")
+    def _on_cancellation_requested(self) -> None:
         """
-        Finalize UI and present summary, textual reports, and the Duplicate Manager dialog.
- 
-        This function restores a clean structure with a single try/except for the
-        report-building section, fixes previous indentation errors, and preserves
-        the enhanced debug logging added during diagnosis.
+        Handles the cancellation signal from the ProgressDialog.
+        
+        Requests cooperative stop on any running worker threads.
         """
-        # Basic completion UI
+        self.logger.info("Cancellation requested by user.")
+        if self._scan_worker and self._scan_worker.isRunning():
+            self.logger.info("Stopping ScanWorker.")
+            self._scan_worker.stop()
+        
+        if self._comparison_worker and self._comparison_worker.isRunning():
+            self.logger.info("Stopping ComparisonWorker.")
+            self._comparison_worker.stop()
+
+    def _update_progress_dialog(self, processed: int, total: int, current_path: str = "", message: str = "") -> None:
+        """
+        Update the ProgressDialog UI from worker signals.
+
+        Parameters
+        ----------
+        processed : int
+            Number of items processed so far.
+        total : int
+            Total items discovered for processing.
+        current_path : str
+            The path of the file currently being processed (ScanWorker only).
+        message : str
+            Short status message from the worker.
+        """
+        if self._progress_dialog is None:
+            return
+
+        # Determine if this is a ScanWorker signal (which includes current_path)
+        # We check the number of arguments passed to infer the worker type.
+        # ScanWorker.progress emits 4 arguments (processed, total, current_path, message).
+        # ComparisonWorker.progress emits 3 arguments (processed, total, message).
+        # Since Python signals don't enforce argument count strictly, we rely on the
+        # signature of the connected slot to determine the expected arguments.
+        # Since this slot is connected to ScanWorker.progress (4 args) AND
+        # ComparisonWorker.progress (3 args), we must handle both.
+        # The simplest way to handle this is to check if current_path is provided.
+        # However, since the signature is fixed to 4 arguments here, we rely on the
+        # caller (ScanWorker) providing all 4, and ComparisonWorker providing 3,
+        # which means the 4th argument (current_path) will be missing/None/empty string
+        # when called from ComparisonWorker.
+        # A more robust way is to check the number of arguments passed, but Python slots
+        # make this tricky. We will rely on the fact that ScanWorker provides current_path (str) and ComparisonWorker
+        # does not (so current_path will be an empty string or None if the signal is defined
+        # to match the slot signature).
+        
+        # For simplicity and robustness against signal argument mismatch, we will assume
+        # if `current_path` is a non-empty string, it's a scan update.
+        is_scan_progress = bool(current_path)
+
+        if total > 0:
+            percent = int((processed / total) * 100)
+            percent = max(0, min(100, percent))
+            
+            if is_scan_progress:
+                # ScanWorker progress: show path and detailed count
+                status_text = f"Scanning: {current_path} ({processed}/{total})"
+            else:
+                # ComparisonWorker progress: show percentage and message
+                status_text = f"{message} ({percent}%)"
+            
+            self._progress_dialog.set_progress(percent, status_text)
+        else:
+            # Indeterminate state or initial phase
+            self._progress_dialog.set_indeterminate(message)
+
+    def _on_scan_finished_with_comparison_start(self, profile_name: str, summary: dict) -> None:
+        """
+        Handles ScanWorker completion. Checks for cancellation and, if successful,
+        initiates the ComparisonWorker for grouping/similarity analysis.
+        """
+        # 1. Check for cancellation
+        if summary.get("cancelled"):
+            self.logger.info("Scan cancelled. Closing progress dialog.")
+            if self._progress_dialog:
+                self._progress_dialog.close()
+            self.start_btn.setEnabled(True)
+            return
+
+        # Basic completion UI update (for logging/status bar)
         try:
-            print(f"[DEBUG _on_scan_finished] START: profile_name={profile_name}", file=sys.stderr)
-            print(f"[DEBUG _on_scan_finished] Summary keys: {list(summary.keys()) if summary else 'None'}", file=sys.stderr)
-            print(f"[DEBUG _on_scan_finished] Summary: {summary}", file=sys.stderr)
+            print(f"[DEBUG _on_scan_finished_with_comparison_start] START: profile_name={profile_name}", file=sys.stderr)
             LOGGER.info("Scan finished handler started", variables={
                 "profile_name": profile_name,
                 "summary_keys": list(summary.keys()) if summary else [],
@@ -1178,9 +1679,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        self.progress_bar.setValue(100)
-        self.progress_status_label.setText("Operation completed")
-        self.start_btn.setEnabled(True)
+        # 2. Prepare for comparison (keep file map and metadata cache)
+        self.start_btn.setEnabled(False) # Keep disabled until final result
         self._last_run_file_map = {}
         self._metadata_cache = {}
 
@@ -1623,7 +2123,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             try:
                 tb = traceback.format_exc()
-                print(f"Exception in _on_scan_finished report generation: {e}\n{tb}", file=sys.stderr)
+                print(f"Exception in _on_scan_finished] report generation: {e}\n{tb}", file=sys.stderr)
                 LOGGER.error("report.generation.failed", exception=e)
             except Exception:
                 pass
@@ -1632,13 +2132,11 @@ class MainWindow(QMainWindow):
         print(f"[DEBUG _on_scan_finished] groups={groups}, total_dups={total_dups}, non_matches={non_matches}", file=sys.stderr)
         print(f"[DEBUG _on_scan_finished] prepared_groups={len(groups_data_prepared)}, fallback_groups={len(groups_data_fallback)}", file=sys.stderr)
         LOGGER.info("Final groups data state", variables={
-            "groups_data_prepared_count": len(groups_data_prepared),
-            "groups_data_fallback_count": len(groups_data_fallback),
-            "total_groups": groups,
-            "total_duplicate_files": total_dups,
-            "non_matches": non_matches,
             "is_single_pool": is_single_pool,
-            "two_pool": two_pool
+            "two_pool": two_pool,
+            "direction": direction,
+            "profile_name": profile_name,
+            "found_files": found
         })
 
         # Build header and final report text
@@ -1692,31 +2190,95 @@ class MainWindow(QMainWindow):
         
         # Handle non-duplicates case first, which only generates a report and returns
         if two_pool and direction == "non_duplicates":
+            if self._progress_dialog:
+                self._progress_dialog.close()
             self._show_resizable_text_dialog("Non-duplicates Report", report_text)
-            try:
-                self.statusBar().showMessage(f"Non-duplicates (B not in A): {non_matches}", 10000)
-            except Exception:
-                pass
+            self.start_btn.setEnabled(True)
             return
 
-        # Clear selection store before opening a new dialog
-        try:
-            self.dialog_selection_store.clear_selection()
-        except Exception:
-            pass
+        # 3. Start ComparisonWorker
+        comparison_type = 'similarity' if is_similarity else 'duplicate'
+        
+        # Update progress dialog for the next phase
+        if self._progress_dialog:
+            self._progress_dialog.set_indeterminate(f"Starting {comparison_type} comparison...")
 
-        dialog_groups: List[Group] = []
-        pool_map: Dict[str, str] = {}
+        self._comparison_worker = ComparisonWorker(
+            main_window_instance=self,
+            scan_results=summary,
+            comparison_type=comparison_type,
+            parent=self
+        )
+        self._comparison_worker.progress.connect(self._update_progress_dialog)
+        self._comparison_worker.finished.connect(self._on_comparison_finished)
+        self._comparison_worker.error.connect(self._on_scan_error) # Reuse scan error handler for logging
+        self._comparison_worker.start()
+        
+        # Note: The modal dialog is already running from _on_start() and will block until
+        # it is explicitly closed in _on_comparison_finished or cancelled.
+        
+        # We must ensure the report text and summary are available for _on_comparison_finished
+        # which will display the final dialogs.
+        self._last_report_text = report_text
+        self._last_summary_text = text
+        self._last_payload_for_mode = payload_for_mode
+        self._last_run_paths = run_paths
+        self._last_db_mgr = db_mgr
+        self._last_two_pool = two_pool
+        self._last_direction = direction
+        self._last_groups_data_prepared = groups_data_prepared
+        self._last_groups_data_fallback = groups_data_fallback
+        
+        # The method returns here, allowing the ComparisonWorker to run in the background
+        # while the modal ProgressDialog remains open.
+        return
+
+    @gui_error_handler(component_name="MainWindow", operation="comparison_finished")
+    def _on_comparison_finished(self, results: dict) -> None:
+        """
+        Handles ComparisonWorker completion. Closes the progress dialog and displays
+        the appropriate results manager dialog (DuplicateManagerDialog or SimilarityManagerDialog).
+
+        Parameters
+        ----------
+        results : dict
+            The results dictionary emitted by ComparisonWorker, containing 'cancelled', 'groups', etc.
+        """
+        # 1. Close the progress dialog and re-enable the start button
+        if self._progress_dialog:
+            self._progress_dialog.close()
+        self.start_btn.setEnabled(True)
+        
+        # 2. Check for cancellation
+        if results.get("cancelled"):
+            self.logger.info("Comparison cancelled or failed. Aborting result display.")
+            return
+
+        # 3. Extract necessary context stored during scan phase
+        dialog_groups: List[Group] = results.get('groups', [])
+        pool_map: Dict[str, str] = results.get('pool_map', {})
+        
+        # Context stored in instance variables by _on_scan_finished_with_comparison_start
+        text = getattr(self, '_last_summary_text', "Operation completed.")
+        report_text = getattr(self, '_last_report_text', "No detailed report available.")
+        payload_for_mode = getattr(self, '_last_payload_for_mode', {})
+        two_pool = getattr(self, '_last_two_pool', False)
+        direction = getattr(self, '_last_direction', "duplicates")
+        mode_val = payload_for_mode.get("mode", "?")
+        scope_kind = payload_for_mode.get("scope", {}).get("kind")
+        is_similarity = mode_val == "similarity"
+        
+        # 4. Display results dialog
         dialog = None
         
         try:
+            # Clear selection store before opening a new dialog
+            try:
+                self.dialog_selection_store.clear_selection()
+            except Exception:
+                pass
+
             if is_similarity:
-                # 1. Compute similarity groups (List[Group])
-                dialog_groups = self._compute_similarity_groups(payload_for_mode, run_paths, db_mgr)
-                
-                # 2. Extract pool map from the already-converted Group objects
-                pool_map = self._extract_pool_map_from_groups(dialog_groups)
-                
                 if not dialog_groups:
                     show_selectable_info(
                         self,
@@ -1731,26 +2293,14 @@ class MainWindow(QMainWindow):
                     groups=dialog_groups,
                     pool_map=pool_map,
                     selection_store=self.dialog_selection_store,
-                    db_manager=db_mgr,
+                    db_manager=getattr(self, "database_manager", None),
                     summary_text=text,
                     report_text=report_text,
                     profile_payload=payload_for_mode,
                     parent=self,
                 )
             else:
-                # Duplicates mode (Single-pool or Two-pool duplicates)
-                
-                # 1. Use groups_data_prepared (from two_pool logic) or fallback to single-pool logic
-                raw_duplicate_groups = (
-                    groups_data_prepared
-                    or self._get_duplicate_groups_single_pool()
-                    or groups_data_fallback
-                    or []
-                )
-                
-                # 2. Convert raw dicts to immutable Group objects and extract pool map
-                dialog_groups, pool_map = self._convert_raw_groups_to_dialog_groups(raw_duplicate_groups)
-                
+                # Duplicates mode
                 if not dialog_groups:
                     show_selectable_info(
                         self,
@@ -1787,7 +2337,7 @@ class MainWindow(QMainWindow):
             # Execute dialog
             ret = dialog.exec()
             total_items = sum(group.stats.file_count for group in dialog_groups)
-            LOGGER.info(
+            self.logger.info(
                 "file_management.dialog.completed",
                 variables={
                     "dialog_type": type(dialog).__name__,
@@ -1807,39 +2357,24 @@ class MainWindow(QMainWindow):
                 pass
         
         except Exception as e:
+            # Fallback error handling for dialog creation/execution failure
             try:
-                print(f"[DEBUG _on_scan_finished] Exception creating dialog: {e}", file=sys.stderr)
-                traceback.print_exc(file=sys.stderr)
-                if is_similarity:
-                    LOGGER.error("similarity.dialog.failed", exception=e, variables={"groups_count": len(dialog_groups or [])})
-                else:
-                    LOGGER.error("dups.dialog.failed", exception=e, variables={"groups_count": len(dialog_groups or [])})
- 
+                self.logger.error(f"Exception creating/executing results dialog: {e}", exc_info=True)
                 # Show basic QDialog with summary on error
-                try:
-                    basic_dlg = QDialog(self)
-                    basic_dlg.setWindowTitle("Scan Summary - Error")
-                    layout = QVBoxLayout(basic_dlg)
-                    text_edit = QTextEdit()
-                    text_edit.setPlainText(text)
-                    text_edit.setReadOnly(True)
-                    layout.addWidget(text_edit)
-                    btns = QDialogButtonBox(QDialogButtonBox.Ok)
-                    btns.accepted.connect(basic_dlg.accept)
-                    layout.addWidget(btns)
-                    basic_dlg.resize(600, 400)
-                    basic_dlg.exec()
-                except Exception:
-                    pass  # Fail silently if basic dialog creation fails
+                basic_dlg = QDialog(self)
+                basic_dlg.setWindowTitle("Operation Summary - Error")
+                layout = QVBoxLayout(basic_dlg)
+                text_edit = QTextEdit()
+                text_edit.setPlainText(text + f"\n\n--- Dialog Error ---\n{e}")
+                text_edit.setReadOnly(True)
+                layout.addWidget(text_edit)
+                btns = QDialogButtonBox(QDialogButtonBox.Ok)
+                btns.accepted.connect(basic_dlg.accept)
+                layout.addWidget(btns)
+                basic_dlg.resize(600, 400)
+                basic_dlg.exec()
             except Exception:
-                pass
- 
-        try:
-            # Update status bar with final counts if dialog failed to open
-            self.statusBar().showMessage(f"Duplicate groups: {groups}; duplicate files: {total_dups}", 10000)
-        except Exception:
-            pass
-        return
+                pass # Fail silently if basic dialog creation fails
 
     def _extract_pool_map_from_groups(self, groups: List[Group]) -> Dict[str, str]:
         """
@@ -1862,8 +2397,6 @@ class MainWindow(QMainWindow):
                 # pool map being built during raw data conversion or from the DB query
                 # if available. For similarity groups returned by core, pool info is
                 # implicitly 'A' unless two-pool logic was applied earlier.
-                # Since similarity groups are computed from run_paths (which are single-pool
-                # in the current implementation), we default to 'A' if not explicitly set.
                 # However, the raw data conversion helper handles this correctly for duplicates.
                 # For similarity, we rely on the DB query in _format_similarity_groups
                 # (which was removed) or the raw data conversion helper.
@@ -1873,1134 +2406,3 @@ class MainWindow(QMainWindow):
                 # unless two-pool logic is explicitly implemented in core.
                 pool_map[item.path] = 'A'
         return pool_map
-
-    def _convert_raw_groups_to_dialog_groups(self, raw_groups: list[dict]) -> Tuple[List[Group], Dict[str, str]]:
-        """
-        Converts raw group dictionaries (from DB queries/scan results) into
-        immutable Group dataclasses and extracts the path->pool map.
-
-        Parameters
-        ----------
-        raw_groups : list[dict]
-            List of group dictionaries, where each group contains a 'files' list
-            of file dictionaries, each having 'path', 'size', 'modified', and 'pool'.
-
-        Returns
-        -------
-        Tuple[List[Group], Dict[str, str]]
-            A tuple containing the list of immutable Group objects and a map of
-            file path to pool label.
-        """
-        dialog_groups: List[Group] = []
-        pool_map: Dict[str, str] = {}
-        
-        for idx, raw_group in enumerate(raw_groups, 1):
-            files: List[FileItem] = []
-            total_size = 0
-            min_score = 1.0
-            max_score = 0.0
-            
-            for raw_file in raw_group.get('files', []):
-                path = str(raw_file.get('path', '')).strip()
-                if not path:
-                    continue
-                size_hint = raw_file.get('size')
-                if size_hint is None:
-                    size_hint = raw_file.get('file_size')
-                modified_hint = raw_file.get('modified')
-                if modified_hint is None:
-                    modified_hint = raw_file.get('modified_time')
-                if modified_hint is None:
-                    modified_hint = raw_file.get('file_modified')
-                size, modified = self._resolve_file_metadata(path, size_hint, modified_hint)
-                score = float(raw_file.get('score', 1.0))
-                # Default to 'A' if pool is missing or None/empty string
-                pool = str(raw_file.get('pool', 'A') or 'A')
-                
-                files.append(
-                    FileItem(
-                        path=path,
-                        size=size,
-                        resolution=str(raw_file.get('resolution') or ""),
-                        mod_date=format_timestamp(modified),
-                        score=score,
-                        file_type=str(raw_file.get('file_type') or ""),
-                        savings=0,
-                    )
-                )
-                total_size += size
-                min_score = min(min_score, score)
-                max_score = max(max_score, score)
-                pool_map[path] = pool
-
-            if not files:
-                continue
-
-            # Calculate average score (simple average of scores, assuming 1.0 for duplicates)
-            avg_score = sum(f.score for f in files) / len(files) if files else 0.0
-            
-            stats = GroupStats(
-                total_size=total_size,
-                savings=total_size - min(f.size for f in files) if files else 0,
-                min_score=min_score,
-                max_score=max_score,
-                avg_score=avg_score,
-                file_count=len(files),
-            )
-            
-            # Use the first file's path as the reference path
-            ref_path = files[0].path
-            
-            dialog_groups.append(
-                Group(
-                    id=idx,
-                    items=files,
-                    stats=stats,
-                    ref_path=ref_path,
-                )
-            )
-        return dialog_groups, pool_map
-
-    def _resolve_file_metadata(
-        self,
-        path: str,
-        size_hint: Any | None = None,
-        modified_hint: Any | None = None,
-    ) -> Tuple[int, int]:
-        """
-        Resolve the authoritative file size (bytes) and modified timestamp (epoch seconds) for a path.
- 
-        Parameters
-        ----------
-        path : str
-            Absolute filesystem path for the file whose metadata should be resolved. The path may refer
-            to files that were present in the most recent scan or be looked up on demand.
- 
-        size_hint : Any | None
-            Optional size value gathered from upstream sources (e.g., scan summary, database rows).
-            Accepts integers, floats, numeric strings, or None. Values ≤ 0 are treated as unknown.
- 
-        modified_hint : Any | None
-            Optional modified-time hint, typically an epoch number or ISO-8601 string. Values that
-            cannot be parsed are treated as unknown.
- 
-        Returns
-        -------
-        Tuple[int, int]
-            A tuple ``(size_bytes, modified_epoch_seconds)`` where unknown components are returned as 0.
-            Resolved values are cached in ``self._metadata_cache`` to minimize repeated filesystem calls.
- 
-        Examples
-        --------
-        >>> size, mtime = self._resolve_file_metadata(
-        ...     "C:/Photos/example.jpg",
-        ...     size_hint="2048",
-        ...     modified_hint="2025-09-27T12:00:00"
-        ... )
-        >>> size
-        2048
-        >>> mtime > 0
-        True
-        """
-        def _coerce_size(value: Any | None) -> int:
-            try:
-                if value is None:
-                    return 0
-                if isinstance(value, (int, float)):
-                    return max(int(value), 0)
-                text = str(value).strip()
-                if not text:
-                    return 0
-                return max(int(float(text)), 0)
-            except Exception:
-                return 0
- 
-        cached_size, cached_modified = self._metadata_cache.get(path, (0, 0))
-        hint_size = _coerce_size(size_hint)
-        hint_modified = MainWindow._to_int_timestamp(modified_hint)
- 
-        size = hint_size
-        if size == 0:
-            try:
-                stat = Path(path).stat()
-                size = int(stat.st_size)
-            except Exception:
-                size = cached_size
- 
-        modified = hint_modified
-        if modified == 0:
-            try:
-                stat = Path(path).stat()
-                modified = int(stat.st_mtime)
-            except Exception:
-                modified = cached_modified
- 
-        resolved = (max(size, 0), max(modified, 0))
-        self._metadata_cache[path] = resolved
-        return resolved
-
-    def _get_duplicate_groups_single_pool(self) -> list[dict]:
-        """
-        Return duplicate groups within the current run scope for single_pool mode.
-
-        Data Source and Alignment
-        -------------------------
-        - Uses image_hashes joined with image_metadata, filtered by:
-          • pool = 'A' (single_pool semantics)
-          • algorithm = 'sha256' (matches the ScanWorker and the textual report)
-        - Re-creates and populates a connection-local temp_run_files table using
-          self._last_run_paths to scope results strictly to the most recent run.
-        - This logic is intentionally aligned with the textual “Duplicate Report”
-          that also reads from image_hashes to ensure consistency between the
-          report counts and the DuplicateManagerDialog groups.
-
-        Returns
-        -------
-        list[dict]
-            A list of group dictionaries shaped as:
-              [
-                { "hash": str, "count": int, "files": [ { "path": str, "size": int, "modified": int, "pool": str }, ... ] },
-                ...
-              ]
-
-        Filtering and Scope
-        -------------------
-        - Restricts results strictly to the files processed in the most recent scan run
-          by (re)populating a temporary table temp_run_files using the last recorded
-          run paths captured from the worker summary (_on_scan_finished()).
-        - Limits to the 'A' pool for single_pool semantics.
-        - Only groups with at least two files are returned.
-
-        Notes
-        -----
-        - Uses DatabaseManager.get_connection() to interact with the cache database.
-        - Timestamps are returned as integer epoch seconds (best-effort conversion).
-        - This helper performs no UI and raises no exceptions outward; on any error
-          it returns an empty list to keep the GUI resilient.
-        """
-        # Best-effort guard: require a database manager and a remembered run scope
-        db_mgr = getattr(self, "database_manager", None)
-        if db_mgr is None:
-            return []
-        run_paths = list(getattr(self, "_last_run_paths", []) or [])
-        if not run_paths:
-            # No remembered scope; nothing to compute
-            return []
-
-        # For single_pool milestone we constrain to Pool 'A'
-        pool_label = "A"
-        # Algorithm aligned with textual duplicates report and ScanWorker (image_hashes.algorithm)
-        algorithm = "sha256"
-        
-        # Use the class method for robust timestamp conversion
-        _to_int_timestamp = MainWindow._to_int_timestamp
-        
-        try:
-            groups: list[dict] = []
-            # Use a new connection; populate a TEMP table with this run's file set
-            with db_mgr.get_connection(db_mgr.cache_db) as conn:
-                # Populate/refresh the run-scope temp table for this connection
-                conn.execute("CREATE TEMP TABLE IF NOT EXISTS temp_run_files (file_path TEXT PRIMARY KEY)")
-                conn.execute("DELETE FROM temp_run_files")
-                conn.executemany(
-                    "INSERT OR IGNORE INTO temp_run_files(file_path) VALUES (?)",
-                    [(p,) for p in run_paths]
-                )
-
-                # Step 1 (aligned with textual report):
-                # Discover duplicate hash values using image_hashes joined with image_metadata,
-                # filtered by the current run scope (temp_run_files), Pool 'A', and algorithm.
-                dup_rows = conn.execute(
-                    """
-                    SELECT ih.hash_value AS hash
-                    FROM image_hashes ih
-                    JOIN image_metadata im ON im.id = ih.image_id AND im.is_valid = 1
-                    JOIN temp_run_files t ON t.file_path = im.file_path
-                    WHERE ih.algorithm = ? AND ih.hash_value IS NOT NULL
-                    GROUP BY ih.hash_value
-                    HAVING COUNT(*) >= 2
-                    """,
-                    (algorithm,)
-                ).fetchall()
-                hashes = [str(r["hash"]) for r in dup_rows if r["hash"] is not None]
-
-                if not hashes:
-                    return []
-
-                # Step 2 (aligned with textual report):
-                # Fetch member files for the discovered hashes from image_hashes+image_metadata,
-                # limited to the current run scope and Pool 'A', and ordered stably by (hash, path).
-                placeholders = ",".join("?" for _ in hashes)
-                sql = f"""
-                    SELECT ih.hash_value AS hash,
-                           im.file_path,
-                           im.file_size,
-                           im.file_modified,
-                           im.pool
-                    FROM image_hashes ih
-                    JOIN image_metadata im ON im.id = ih.image_id AND im.is_valid = 1
-                    JOIN temp_run_files t ON t.file_path = im.file_path
-                    WHERE ih.algorithm = ? AND ih.hash_value IN ({placeholders})
-                    ORDER BY ih.hash_value, im.file_path
-                """
-                params = [algorithm, *hashes]
-                rows = conn.execute(sql, params).fetchall()
-
-                # Group in Python into the requested shape
-                grouped: dict[str, dict] = {}
-                for r in rows:
-                    h = str(r["hash"])
-                    g = grouped.get(h)
-                    if g is None:
-                        g = {"hash": h, "count": 0, "files": []}
-                        grouped[h] = g
-                    file_path = str(r["file_path"])
-                    try:
-                        size = int(r["file_size"]) if r["file_size"] is not None else 0
-                    except Exception:
-                        size = 0
-                    modified = _to_int_timestamp(r["file_modified"])
-                    pool = str(r["pool"] or "")
-                    g["files"].append({"path": file_path, "size": size, "modified": modified, "pool": pool})
-
-                # Finalize counts and filter to groups with at least two members
-                for h, g in grouped.items():
-                    g["count"] = len(g["files"])
-                    if g["count"] >= 2:
-                        groups.append(g)
-
-            return groups
-        except Exception:
-            # Defensive: never crash caller; empty means "no groups"
-            return []
-
-    def _compute_duplicate_groups_from_files(self, files: list[dict]) -> list[dict]:
-        """
-        Compute groups of exact duplicate files based on their SHA256 hashes.
-    
-        Input flexibility
-        - Accepts any of the following per-file keys for the identity hash:
-          • 'hash' (legacy callers)
-          • 'exact_hash' (preferred; produced by scan_directory)
-          • 'hashes' dict containing key 'sha256' (future compatibility)
-    
-        Behavior
-        - Groups by the resolved identity hash value.
-        - Skips entries missing a valid path or identity hash.
-        - Reduces log noise: aggregates skip counts; per-item issues are logged at DEBUG.
-    
-        Parameters
-        ----------
-        files : list[dict]
-            File dicts from scan_directory; each should include at least:
-            - 'path': absolute file path (str)
-            - identity hash under 'exact_hash' or 'hash' or 'hashes.sha256'
-    
-        Returns
-        -------
-        list[dict]
-            [
-              { "hash": str, "files": [ { "path": str }, ... ], "count": int },
-              ...
-            ]
-        """
-        groups = defaultdict(list)
-        skipped = 0
-        has_valid_hashes = False
-    
-        for file_dict in files:
-            try:
-                path = file_dict.get('path')
-                hashes_dict = file_dict.get('hashes') if isinstance(file_dict.get('hashes'), dict) else {}
-                # Resolve identity hash in order of preference
-                hash_val = (
-                    file_dict.get('hash') or
-                    file_dict.get('exact_hash') or
-                    (hashes_dict.get('sha256') if hashes_dict else None)
-                )
-                if not path or not hash_val:
-                    skipped += 1
-                    # Per-item debug to avoid noisy warnings
-                    self.logger.debug(
-                        f"Skipping (missing path or identity hash). "
-                        f"path={path or 'missing'} keys={list(file_dict.keys())}"
-                    )
-                    continue
-                has_valid_hashes = True
-                groups[hash_val].append({'path': path})
-            except Exception as e:
-                skipped += 1
-                self.logger.debug(f"Error processing file dict: {e}")
-                continue
-    
-        total = len(files)
-        if skipped > 0:
-            self.logger.warning(f"Skipped {skipped} out of {total} files due to missing data or errors")
-    
-        if not has_valid_hashes:
-            self.logger.warning(
-                "No valid identity hashes found in files; returning empty groups. "
-                "Expected 'exact_hash' from scan_directory."
-            )
-    
-        duplicate_groups: list[dict] = []
-        for hash_val, file_list in groups.items():
-            if len(file_list) > 1:
-                duplicate_groups.append({
-                    'hash': hash_val,
-                    'files': file_list,
-                    'count': len(file_list)
-                })
-    
-        self.logger.info(
-            f"Computed {len(duplicate_groups)} duplicate groups from {total} files (skipped {skipped})"
-        )
-        return duplicate_groups
-
-    def _simulate_operation(self) -> None:
-        """
-        Simulate an operation with progress updates.
-        """
-        import time
-        total_files = 100  # Simulate 100 files
-        
-        for i in range(total_files + 1):
-            time.sleep(0.05)  # Simulate work
-            progress = int((i / total_files) * 100)
-            self.progress_bar.setValue(progress)
-            self.file_count_label.setText(f"Files processed: {i}/{total_files}")
-            
-            # Simple ETA calculation
-            if i > 0:
-                elapsed = time.time() - self.start_time
-                remaining = (elapsed / i) * (total_files - i)
-                self.eta_label.setText(f"Estimated time: {remaining:.1f}s remaining")
-            
-            # Process events to update UI
-            QApplication.processEvents()
-            
-        self.progress_status_label.setText("Operation completed")
-        # Show results dialog
-        self._show_results_dialog()
-
-    def _show_results_dialog(self) -> None:
-        """
-        Show the results dialog after operation completion.
-        """
-        # For now, show a message - will implement full results dialog later
-        from src.pk_py_lib.gui.utils.messages import show_selectable_info
-        show_selectable_info(
-            self,
-            "Operation Complete",
-            "The operation has completed successfully.\n\n"
-            f"Profile: {self.active_profile.get('name', 'Unnamed')}\n"
-            "Files processed: 100\n"
-            "Duplicates found: 5\n"
-            "Time taken: 5.0 seconds"
-        )
-    def _show_resizable_text_dialog(self, title: str, text: str) -> None:
-        """
-        Show a resizable dialog containing large, selectable report text.
-
-        Parameters
-        ----------
-        title : str
-            Dialog window title.
-        text : str
-            Complete report text to present. Text is selectable/copyable.
-
-        Notes
-        -----
-        - Uses a QTextEdit to allow selection and scrolling of large reports.
-        - Dialog is explicitly made resizable with a size grip and generous default size.
-        - A "Copy to Clipboard" action is provided for quick export.
-        """
-        dlg = QDialog(self)
-        dlg.setWindowTitle(title)
-        layout = QVBoxLayout(dlg)
-
-        # Large, scrollable, selectable text surface
-        edit = QTextEdit(dlg)
-        edit.setReadOnly(True)
-        try:
-            edit.setLineWrapMode(QTextEdit.NoWrap)  # keep wide reports readable
-        except Exception:
-            pass
-        edit.setPlainText(text)
-        layout.addWidget(edit)
-
-        # Buttons: Copy to Clipboard + Close
-        btns = QDialogButtonBox(QDialogButtonBox.Close, parent=dlg)
-        copy_btn = QPushButton("Copy to Clipboard", dlg)
-        btns.addButton(copy_btn, QDialogButtonBox.ActionRole)
-
-        def _copy() -> None:
-            try:
-                QApplication.clipboard().setText(text)
-            except Exception:
-                pass
-
-        copy_btn.clicked.connect(_copy)
-        btns.rejected.connect(dlg.reject)
-        layout.addWidget(btns)
-
-        # Make dialog comfortably large and resizable
-        try:
-            dlg.setSizeGripEnabled(True)
-        except Exception:
-            pass
-        dlg.resize(1000, 700)
-        dlg.exec()
-
-    def _format_error_report(self, error_details: List[Dict[str, Any]]) -> str:
-        """
-        Build a human-readable, fully-detailed error report for scan/comparison errors.
-
-        Parameters
-        ----------
-        error_details : list[dict]
-            A list of dictionaries where each entry describes one error with the following keys:
-              - 'timestamp' (str): ISO-8601 timestamp (seconds precision) of when the error was captured.
-              - 'operation' (str): The logical operation (e.g., 'scan').
-              - 'path' (str): The file or resource path associated with the error.
-              - 'exception_type' (str): The exception class name.
-              - 'message' (str): The exception message text.
-              - 'traceback' (str): The full Python traceback string as plain text.
-              - 'context' (dict): Optional arbitrary contextual details (e.g., 'profile_id', 'algorithm', 'sql', 'params', 'placeholder_count', 'param_count'); all keys are displayed generically.
-
-        Returns
-        -------
-        str
-            A multi-line string containing a concise header and one detailed block per error.
-
-        Notes
-        -----
-        - The returned string is intended for display in a selectable QTextEdit using _show_resizable_text_dialog().
-        - Only built-in Python types are assumed; values are defensively coerced to str() where appropriate.
-        - Keys missing from an entry are treated as empty strings; context keys with None/empty values are omitted.
-
-        Examples
-        --------
-        >>> sample = [{
-        ...     "timestamp": "2025-09-08T21:00:00",
-        ...     "operation": "scan",
-        ...     "path": "/tmp/image.jpg",
-        ...     "exception_type": "FileNotFoundError",
-        ...     "message": "No such file or directory",
-        ...     "traceback": "Traceback (most recent call last): ...",
-        ...     "context": {"profile_id": "abc123", "algorithm": "sha256"}
-        ... }]
-        >>> # self is an instance of MainWindow
-        >>> isinstance(self._format_error_report(sample), str)
-        True
-        """
-        # Compose header with clear indication that text is selectable/copyable
-        lines: List[str] = []
-        total = len(error_details or [])
-        lines.append("Scan Error Details")
-        lines.append(f"Total Errors: {total}")
-        lines.append("Note: Text is fully selectable. Copy/paste as needed.")
-        lines.append("-" * 80)
-
-        # Emit one fully-detailed section per error
-        for i, ed in enumerate(error_details or [], start=1):
-            # Defensive extraction with str() coercions to guarantee built-in, serializable types
-            ed = ed or {}
-            ts = str(ed.get("timestamp") or "")
-            op = str(ed.get("operation") or "")
-            path = str(ed.get("path") or "")
-            ex_type = str(ed.get("exception_type") or "")
-            msg = str(ed.get("message") or "")
-            tb = str(ed.get("traceback") or "")
-            ctx = ed.get("context") or {}
-            ctx_items: List[Tuple[str, Any]] = []
-            if isinstance(ctx, dict):
-                # Render all context items generically, sorted by key for stability
-                for k in sorted(ctx.keys(), key=lambda s: str(s)):
-                    v = ctx.get(k)
-                    if v is None or v == "":
-                        continue
-                    try:
-                        v_str = str(v)
-                    except Exception:
-                        v_str = repr(v)
-                    ctx_items.append((str(k), v_str))
-
-            lines.append(f"Error #{i}")
-            if op:
-                lines.append(f"Operation: {op}")
-            lines.append(f"Path: {path}")
-            lines.append(f"Type: {ex_type}")
-            lines.append(f"Message: {msg}")
-            lines.append(f"Timestamp: {ts}")
-            if ctx_items:
-                lines.append("Context:")
-                for k, v in ctx_items:
-                    lines.append(f"  {k}: {v}")
-            lines.append("Traceback:")
-            # Ensure clean separation with trailing newline removal for consistency
-            lines.append(tb.rstrip("\n"))
-            lines.append("-" * 80)
-
-        return "\n".join(lines)
-
-    def load_profiles(self) -> None:
-        """
-        Public method to load profiles after database manager is available.
-        This should be called after the database manager is set on the window.
-        """
-        # Initialize the controller with the database manager
-        if hasattr(self, 'database_manager') and self.database_manager is not None:
-            try:
-                from src.pk_py_lib.api.settings_profiles import SettingsProfilesAPI
-                from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerController
-                api = SettingsProfilesAPI(self.database_manager)
-                self.controller = SettingsManagerController(api)
-            except ImportError:
-                self.status_label.setText("Settings Manager controller not available")
-                return
-        self._load_profiles()
-
-    def start_default_operation(self) -> None:
-        """
-        Public method to automatically start the operation if the --default CLI flag was set.
-        
-        This method should be called after the MainWindow is fully initialized and shown.
-        """
-        if getattr(self.cli_args, 'default', False):
-            self.logger.info("CLI --default flag detected. Automatically starting operation.")
-            self._on_start()
-
-    def _load_profile_into_editor(self, profile_id: str) -> None:
-        """
-        Load the selected profile into the structured editor.
-
-        Parameters
-        ----------
-        profile_id : str
-            The ID of the profile to load into the editor.
-        """
-        if self.controller is None:
-            return
-
-        # Create structured editor if it doesn't exist
-        if self.structured_editor is None:
-            try:
-                from src.pk_py_lib.gui.settings_manager.structured_editor import StructuredProfileEditorWidget
-                self.structured_editor = StructuredProfileEditorWidget(api=self.controller.api, parent=self)
-                # Reset connection tracking when editor instance changes
-                self._editor_dirty_connected = False
-                # Replace the placeholder with the actual editor
-                if self.stacked_widget.count() > 1:
-                    self.stacked_widget.removeWidget(self.structured_editor_placeholder)
-                    self.stacked_widget.addWidget(self.structured_editor)
-                else:
-                    self.stacked_widget.addWidget(self.structured_editor)
-            except ImportError:
-                self.status_label.setText("Structured editor not available")
-                return
-
-        # Load the profile data
-        resp = self.controller.get_profile(profile_id)
-        if resp.success and resp.data:
-            # Extract Option A payload when profile is JSON-format; otherwise pass as-is
-            payload = resp.data.get('json_data') if isinstance(resp.data, dict) and resp.data.get('format') == 'json' and 'json_data' in resp.data else resp.data
-            self.structured_editor.load_profile(payload)
-            # Connect dirtyChanged signal to update save/cancel buttons (connect-once pattern)
-            if hasattr(self.structured_editor, 'dirtyChanged') and self.structured_editor.dirtyChanged is not None:
-                # Avoid calling disconnect() on an unconnected slot (PySide logs a RuntimeWarning)
-                if not getattr(self, "_editor_dirty_connected", False):
-                    self.structured_editor.dirtyChanged.connect(self._on_editor_dirty_changed)
-                    self._editor_dirty_connected = True
-            # Switch to the editor view
-            self.stacked_widget.setCurrentIndex(1)
-            # Initially disable save/cancel buttons
-            self._update_save_cancel_buttons(False)
-        else:
-            self.status_label.setText(f"Failed to load profile: {resp.message}")
-
-    def _on_rename_profile(self) -> None:
-        """
-        Handle rename profile button click.
-        """
-        if not self.active_profile:
-            self.status_label.setText("No active profile selected to rename")
-            return
-
-        try:
-            if self.controller is None:
-                self.status_label.setText("Controller not available")
-                return
-
-            current_name = self.active_profile.get('name', 'Unnamed')
-            
-            # Create a name prompt dialog
-            dlg = _NamePromptDialog("Rename Profile", "New name:", current_name, self)
-            
-            if dlg.exec() == QDialog.Accepted:
-                new_name = dlg.text()
-                if not new_name:
-                    dlg.set_error("Name is required")
-                    return
-                
-                # Validate the name
-                validate_resp = self.controller.validate_name(new_name)
-                if not validate_resp.success:
-                    dlg.set_error(validate_resp.message or "Invalid name")
-                    return
-                
-                # Rename the profile
-                rename_resp = self.controller.rename_profile(self.active_profile['id'], new_name)
-                
-                if rename_resp.success:
-                    self.status_label.setText(f"Profile renamed to '{new_name}'")
-                    self._load_profiles()  # Reload profiles to reflect the change
-                else:
-                    self.status_label.setText(f"Failed to rename profile: {rename_resp.message}")
-            else:
-                self.status_label.setText("Rename profile canceled")
-        except Exception as exc:
-            self.status_label.setText(f"Error renaming profile: {exc}")
-            import logging
-            logging.getLogger("img_app.main_window").exception("Error in _on_rename_profile")
-
-    def _on_delete_profile(self) -> None:
-        """
-        Handle delete profile button click.
-        """
-        if not self.active_profile:
-            self.status_label.setText("No active profile selected to delete")
-            return
-
-        try:
-            if self.controller is None:
-                self.status_label.setText("Controller not available")
-                return
-
-            profile_name = self.active_profile.get('name', 'Unnamed')
-            
-            # Confirm deletion
-            reply = QMessageBox.question(
-                self,
-                "Confirm Delete",
-                f"Are you sure you want to delete the profile '{profile_name}'?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            
-            if reply == QMessageBox.Yes:
-                delete_resp = self.controller.delete_profile(self.active_profile['id'])
-                
-                if delete_resp.success:
-                    self.status_label.setText(f"Profile '{profile_name}' deleted")
-                    self._load_profiles()  # Reload profiles
-                else:
-                    self.status_label.setText(f"Failed to delete profile: {delete_resp.message}")
-            else:
-                self.status_label.setText("Delete profile canceled")
-        except Exception as exc:
-            self.status_label.setText(f"Error deleting profile: {exc}")
-            import logging
-            logging.getLogger("img_app.main_window").exception("Error in _on_delete_profile")
-
-    def _on_set_active_profile(self) -> None:
-        """
-        Handle set active profile button click.
-        """
-        if not self.active_profile:
-            self.status_label.setText("No profile selected to set as active")
-            return
-
-        try:
-            if self.controller is None:
-                self.status_label.setText("Controller not available")
-                return
-
-            set_active_resp = self.controller.set_active(self.active_profile['id'])
-            
-            if set_active_resp.success:
-                self.status_label.setText(f"Profile '{self.active_profile.get('name', 'Unnamed')}' set as active")
-                self._load_profiles()  # Reload to update active indicator
-            else:
-                self.status_label.setText(f"Failed to set active profile: {set_active_resp.message}")
-        except Exception as exc:
-            self.status_label.setText(f"Error setting active profile: {exc}")
-            import logging
-            logging.getLogger("img_app.main_window").exception("Error in _on_set_active_profile")
-
-    def _on_save_profile(self) -> None:
-        """
-        Handle save profile button click - save changes to the current profile.
-        """
-        if not self.active_profile or not self.structured_editor:
-            self.status_label.setText("No profile selected or editor not available")
-            return
-
-        try:
-            if self.controller is None:
-                self.status_label.setText("Controller not available")
-                return
-
-            # Validate the profile before saving
-            is_valid, errors = self.structured_editor.get_validation_status()
-            if not is_valid:
-                error_msg = errors[0] if errors else "Profile validation failed"
-                self.status_label.setText(f"Cannot save: {error_msg}")
-                return
-
-            # Gather changes from the editor
-            profile_data = self.structured_editor.gather_changes()
-            
-            # Update the profile using the controller
-            update_resp = self.controller.update_structured_profile(
-                profile_id=self.active_profile['id'],
-                profile_json=profile_data
-            )
-            
-            if update_resp.success:
-                self.status_label.setText(f"Profile '{profile_data.get('name', 'Unnamed')}' saved successfully")
-                # Reset dirty state
-                self.structured_editor.reset_dirty()
-                self._update_save_cancel_buttons(False)
-                # Reload profiles to reflect any name changes
-                self._load_profiles()
-                # Reload the current profile into the editor to ensure UI reflects saved state
-                if self.active_profile:
-                    self._load_profile_into_editor(self.active_profile['id'])
-            else:
-                self.status_label.setText(f"Failed to save profile: {update_resp.message}")
-        except Exception as exc:
-            self.status_label.setText(f"Error saving profile: {exc}")
-            import logging
-            logging.getLogger("img_app.main_window").exception("Error in _on_save_profile")
-
-    def _on_cancel_changes(self) -> None:
-        """
-        Handle cancel changes button click - discard unsaved changes.
-        """
-        if not self.active_profile or not self.structured_editor:
-            self.status_label.setText("No profile selected or editor not available")
-            return
-
-        try:
-            # Reload the original profile data to discard changes
-            resp = self.controller.get_profile(self.active_profile['id'])
-            if resp.success and resp.data:
-                # For JSON-format profiles, reload editor with the embedded json_data payload
-                payload = resp.data.get('json_data') if isinstance(resp.data, dict) and resp.data.get('format') == 'json' and 'json_data' in resp.data else resp.data
-                self.structured_editor.load_profile(payload)
-                self.status_label.setText("Changes discarded")
-                self._update_save_cancel_buttons(False)
-            else:
-                self.status_label.setText(f"Failed to reload profile: {resp.message}")
-        except Exception as exc:
-            self.status_label.setText(f"Error discarding changes: {exc}")
-            import logging
-            logging.getLogger("img_app.main_window").exception("Error in _on_cancel_changes")
-
-    def _on_editor_dirty_changed(self, dirty: bool) -> None:
-        """
-        Handle dirty state changes from the structured editor.
-        
-        Parameters
-        ----------
-        dirty : bool
-            True if there are unsaved changes, False otherwise.
-        """
-        self._update_save_cancel_buttons(dirty)
-
-    def _update_save_cancel_buttons(self, enabled: bool) -> None:
-        """
-        Update the enabled state of save and cancel buttons.
-        
-        Parameters
-        ----------
-        enabled : bool
-            True to enable buttons, False to disable.
-        """
-        self.save_btn.setEnabled(enabled)
-        self.cancel_btn.setEnabled(enabled)
-
-    def _get_app_version(self) -> str:
-        """
-        Return the application version string.
-
-        Tries in order:
-        1) img_app.img_app.__app_version__ (app-specific version, if defined)
-        2) src.pk_py_lib.__version__ (library version as fallback)
-        3) "0.0.0-dev" placeholder if neither is available
-        """
-        try:
-            from img_app.img_app import __app_version__ as v  # type: ignore
-            if v:
-                return str(v)
-        except Exception:
-            pass
-        try:
-            from src.pk_py_lib import __version__ as v  # type: ignore
-            if v:
-                return str(v)
-        except Exception:
-            pass
-        return "0.0.0-dev"
-
-    def _show_about(self) -> None:
-        """
-        Show the About dialog using selectable text message utilities.
-        
-        The dialog displays:
-        - Application name (window title if available)
-        - Version information
-        - Brief description
-        
-        The text in the dialog is selectable/copyable per project requirements.
-        """
-        # Determine application name (prefer the current window title)
-        app_name = self.windowTitle() or "Image Organizer App"
-        version = self._get_app_version()
-        description = (
-            "Development image organizer built on pk-py-lib.\n"
-            "Manage, classify, and deduplicate large image collections."
-        )
-        about_text = f"{app_name}\nVersion: {version}\n\n{description}"
-        
-        # Use the selectable info dialog from pk_py_lib; fallback to QMessageBox if unavailable
-        try:
-            from src.pk_py_lib.gui.utils.messages import show_selectable_info
-            show_selectable_info(self, "About", about_text)
-        except Exception:
-            try:
-                QMessageBox.information(self, "About", about_text)
-            except Exception:
-                # If even this fails, ignore to avoid crashing on About
-                pass
-
-    @gui_error_handler(component_name="MainWindow", operation="clear_cache")
-    def _on_clear_cache(self) -> None:
-        """
-        Clear the application's cache database (cache.db).
-
-        Deletes the cache.db file if it exists, then recreates an empty schema
-        using the canonical CACHE_SCHEMA via the DatabaseManager connection.
-
-        Uses selectable message dialogs to report success or failure.
-        """
-        db_mgr = getattr(self, "database_manager", None)
-        if db_mgr is None:
-            show_selectable_error(self, "Cache Error", "DatabaseManager is not available on the main window.")
-            return
-
-        reply = QMessageBox.question(
-            self,
-            "Confirm Clear Cache",
-            "This will delete the cache database (cache.db) and recreate it empty.\n\nProceed?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        cache_path = db_mgr.cache_db
-        # Delete cache.db if present
-        try:
-            cache_path.unlink(missing_ok=True)  # type: ignore[arg-type]
-        except TypeError:
-            # Fallback for Python versions lacking missing_ok
-            if cache_path.exists():
-                cache_path.unlink()
-
-        # Recreate empty schema
-        with db_mgr.get_connection(cache_path) as conn:
-            conn.executescript(CACHE_SCHEMA)
-
-        # Notify user
-        show_selectable_info(self, "Cache Cleared", f"Cache database cleared and reinitialized.\n\nPath:\n{cache_path}")
-        try:
-            self.statusBar().showMessage("Cache database cleared and reinitialized", 5000)
-        except Exception:
-            pass
-
-    @gui_error_handler(component_name="MainWindow", operation="clean_cache")
-    def _on_clean_cache(self) -> None:
-        """
-        Clean the cache database by validating image entries against the filesystem.
-
-        For each row in image_metadata:
-        - If file does not exist: delete the row (cascades remove thumbnails and hashes)
-        - If file exists but (size or mtime) differ: delete the row
-        After deletions, runs VACUUM to compact the database file and reports counts.
-        """
-        db_mgr = getattr(self, "database_manager", None)
-        if db_mgr is None:
-            show_selectable_error(self, "Cache Error", "DatabaseManager is not available on the main window.")
-            return
-
-        cache_path = db_mgr.cache_db
-
-        # Ensure cache DB exists; create empty if missing
-        if not cache_path.exists():
-            with db_mgr.get_connection(cache_path) as conn:
-                conn.executescript(CACHE_SCHEMA)
-            show_selectable_info(self, "Clean Cache", "Cache database did not exist. A new empty cache was created.")
-            return
-
-        # Use the static method for robust timestamp conversion
-        _to_epoch_seconds = MainWindow._to_int_timestamp
-        
-        removed_missing = 0
-        removed_changed = 0
-        checked = 0
-        to_delete: list[int] = []
-
-        # Read all entries and build deletion list
-        with db_mgr.get_connection(cache_path) as conn:
-            cur = conn.execute("SELECT id, file_path, file_size, file_modified FROM image_metadata")
-            rows = cur.fetchall()
-            checked = len(rows)
-
-            for row in rows:
-                image_id = int(row["id"])
-                p = Path(str(row["file_path"]))
-                try:
-                    if not p.exists():
-                        to_delete.append(image_id)
-                        removed_missing += 1
-                        continue
-
-                    st = p.stat()
-                    try:
-                        size_db = int(row["file_size"]) if row["file_size"] is not None else None
-                    except Exception:
-                        size_db = None
-                    
-                    # Use the robust converter
-                    mtime_db = _to_epoch_seconds(row["file_modified"])
-
-                    size_changed = (size_db is None) or (int(st.st_size) != size_db)
-                    mtime_changed = True
-                    
-                    # Check if mtime_db is non-zero (i.e., conversion succeeded)
-                    if mtime_db is not None and mtime_db > 0:
-                        # Allow 1 second tolerance for filesystem/DB differences
-                        mtime_changed = abs(int(st.st_mtime) - int(mtime_db)) > 1
-
-                    if size_changed or mtime_changed:
-                        to_delete.append(image_id)
-                        removed_changed += 1
-                except Exception:
-                    # Conservative: treat as invalid
-                    to_delete.append(image_id)
-                    removed_changed += 1
-
-            # Delete in chunks; cascades remove thumbnails and hashes
-            CHUNK = 500
-            for i in range(0, len(to_delete), CHUNK):
-                chunk = to_delete[i:i + CHUNK]
-                if not chunk:
-                    continue
-                placeholders = ",".join("?" for _ in chunk)
-                conn.execute(f"DELETE FROM image_metadata WHERE id IN ({placeholders})", chunk)
-            # Commit handled by context manager
-
-        # VACUUM to compact file size
-        try:
-            with db_mgr.get_connection(cache_path) as conn:
-                conn.execute("VACUUM")
-        except Exception:
-            # Non-fatal
-            pass
-
-        removed_total = removed_missing + removed_changed
-        show_selectable_info(
-            self,
-            "Clean Cache",
-            f"Checked entries: {checked}\n"
-            f"Removed entries: {removed_total}\n"
-            f"- Missing files: {removed_missing}\n"
-            f"- Changed files: {removed_changed}"
-        )
-        try:
-            self.statusBar().showMessage(f"Cache cleaned: removed {removed_total} entries", 5000)
-        except Exception:
-            pass
-
-    def _make_noop_action(self, text: str) -> QAction:
-        """
-        Create a no-op QAction placeholder.
-
-        Parameters
-        ----------
-        text : str
-            Display text for the action.
-
-        Returns
-        -------
-        QAction
-            Action connected to a lambda that performs no behavior.
-        """
-        action = QAction(text, self)
-        action.triggered.connect(lambda: None)
-        return action
-
-    def _compute_similarity_groups(self, profile_payload: dict, run_paths: list[str], db_mgr) -> List[Group]:
-        """
-        Compute perceptual hash similarity groups for the scanned paths.
-
-        Fetches image paths from the current run, computes pHashes using compute_phash_batch,
-        filters valid hashes, and groups similar images using find_similar_phash with threshold
-        from profile_payload['similarity']['phash_threshold'] or default 10.
-
-        Args:
-            profile_payload (dict): The profile JSON data containing 'similarity' settings.
-            run_paths (list[str]): List of absolute paths from the scan run.
-            db_mgr: DatabaseManager instance for cache access (if needed for validation).
-
-        Returns:
-            list[list[str]]: List of similarity groups, each a list of similar image paths.
-                             Empty list if no groups found or computation fails.
-
-        Raises:
-            None: Returns empty list on any error for GUI resilience.
-        """
-        try:
-            from src.pk_py_lib.core.image.similarity import compute_phash_batch, find_similar_phash
-            from src.pk_py_lib.core.cache import CacheManager
-
-            # Use cache if available via db_mgr (assuming db_mgr has cache_db path)
-            cache_mgr = CacheManager(Path(db_mgr.cache_db).parent) if db_mgr else None
-
-            settings = profile_payload.get('similarity', {}) if isinstance(profile_payload, dict) else {}
-            hash_size = settings.get('phash_hash_size', 8)
-            threshold = settings.get('phash_threshold', 10)
-
-            # Compute pHashes for run paths
-            phash_results = compute_phash_batch(
-                paths=run_paths,
-                hash_size=hash_size,
-                settings={'criteria': {'phash': {'hash_size': hash_size}}},
-                cache_manager=cache_mgr
-            )
-
-            # Filter to valid hashes
-            valid_hashes = [
-                {'path': path, 'hash': phash}
-                for path, phash in phash_results.items()
-                if phash is not None
-            ]
-
-            if not valid_hashes:
-                return []
-
-            # Group similar images
-            groups = find_similar_phash(
-                hashes=valid_hashes,
-                threshold=threshold,
-                settings={'similarity': {'phash_threshold': threshold}}
-            )
-
-            LOGGER.info(f"Computed {len(groups)} similarity groups (threshold={threshold}, valid_images={len(valid_hashes)})")
-            return groups
-
-        except Exception as e:
-            LOGGER.error("Similarity groups computation failed", exception=e)
-            return []

@@ -27,6 +27,7 @@ from .main_window import MainWindow
 
 from src.pk_py_lib.api.settings_profiles import SettingsProfilesAPI
 from src.pk_py_lib.gui.settings_manager.structured_dialog import structured_settings_manager_dialog
+from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerController
 
 from src.pk_py_lib.core.database import DatabaseManager
 from src.pk_py_lib.core.configuration import ConfigurationManager
@@ -145,18 +146,23 @@ def main() -> int:
     db_mgr = None
     config_mgr = None
     cache_mgr = None
+    controller = None # New variable for the controller
     active_profile: Optional[Dict[str, Any]] = None
-
+    
     try:
         # Core managers imported at module top; using them directly
-
+    
         # 2) Initialize/open DBs and run migrations
         db_mgr = DatabaseManager()
         db_mgr.initialize()
-
+    
         # 3) Profiles API bound to this DB; ensure a default/active profile exists
         api = SettingsProfilesAPI(db_mgr)
         ensured = api.ensure_default_profile()
+        
+        # 3.1) Initialize the Settings Manager Controller
+        from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerController
+        controller = SettingsManagerController(api)
         if not ensured.success:
             show_selectable_error(
                 None,
@@ -212,6 +218,9 @@ def main() -> int:
         setattr(window, "configuration_manager", config_mgr)
     if cache_mgr is not None:
         setattr(window, "cache_manager", cache_mgr)
+
+    if controller is not None:
+        setattr(window, "controller", controller)
 
     # Load profiles now that database manager is available
     window.load_profiles()
