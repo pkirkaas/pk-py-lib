@@ -82,6 +82,14 @@ class SimpleConsoleOutput(LogOutput):
         # Add exception if present
         if entry.exception:
             message += f"\n  Exception: {type(entry.exception).__name__}: {entry.exception}"
+            # Add full traceback for errors and above
+            if entry.level >= LogLevel.ERROR:
+                import traceback
+                tb_lines = traceback.format_exception(
+                    type(entry.exception), entry.exception, entry.exception.__traceback__
+                )
+                for tb_line in tb_lines:
+                    message += f"\n    {tb_line.rstrip()}"
         
         # Write to appropriate stream
         stream = sys.stderr if entry.level >= LogLevel.ERROR else sys.stdout
@@ -200,12 +208,13 @@ class RichConsoleOutput(LogOutput):
         if entry.exception:
             self.console.print(f"[bold red]Exception:[/bold red] {type(entry.exception).__name__}: {entry.exception}")
             
-            # If it's a critical error, show more details
-            if entry.level == LogLevel.CRITICAL:
+            # Show more details for errors and critical
+            if entry.level >= LogLevel.ERROR:
                 import traceback
-                self.console.print("[dim]" + "".join(traceback.format_exception(
+                tb_str = "".join(traceback.format_exception(
                     type(entry.exception), entry.exception, entry.exception.__traceback__
-                )) + "[/dim]")
+                ))
+                self.console.print("[dim]" + tb_str + "[/dim]")
 
 
 def get_best_console_output(prefer_rich: bool = True) -> LogOutput:

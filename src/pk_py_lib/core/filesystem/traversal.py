@@ -666,9 +666,14 @@ def walk_files(
     )
 
 
-def compute_exact_hash(path: Path) -> str:
-    """Compute SHA256 hash of file content in 64KB chunks for large files."""
-    hasher = hashlib.sha256()
+def compute_xxh3_hash(path: Path) -> str:
+    """Compute XXH3 hash of file content in 64KB chunks for large files."""
+    try:
+        import xxhash
+    except ImportError:
+        raise ImportError("xxhash package is required for XXH3 hashing. Install with: pdm add xxhash")
+    
+    hasher = xxhash.xxh3_64()
     with open(path, 'rb') as f:
         while chunk := f.read(65536):
             hasher.update(chunk)
@@ -796,13 +801,13 @@ def scan_directory(
 
             # Use flat_cache_manager for all hashes if available, else compute manually
             if flat_cache_manager:
-                all_types = list(set(algorithms + ['sha256']))
+                all_types = list(set(algorithms + ['xxh3']))
                 hashes_dict = flat_cache_manager.get_hashes([str(path)], all_types)
                 hashes = hashes_dict[str(path)]
                 exact_hash = hashes.get('xxh3')
                 perceptual_hashes = {k: v for k, v in hashes.items() if k != 'xxh3'}
             else:
-                exact_hash = compute_exact_hash(path)
+                exact_hash = compute_xxh3_hash(path)
                 perceptual_hashes = {}
                 if compute_hashes and file_info.extension in IMAGE_EXTENSIONS:
                     for alg in algorithms:

@@ -869,7 +869,7 @@ class MainWindow(QMainWindow):
         
         if not run_paths:
             return []
-            
+                
         placeholders = ",".join("?" for _ in run_paths)
         
         # Use FlatCacheManager to get hashes for the run paths
@@ -883,15 +883,15 @@ class MainWindow(QMainWindow):
                 if algorithm == "xxh3":
                     hash_value = entry.xxh3 if entry else None
                 elif algorithm == "phash":
-                    hash_value = entry.get('perceptual_hash')
+                    hash_value = entry.phash if entry else None
                 elif algorithm == "whash":
-                    hash_value = entry.get('wavelet_hash')
+                    hash_value = entry.whash if entry else None
                 
                 if hash_value:
                     hashes.append({
                         "path": path,
                         "hash": str(hash_value),
-                        "pool": entry.get('pool', 'A')
+                        "pool": self._get_pool_for_path(path, profile_payload)
                     })
         else:
             logger.warning("FlatCacheManager not available for similarity grouping")
@@ -906,6 +906,64 @@ class MainWindow(QMainWindow):
         )
                 
         return dialog_groups
+    
+    def _get_pool_for_path(self, path: str, payload_for_mode: dict) -> str:
+        """
+        Dynamically compute the pool for a given path based on the current profile's paths.
+    
+        Determines which scan pool or directory group the path belongs to, using
+        self.current_profile.paths or similar; returns a string identifier like the
+        root directory name or a hash-based group. Handles cases where path is not
+        in profiled paths by returning 'unknown'.
+    
+        Parameters
+        ----------
+        path : str
+            Absolute file path to determine the pool for.
+        payload_for_mode : dict
+            The settings profile payload used for the run, containing 'pools' configuration.
+    
+        Returns
+        -------
+        str
+            Pool label ("A", "B", or "unknown").
+        """
+        from pathlib import Path
+    
+        if not payload_for_mode or "pools" not in payload_for_mode:
+            return "unknown"
+    
+        pools = payload_for_mode["pools"]
+        path_obj = Path(path)
+    
+        # Check Pool A paths
+        if "A" in pools:
+            a_paths = pools["A"].get("paths", [])
+            for p in a_paths:
+                if p:
+                    pool_path = Path(p)
+                    try:
+                        if path_obj.is_relative_to(pool_path):
+                            return "A"
+                    except ValueError:
+                        # Not relative, continue
+                        pass
+    
+        # Check Pool B paths
+        if "B" in pools:
+            b_paths = pools["B"].get("paths", [])
+            for p in b_paths:
+                if p:
+                    pool_path = Path(p)
+                    try:
+                        if path_obj.is_relative_to(pool_path):
+                            return "B"
+                    except ValueError:
+                        # Not relative, continue
+                        pass
+    
+        # Default to unknown if no match
+        return "unknown"
     def __init__(self, parent: QWidget | None = None, active_profile: Optional[Dict[str, Any]] = None, cli_args: Optional[argparse.Namespace] = None) -> None:
         """
         Initialize MainWindow.
@@ -1938,9 +1996,9 @@ class MainWindow(QMainWindow):
                             # Two-Pool Duplicate Clustering (A vs B)
                             # Group files by pool
                             pool_a_files = {path: entry for path, entry in entries.items()
-                                          if entry.get('pool') == 'A'}
+                                          if self._get_pool_for_path(path, payload_for_mode) == 'A'}
                             pool_b_files = {path: entry for path, entry in entries.items()
-                                          if entry.get('pool') == 'B'}
+                                          if self._get_pool_for_path(path, payload_for_mode) == 'B'}
                             
                             # Find duplicates between pools
                             groups_map: dict[str, list[str]] = defaultdict(list)
@@ -1972,7 +2030,7 @@ class MainWindow(QMainWindow):
                                 for b in b_list:
                                     report_lines.append(f"  - {b}")
                                     all_paths_in_groups.add(b)
-
+                
                             # Prepare data for DuplicateManagerDialog (groups_data_prepared)
                             if all_paths_in_groups:
                                 group_id = 1
@@ -1989,7 +2047,7 @@ class MainWindow(QMainWindow):
                                             "path": a_path,
                                             "size": a_entry.size,
                                             "modified": int(a_entry.mtime),
-                                            "pool": a_entry.pool,
+                                            "pool": self._get_pool_for_path(a_path, payload_for_mode),
                                             "score": 1.0
                                         })
                                     
@@ -2001,7 +2059,7 @@ class MainWindow(QMainWindow):
                                                 "path": b_path,
                                                 "size": b_entry.size,
                                                 "modified": int(b_entry.mtime),
-                                                "pool": b_entry.pool,
+                                                "pool": self._get_pool_for_path(b_path, payload_for_mode),
                                                 "score": 1.0
                                             })
                                     
@@ -2017,7 +2075,7 @@ class MainWindow(QMainWindow):
                             # Create hash lookup for pool A
                             pool_a_hashes = set()
                             for path, entry in entries.items():
-                                if entry.pool == 'A':
+                                if self._get_pool_for_path(path, payload_for_mode) == 'A':
                                     hash_value = entry.xxh3 if entry else None
                                     if hash_value:
                                         pool_a_hashes.add(hash_value)
@@ -2025,7 +2083,7 @@ class MainWindow(QMainWindow):
                             # Find files in pool B that are not in pool A
                             report_lines.append("Two-Pool Report — non_duplicates (B not in A)")
                             for path, entry in entries.items():
-                                if entry.pool == 'B':
+                                if self._get_pool_for_path(path, payload_for_mode) == 'B':
                                     hash_value = entry.xxh3 if entry else None
                                     if hash_value and hash_value not in pool_a_hashes:
                                         non_matches += 1
@@ -2058,7 +2116,7 @@ class MainWindow(QMainWindow):
                                             "path": path,
                                             "size": entry.size,
                                             "modified": int(entry.mtime),
-                                            "pool": entry.pool,
+                                            "pool": self._get_pool_for_path(path, payload_for_mode),
                                             "score": 1.0
                                         })
                                 
@@ -2213,6 +2271,50 @@ class MainWindow(QMainWindow):
         # 3. Extract necessary context stored during scan phase
         dialog_groups: List[Group] = results.get('groups', [])
         pool_map: Dict[str, str] = results.get('pool_map', {})
+        
+        def _get_pool_for_path(self, path: str, profile: dict) -> str:
+            """
+            Determine the pool (A or B) for a given file path based on profile pool configurations.
+            
+            Args:
+                path: Absolute file path.
+                profile: Settings profile payload with "pools" configuration.
+            
+            Returns:
+                Pool label ("A" or "B"), defaults to "A" if undetermined.
+            """
+            if not profile or "pools" not in profile:
+                return "A"
+        
+            pools = profile["pools"]
+            path_obj = Path(path)
+        
+            # Check Pool A paths
+            if "A" in pools:
+                a_paths = pools["A"].get("paths", [])
+                for p in a_paths:
+                    pool_path = Path(p)
+                    try:
+                        if path_obj.is_relative_to(pool_path):
+                            return "A"
+                    except ValueError:
+                        # Not relative, continue
+                        pass
+        
+            # Check Pool B paths
+            if "B" in pools:
+                b_paths = pools["B"].get("paths", [])
+                for p in b_paths:
+                    pool_path = Path(p)
+                    try:
+                        if path_obj.is_relative_to(pool_path):
+                            return "B"
+                    except ValueError:
+                        # Not relative, continue
+                        pass
+        
+            # Default to A if no match
+            return "A"
         
         # Context stored in instance variables by _on_scan_finished_with_comparison_start
         text = getattr(self, '_last_summary_text', "Operation completed.")
