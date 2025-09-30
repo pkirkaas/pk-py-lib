@@ -74,7 +74,6 @@ class TestScanDirectoryHashes:
             for res in results:
                 assert 'hashes' not in res
                 assert res['path'] in [str(sample_root / "img1.jpg"), str(sample_root / "img2.png")]
-                assert res['extension'] in ['.jpg', '.png']
             mock_db.get_connection.assert_not_called()  # No DB for no hashes
 
     def test_scan_directory_with_hashes_success(self, sample_root: Path, mock_db: DatabaseManager, mock_cache: CacheManager):

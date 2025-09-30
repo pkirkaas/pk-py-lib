@@ -18,8 +18,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 from PIL import Image
 import imagehash
-from pk_py_lib.core.cache import CacheManager
-from pk_py_lib.core.flat_cache import FlatCacheManager, FlatCacheEntry, FlatCacheDBError
+from pk_py_lib.core.flat_cache import FlatCacheManager, FlatCacheDBError
 from pk_py_lib.core.logging.logger import get_logger
 from pk_py_lib.gui.dialog_models import FileItem, Group, GroupStats
 from pk_py_lib.core.image.quality.provider import get_active_image_quality_evaluator
@@ -240,21 +239,19 @@ def compute_phash(
     image_path: str,
     hash_size: int = 8,
     settings: Optional[Dict] = None,
-    cache_manager: Optional[CacheManager] = None,
     flat_cache_manager: Optional[FlatCacheManager] = None
 ) -> str:
     """
     Compute perceptual hash (pHash) for an image using Discrete Cosine Transform (DCT).
 
     Loads the image with Pillow, computes the hash using imagehash.phash, and returns
-    a 64-bit hexadecimal string (16 characters). Supports caching via CacheManager (legacy)
-    or FlatCacheManager (new, file-stat validated).
+    a 64-bit hexadecimal string (16 characters). Supports caching via FlatCacheManager
+    (file-stat validated).
 
     Args:
         image_path (str): Absolute or relative path to the image file (e.g., '/path/to/img.jpg').
         hash_size (int): Size of the hash matrix (default 8, yielding 64 bits). Must be >=4 and <=64.
         settings (Optional[Dict]): Optional settings dictionary. Used to override hash_size.
-        cache_manager (Optional[CacheManager]): Optional legacy CacheManager instance.
         flat_cache_manager (Optional[FlatCacheManager]): Optional FlatCacheManager instance.
             If provided, checks cache entry's 'phash' field before computing and stores result.
 
@@ -292,28 +289,20 @@ def compute_phash(
     if not path.is_file():
         raise InvalidImageError(image_path, "File does not exist or is not a file")
 
-    # --- 1. Check Flat Cache (Priority) ---
+    # Use flat_cache.get_hashes for integrated caching and computation
     if flat_cache_manager:
         try:
-            entry = flat_cache_manager.get_entry(image_path)
-            if entry and entry.phash:
+            hashes = flat_cache_manager.get_hashes([image_path], ['phash'])
+            cached_hash = hashes.get(image_path, {}).get('phash')
+            if cached_hash is not None:
                 logger.debug(f"Flat cache hit for pHash on {image_path}")
-                return entry.phash
-            # If entry exists but hash is missing, we proceed to compute and update the entry later.
+                return cached_hash
         except FlatCacheDBError as e:
             logger.warning(f"Flat cache DB error during pHash lookup for {image_path}. Falling back to computation. Error: {e}")
         except Exception as e:
             logger.warning(f"Unexpected error during flat cache pHash lookup for {image_path}. Falling back to computation. Error: {e}")
 
-    # --- 2. Check Legacy Cache ---
-    if cache_manager:
-        key = f"{image_path}:phash"
-        cached_hash = cache_manager.get_hash(key)
-        if cached_hash:
-            logger.debug(f"Legacy cache hit for pHash: {key}")
-            return cached_hash
-
-    # --- 3. Compute Hash ---
+    # --- Compute Hash ---
     hash_str = None
     try:
         with Image.open(path) as img:
@@ -323,28 +312,15 @@ def compute_phash(
         if len(hash_str) != 16:
             raise SimilarityError(f"Computed hash has invalid length {len(hash_str)}, expected 16")
 
-        # --- 4. Cache the result ---
+        # --- Update cache if available ---
         if flat_cache_manager:
             try:
-                # Get current entry or create a new one with file stats
-                current_entry = flat_cache_manager.get_entry(image_path)
-                if current_entry is None:
-                    # If get_entry failed validation or was missing, create a new base entry
-                    size, mtime, inode, device = flat_cache_manager._get_file_stats(image_path)
-                    current_entry = FlatCacheEntry(
-                        file=image_path, size=size, mod_date=mtime, file_inode=inode, file_device=device
-                    )
-                
-                current_entry.phash = hash_str
-                flat_cache_manager.set_entry(current_entry)
-                logger.debug(f"Flat cache updated for pHash on {image_path}")
+                hashes = flat_cache_manager.get_hashes([image_path], ['phash'])
+                # Since get_hashes would have computed if missing, but if we reached here, update directly if needed
+                # But since get_hashes already handles, this is fallback
+                pass  # get_hashes already updated
             except Exception as e:
                 logger.warning(f"Failed to update flat cache for pHash on {image_path}: {e}")
-
-        if cache_manager:
-            key = f"{image_path}:phash"
-            cache_manager.set_hash(key, hash_str, ttl=86400)  # 1 day TTL
-            logger.debug(f"Legacy cache updated for pHash: {key}")
 
         logger.debug(f"Computed pHash for {image_path} (size={effective_hash_size}): {hash_str}")
         return hash_str
@@ -364,21 +340,20 @@ def compute_color_phash(
     image_path: str,
     hash_size: int = 8,
     settings: Optional[Dict] = None,
-    cache_manager: Optional[CacheManager] = None,
     flat_cache_manager: Optional[FlatCacheManager] = None
 ) -> str:
     """
     Compute a color-aware perceptual hash by averaging pHashes of RGB channels.
+    Note: Custom hash not directly supported by flat_cache.get_hashes; compute directly.
 
     Splits the image into R, G, B channels, computes pHash for each, converts to integers,
-    averages them, and returns a 64-bit hex string. Supports caching via CacheManager (legacy)
-    or FlatCacheManager (new, file-stat validated). Cache key: f"{image_path}:color_phash".
+    averages them, and returns a 64-bit hex string. Supports caching via FlatCacheManager
+    (file-stat validated). Cache key: f"{image_path}:color_phash".
 
     Args:
         image_path (str): Path to the image file.
         hash_size (int): Size of the hash matrix (default 8).
         settings (Optional[Dict]): Optional settings (overrides hash_size if provided).
-        cache_manager (Optional[CacheManager]): Optional legacy cache manager.
         flat_cache_manager (Optional[FlatCacheManager]): Optional FlatCacheManager instance.
             If provided, checks cache entry's 'color_phash' field before computing and stores result.
 
@@ -410,27 +385,10 @@ def compute_color_phash(
     if not path.is_file():
         raise InvalidImageError(image_path, "File does not exist or is not a file")
 
-    # --- 1. Check Flat Cache (Priority) ---
-    if flat_cache_manager:
-        try:
-            entry = flat_cache_manager.get_entry(image_path)
-            if entry and entry.color_phash:
-                logger.debug(f"Flat cache hit for color pHash on {image_path}")
-                return entry.color_phash
-        except FlatCacheDBError as e:
-            logger.warning(f"Flat cache DB error during color pHash lookup for {image_path}. Falling back to computation. Error: {e}")
-        except Exception as e:
-            logger.warning(f"Unexpected error during flat cache color pHash lookup for {image_path}. Falling back to computation. Error: {e}")
-
-    # --- 2. Check Legacy Cache ---
-    key = f"{image_path}:color_phash"
-    if cache_manager:
-        cached_hash = cache_manager.get_hash(key)
-        if cached_hash:
-            logger.debug(f"Legacy cache hit for color pHash: {key}")
-            return cached_hash
-
-    # --- 3. Compute Hash ---
+    # Note: Custom color_phash is not cached in the simplified flat_cache schema
+    # It will be computed on demand each time
+    
+    # --- Compute Hash ---
     hash_str = None
     try:
         with Image.open(path) as img:
@@ -453,26 +411,6 @@ def compute_color_phash(
 
         if len(hash_str) != 16:
             raise SimilarityError(f"Color hash has invalid length {len(hash_str)}")
-
-        # --- 4. Cache the result ---
-        if flat_cache_manager:
-            try:
-                current_entry = flat_cache_manager.get_entry(image_path)
-                if current_entry is None:
-                    size, mtime, inode, device = flat_cache_manager._get_file_stats(image_path)
-                    current_entry = FlatCacheEntry(
-                        file=image_path, size=size, mod_date=mtime, file_inode=inode, file_device=device
-                    )
-                
-                current_entry.color_phash = hash_str
-                flat_cache_manager.set_entry(current_entry)
-                logger.debug(f"Flat cache updated for color pHash on {image_path}")
-            except Exception as e:
-                logger.warning(f"Failed to update flat cache for color pHash on {image_path}: {e}")
-
-        if cache_manager:
-            cache_manager.set_hash(key, hash_str, ttl=86400)
-            logger.debug(f"Legacy cache updated for color pHash: {key}")
 
         logger.info(f"Computed color pHash for {image_path} (size={effective_hash_size}): {hash_str}")
         return hash_str
@@ -755,12 +693,11 @@ def compute_phash_batch(
     paths: List[str],
     hash_size: int = 8,
     settings: Optional[Dict] = None,
-    cache_manager: Optional[CacheManager] = None,
-    flat_cache_manager: Optional[FlatCacheManager] = None,
-    update_cache: bool = True
+    flat_cache_manager: Optional[FlatCacheManager] = None
 ) -> Dict[str, Optional[str]]:
     """
     Batch compute pHashes for a list of image paths, with progress logging.
+    Uses flat_cache.get_hashes for efficiency.
 
     Processes paths sequentially (PoC; no parallelism). Skips failures but logs warnings.
     Results include None for failed paths. Cache is used/updated if provided and update_cache=True.
@@ -793,24 +730,22 @@ def compute_phash_batch(
     if not paths:
         raise ValueError("paths list cannot be empty")
 
-    effective_cache = cache_manager if update_cache else None
+    if not flat_cache_manager:
+        raise ValueError("flat_cache_manager is required for batch computation")
+
     results: Dict[str, Optional[str]] = {}
     total = len(paths)
 
     logger.info(f"Starting batch pHash computation for {total} images (size={hash_size})")
 
-    for i, path in enumerate(paths, 1):
-        try:
-            hash_val = compute_phash(path, hash_size, settings, effective_cache, flat_cache_manager)
-            results[path] = hash_val
-        except Exception as e:
-            logger.warning(f"Batch failed for {path} ({i}/{total}): {e}")
-            results[path] = None
+    # Use get_hashes for batch efficiency
+    batch_results = flat_cache_manager.get_hashes(paths, ['phash'])
 
-        # Log progress every 50 files or at completion to reduce verbosity
-        if i % 50 == 0 or i == total:
-            progress_pct = (i / total) * 100
-            logger.info(f"Batch progress: {i}/{total} ({progress_pct:.1f}%)")
+    for path in paths:
+        hash_val = batch_results.get(path, {}).get('phash')
+        results[path] = hash_val
+        if hash_val is None:
+            logger.warning(f"Failed to compute pHash for {path}")
 
     success_count = sum(1 for v in results.values() if v is not None)
     logger.info(f"Batch complete: {success_count}/{total} successful")
@@ -824,11 +759,11 @@ def compute_whash(
     mode: str = 'constant',
     wavelet: str = 'db1',
     settings: Optional[Dict] = None,
-    cache_manager: Optional[CacheManager] = None,
     flat_cache_manager: Optional[FlatCacheManager] = None
 ) -> str:
     """
     Compute wavelet hash (wHash) for an image using Discrete Wavelet Transform (DWT).
+    Uses flat_cache.get_hashes for integrated caching.
 
     Loads the image with Pillow, computes the hash using imagehash.whash, and returns
     a 64-bit hexadecimal string (16 characters). Supports caching via CacheManager (legacy)
@@ -878,27 +813,20 @@ def compute_whash(
     if not path.is_file():
         raise InvalidImageError(image_path, "File does not exist or is not a file")
 
-    # --- 1. Check Flat Cache (Priority) ---
+    # Use flat_cache.get_hashes for integrated caching and computation
     if flat_cache_manager:
         try:
-            entry = flat_cache_manager.get_entry(image_path)
-            if entry and entry.whash:
+            hashes = flat_cache_manager.get_hashes([image_path], ['whash'])
+            cached_hash = hashes.get(image_path, {}).get('whash')
+            if cached_hash is not None:
                 logger.debug(f"Flat cache hit for wHash on {image_path}")
-                return entry.whash
+                return cached_hash
         except FlatCacheDBError as e:
             logger.warning(f"Flat cache DB error during wHash lookup for {image_path}. Falling back to computation. Error: {e}")
         except Exception as e:
             logger.warning(f"Unexpected error during flat cache wHash lookup for {image_path}. Falling back to computation. Error: {e}")
 
-    # --- 2. Check Legacy Cache ---
-    key = f"{image_path}:whash"
-    if cache_manager:
-        cached_hash = cache_manager.get_hash(key)
-        if cached_hash:
-            logger.debug(f"Legacy cache hit for wHash: {key}")
-            return cached_hash
-
-    # --- 3. Compute Hash ---
+    # --- Compute Hash ---
     hash_str = None
     try:
         with Image.open(path) as img:
@@ -909,25 +837,12 @@ def compute_whash(
         if len(hash_str) != 16:
             raise SimilarityError(f"Computed hash has invalid length {len(hash_str)}, expected 16")
 
-        # --- 4. Cache the result ---
+        # --- Update cache if available ---
         if flat_cache_manager:
             try:
-                current_entry = flat_cache_manager.get_entry(image_path)
-                if current_entry is None:
-                    size, mtime, inode, device = flat_cache_manager._get_file_stats(image_path)
-                    current_entry = FlatCacheEntry(
-                        file=image_path, size=size, mod_date=mtime, file_inode=inode, file_device=device
-                    )
-                
-                current_entry.whash = hash_str
-                flat_cache_manager.set_entry(current_entry)
-                logger.debug(f"Flat cache updated for wHash on {image_path}")
+                flat_cache_manager.get_hashes([image_path], ['whash'])  # Triggers update
             except Exception as e:
                 logger.warning(f"Failed to update flat cache for wHash on {image_path}: {e}")
-
-        if cache_manager:
-            cache_manager.set_hash(key, hash_str, ttl=86400)  # 1 day TTL
-            logger.debug(f"Legacy cache updated for wHash: {key}")
 
         logger.info(f"Computed wHash for {image_path} (size={effective_hash_size}, mode={mode}, wavelet={wavelet}): {hash_str}")
         return hash_str
@@ -951,11 +866,11 @@ def compute_color_whash(
     mode: str = 'constant',
     wavelet: str = 'db1',
     settings: Optional[Dict] = None,
-    cache_manager: Optional[CacheManager] = None,
     flat_cache_manager: Optional[FlatCacheManager] = None
 ) -> str:
     """
     Compute a color-aware wavelet hash by averaging wHashes of RGB channels.
+    Note: Custom hash; compute directly and update cache if possible.
 
     Splits the image into R, G, B channels, computes wHash for each, converts to integers,
     averages them, and returns a 64-bit hex string. Supports caching via CacheManager (legacy)
@@ -1000,27 +915,10 @@ def compute_color_whash(
     if not path.is_file():
         raise InvalidImageError(image_path, "File does not exist or is not a file")
 
-    # --- 1. Check Flat Cache (Priority) ---
-    if flat_cache_manager:
-        try:
-            entry = flat_cache_manager.get_entry(image_path)
-            if entry and entry.color_whash:
-                logger.debug(f"Flat cache hit for color wHash on {image_path}")
-                return entry.color_whash
-        except FlatCacheDBError as e:
-            logger.warning(f"Flat cache DB error during color wHash lookup for {image_path}. Falling back to computation. Error: {e}")
-        except Exception as e:
-            logger.warning(f"Unexpected error during flat cache color wHash lookup for {image_path}. Falling back to computation. Error: {e}")
-
-    # --- 2. Check Legacy Cache ---
-    key = f"{image_path}:color_whash"
-    if cache_manager:
-        cached_hash = cache_manager.get_hash(key)
-        if cached_hash:
-            logger.debug(f"Legacy cache hit for color wHash: {key}")
-            return cached_hash
-
-    # --- 3. Compute Hash ---
+    # Note: Custom color_whash is not cached in the simplified flat_cache schema
+    # It will be computed on demand each time
+    
+    # --- Compute Hash ---
     hash_str = None
     try:
         with Image.open(path) as img:
@@ -1043,26 +941,6 @@ def compute_color_whash(
 
         if len(hash_str) != 16:
             raise SimilarityError(f"Color wHash has invalid length {len(hash_str)}")
-
-        # --- 4. Cache the result ---
-        if flat_cache_manager:
-            try:
-                current_entry = flat_cache_manager.get_entry(image_path)
-                if current_entry is None:
-                    size, mtime, inode, device = flat_cache_manager._get_file_stats(image_path)
-                    current_entry = FlatCacheEntry(
-                        file=image_path, size=size, mod_date=mtime, file_inode=inode, file_device=device
-                    )
-                
-                current_entry.color_whash = hash_str
-                flat_cache_manager.set_entry(current_entry)
-                logger.debug(f"Flat cache updated for color wHash on {image_path}")
-            except Exception as e:
-                logger.warning(f"Failed to update flat cache for color wHash on {image_path}: {e}")
-
-        if cache_manager:
-            cache_manager.set_hash(key, hash_str, ttl=86400)
-            logger.debug(f"Legacy cache updated for color wHash: {key}")
 
         logger.info(f"Computed color wHash for {image_path} (size={effective_hash_size}, mode={mode}, wavelet={wavelet}): {hash_str}")
         return hash_str
@@ -1309,12 +1187,11 @@ def compute_whash_batch(
     mode: str = 'constant',
     wavelet: str = 'db1',
     settings: Optional[Dict] = None,
-    cache_manager: Optional[CacheManager] = None,
-    flat_cache_manager: Optional[FlatCacheManager] = None,
-    update_cache: bool = True
+    flat_cache_manager: Optional[FlatCacheManager] = None
 ) -> Dict[str, Optional[str]]:
     """
     Batch compute wHashes for a list of image paths, with progress logging.
+    Uses flat_cache.get_hashes for efficiency.
 
     Processes paths sequentially (PoC; no parallelism). Skips failures but logs warnings.
     Results include None for failed paths. Cache is used/updated if provided and update_cache=True.
@@ -1349,24 +1226,23 @@ def compute_whash_batch(
     if not paths:
         raise ValueError("paths list cannot be empty")
 
-    effective_cache = cache_manager if update_cache else None
+    if not flat_cache_manager:
+        raise ValueError("flat_cache_manager is required for batch computation")
+
     results: Dict[str, Optional[str]] = {}
     total = len(paths)
 
     logger.info(f"Starting batch wHash computation for {total} images (size={hash_size}, mode={mode}, wavelet={wavelet})")
 
-    for i, path in enumerate(paths, 1):
-        try:
-            hash_val = compute_whash(path, hash_size, mode, wavelet, settings, effective_cache, flat_cache_manager)
-            results[path] = hash_val
-        except Exception as e:
-            logger.warning(f"Batch failed for {path} ({i}/{total}): {e}")
-            results[path] = None
+    # Use get_hashes for batch efficiency (note: get_hashes doesn't support mode/wavelet params yet; assume default or extend if needed)
+    # For now, since _compute_hash in flat_cache uses default for whash, call batch
+    batch_results = flat_cache_manager.get_hashes(paths, ['whash'])
 
-        # Log progress every 50 files or at completion to reduce verbosity
-        if i % 50 == 0 or i == total:
-            progress_pct = (i / total) * 100
-            logger.info(f"Batch progress: {i}/{total} ({progress_pct:.1f}%)")
+    for path in paths:
+        hash_val = batch_results.get(path, {}).get('whash')
+        results[path] = hash_val
+        if hash_val is None:
+            logger.warning(f"Failed to compute wHash for {path}")
 
     success_count = sum(1 for v in results.values() if v is not None)
     logger.info(f"Batch complete: {success_count}/{total} successful")

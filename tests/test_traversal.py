@@ -11,8 +11,13 @@ import os
 
 from src.pk_py_lib.core.filesystem.traversal import (
     walk_files,
-    validate_paths
+    validate_paths,
+    scan_directory,
+    DirectoryTraversal
 )
+from src.pk_py_lib.core.database import DatabaseManager
+from src.pk_py_lib.core.flat_cache import FlatCacheManager
+from src.pk_py_lib.core.image.similarity import compute_phash
 
 
 class TestTraversal:
@@ -174,6 +179,68 @@ class TestTraversal:
         # Should not raise exception, just skip inaccessible directory
         files = list(walk_files(mock_path_instance))
         assert len(files) == 0
+
+    def test_scan_directory_with_flat_cache(self, tmp_path: Path):
+        """Test scan_directory with FlatCacheManager, verifying no cache_manager arg error and hash caching."""
+        # Create test image file
+        test_image = tmp_path / "test.jpg"
+        test_image.touch()
+        
+        # Mock DatabaseManager
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.cache_db = str(tmp_path / "cache.db")
+        mock_db.get_connection.return_value.__enter__.return_value = MagicMock()
+        
+        # Create FlatCacheManager
+        flat_cache = FlatCacheManager(db_path=tmp_path / "flat.db")
+        
+        # Mock compute_phash to avoid real computation
+        with patch('src.pk_py_lib.core.image.similarity.compute_phash', return_value='mock_phash'):
+            result = scan_directory(
+                roots=[tmp_path],
+                compute_hashes=True,
+                algorithms=['phash'],
+                db_manager=mock_db,
+                flat_cache_manager=flat_cache,
+                progress_callback=lambda *args: None,
+                stop_event=lambda: False
+            )
+        
+        assert result is not None
+        assert 'files' in result
+        assert len(result['files']) == 1
+        file_info = result['files'][0]
+        assert file_info['path'] == str(test_image)
+        assert 'hashes' in file_info
+        assert file_info['hashes']['phash'] == 'mock_phash'
+        
+        # Verify flat cache entry was created/updated
+        entry = flat_cache.get_entry(str(test_image))
+        assert entry is not None
+        assert entry.phash == 'mock_phash'
+
+    def test_scan_directory_no_cache_args(self, tmp_path: Path):
+        """Test scan_directory without cache args, verifying no errors."""
+        # Create test file
+        test_file = tmp_path / "test.txt"
+        test_file.touch()
+        
+        # Mock DatabaseManager
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.cache_db = str(tmp_path / "cache.db")
+        mock_db.get_connection.return_value.__enter__.return_value = MagicMock()
+        
+        result = scan_directory(
+            roots=[tmp_path],
+            compute_hashes=False,
+            db_manager=mock_db,
+            progress_callback=lambda *args: None,
+            stop_event=lambda: False
+        )
+        
+        assert result is not None
+        assert 'files' in result
+        assert len(result['files']) == 1
 
 
 if __name__ == "__main__":

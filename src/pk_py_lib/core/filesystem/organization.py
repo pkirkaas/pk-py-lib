@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Callable, Any, Tuple
 from datetime import datetime
 from collections import defaultdict
 from dataclasses import dataclass
-import hashlib
+import xxhash
 
 from .operations import FileOperations, ConflictStrategy
 from .traversal import DirectoryTraversal
@@ -282,13 +282,13 @@ class FileOrganizer:
             return False
     
     def _calculate_file_hash(self, file_path: Path, chunk_size: int = 8192) -> str:
-        """Calculate SHA-256 hash of file."""
-        hash_sha256 = hashlib.sha256()
+        """Calculate XXH3 hash of file."""
+        hash_xxh3 = xxhash.xxh3_64()
         try:
             with open(file_path, 'rb') as f:
                 for chunk in iter(lambda: f.read(chunk_size), b""):
-                    hash_sha256.update(chunk)
-            return hash_sha256.hexdigest()
+                    hash_xxh3.update(chunk)
+            return hash_xxh3.hexdigest()
         except:
             raise
     

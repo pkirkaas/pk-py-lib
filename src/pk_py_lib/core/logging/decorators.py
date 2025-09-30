@@ -164,3 +164,68 @@ def watch_variables(*var_names: str, level: str = "DEBUG", logger_name: Optional
         
         return wrapper
     return decorator
+
+
+def log_errors(
+    level: str = "ERROR",
+    include_args: bool = True,
+    include_traceback: bool = True,
+    logger_name: Optional[str] = None
+):
+    """
+    Decorator to catch and log exceptions with file path, line number, function name,
+    parameters, and traceback.
+    
+    Args:
+        level: Log level for the error messages (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        include_args: Whether to include function arguments in the log
+        include_traceback: Whether to include the full traceback in the log
+        logger_name: Optional specific logger name to use instead of function's module
+    
+    Example:
+        @log_errors()
+        def risky_function(param):
+            if param < 0:
+                raise ValueError("Negative parameter")
+            return param * 2
+    """
+    import sys
+    import traceback
+    
+    def decorator(func: Callable) -> Callable:
+        func_logger = get_logger(logger_name or func.__module__)
+        
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                # Get file and line from the exception frame
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                frame = exc_traceback.tb_frame
+                filename = frame.f_code.co_filename
+                lineno = exc_traceback.tb_lineno
+                func_name = func.__name__
+                
+                # Format parameters
+                if include_args and (args or kwargs):
+                    args_str = ", ".join([repr(arg) for arg in args])
+                    kwargs_str = ", ".join([f"{k}={repr(v)}" for k, v in kwargs.items()])
+                    params_str = ", ".join(filter(None, [args_str, kwargs_str]))
+                else:
+                    params_str = ""
+                
+                error_msg = f"Error in {func_name} at {filename}:{lineno}: {e}"
+                if params_str:
+                    error_msg += f"\nParameters: {params_str}"
+                
+                func_logger.log(level, error_msg)
+                
+                if include_traceback:
+                    tb_str = traceback.format_exc()
+                    func_logger.log(level, f"Traceback:\n{tb_str}")
+                
+                raise
+        
+        return wrapper
+    return decorator

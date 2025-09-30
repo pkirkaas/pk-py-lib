@@ -205,7 +205,6 @@ class ImageData:
     # File Information
     id: int                          # Unique identifier
     file_path: Path                  # Absolute path to image
-    file_name: str                   # Filename without path
     file_size: int                   # Size in bytes
     file_modified: datetime          # Last modification time
     file_created: datetime           # Creation time
@@ -216,18 +215,10 @@ class ImageData:
     # Image Properties
     width: int                       # Image width in pixels
     height: int                      # Image height in pixels
-    format: str                      # Image format (JPEG, PNG, etc.)
-    color_mode: str                  # RGB, RGBA, Grayscale, etc.
     bit_depth: int                   # Bits per channel
     
     # Metadata
-    exif_data: Dict[str, Any]       # EXIF metadata
-    camera_make: Optional[str]       # Camera manufacturer
-    camera_model: Optional[str]      # Camera model
     lens_model: Optional[str]        # Lens information
-    date_taken: Optional[datetime]   # Photo capture date
-    gps_latitude: Optional[float]    # GPS coordinates
-    gps_longitude: Optional[float]   
     
     # Processing State
     thumbnail_256: Optional[bytes]   # Small thumbnail
@@ -241,6 +232,8 @@ class ImageData:
     megapixels: float               # Total megapixels
     file_size_readable: str         # Human-readable size
 ```
+
+**Note on Schema Evolution**: As of flat_cache.db schema version 5.0.0, non-essential metadata columns (e.g., `file_name`, `extension`, `pool`, `format`, `color_mode`, `exif_data`, `camera_make`, `camera_model`, `date_taken`, `gps_latitude`, `gps_longitude`) have been removed from the persistent cache to streamline storage. These fields are now handled on-demand during processing or derived from the filesystem (e.g., `extension` from `Path.suffix`, `pool` from profile paths). The `ImageData` dataclass reflects this streamlined structure, retaining only core validation and computed data fields. Full EXIF and other metadata are computed dynamically when needed, reducing cache overhead while preserving functionality.
 
 ### 2.2 Similarity Result Model
 ```python
@@ -434,7 +427,6 @@ class AppSettings:
 Migration note:
 - Historically UI preferences and some performance settings were stored per-profile (fields: theme, language, ui_scale, max_threads, max_memory_mb, cache_size_gb). These have been moved to the application-scoped AppSettings model.
 - Suggested migration SQL (one-time): copy values from the default profile into app_settings and convert GB->MB for any legacy cache_size_gb values.
-
 ```sql
 -- Example migration: create an app_settings row from the default profile
 INSERT INTO app_settings (
@@ -645,19 +637,17 @@ CREATE INDEX idx_recent_type ON recent_items(item_type);
 
 ### 3.2 Cache Database (cache.db)
 
+**Note on Schema Evolution**: As of flat_cache.db schema version 5.0.0, the persistent cache schema has been streamlined. The transient cache.db continues to use the legacy structure for compatibility, but computed metadata (hashes, quality scores) is now primarily stored in the persistent flat_cache.db. The image_metadata table in cache.db is retained for thumbnails and session-specific data but no longer includes removed columns like file_name, extension, etc. These are derived on-demand.
+
 ```sql
--- Image metadata cache with file identity tracking
+-- Image metadata cache with file identity tracking (streamlined for v5.0.0 compatibility)
 CREATE TABLE image_metadata (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_path TEXT UNIQUE NOT NULL,
-    file_name TEXT NOT NULL,
     file_size INTEGER NOT NULL,
     file_modified TIMESTAMP NOT NULL,
     file_created TIMESTAMP,
 
-    -- Pool membership (A or B) for single/two-pool analyses
-    pool TEXT NOT NULL DEFAULT 'A' CHECK (pool IN ('A','B')),
-    
     -- File identity and hashing
     file_hash_sha256 TEXT,          -- Full SHA-256 hash (hex)
     partial_hash_sha256 TEXT,       -- Partial SHA-256 for staged comparison
@@ -668,18 +658,10 @@ CREATE TABLE image_metadata (
     -- Image properties
     width INTEGER,
     height INTEGER,
-    format TEXT,
-    color_mode TEXT,
     bit_depth INTEGER,
     
-    -- Metadata
-    exif_data JSON,
-    camera_make TEXT,
-    camera_model TEXT,
+    -- Metadata (streamlined)
     lens_model TEXT,
-    date_taken TIMESTAMP,
-    gps_latitude REAL,
-    gps_longitude REAL,
     
     -- Cache management
     last_scanned TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -698,7 +680,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 -- Initialize cache database metadata
 INSERT OR IGNORE INTO meta (key, value, notes)
-VALUES ('schema_version', '1.1.0', 'Add pool column to image_metadata');
+VALUES ('schema_version', '5.0.0', 'Streamlined schema for compatibility with flat_cache.db v5.0.0');
 
 -- Thumbnail metadata (file-backed storage per canonical decision)
 -- Note: Actual thumbnail files are stored in cache/thumbnails/ directory
@@ -750,7 +732,6 @@ CREATE INDEX idx_metadata_sha256 ON image_metadata(file_hash_sha256);
 CREATE INDEX idx_metadata_partial ON image_metadata(partial_hash_sha256);
 CREATE INDEX idx_metadata_inode ON image_metadata(file_inode, file_device);
 CREATE INDEX idx_metadata_size ON image_metadata(file_size);
-CREATE INDEX idx_metadata_date ON image_metadata(date_taken);
 CREATE INDEX idx_thumbnails_image ON thumbnails(image_id);
 CREATE INDEX idx_thumbnails_accessed ON thumbnails(last_accessed);
 CREATE INDEX idx_hashes_image ON image_hashes(image_id);
@@ -1094,7 +1075,7 @@ Defaults (authoritative)
 - Patterns: glob (gitignore-style). Case handling is OS-aware: case-insensitive on Windows; case-sensitive on POSIX.
 - Pattern semantics: patterns are evaluated relative to each pool's root_path; multiline input in the UI maps to a string array.
 - Recursion: recurse=true by default.
-- max_depth: 0 means unlimited recursion (default 0). Positive integers limit traversal depth; 1 = only direct children; 0 = no limit.
+- max_depth: 0 means unlimited recursion (default 0). Positive integers limit traversal depth; 1 = only direct children; N ≥ 1 = depth limit.
 - follow_symlinks: false by default.
 - include_hidden: false by default; hidden items are excluded unless explicitly included.
 - File types: images only by default (extensions): [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]. RAW formats are off by default.
@@ -1236,7 +1217,7 @@ Output mode
 - output.mode: "report_only" (v1 does not perform file actions)
 
 Compatibility note regarding hashing
-- For Option A "duplicates" runs, identity matching uses BLAKE3 (fast, low-collision) per [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md) §18. Earlier SHA‑256 guidance continues to apply to general cache identity and other non-Option‑A flows documented elsewhere in this repository.
+- For Option A "duplicates" runs, identity matching uses BLAKE3 (fast, low-collision) per [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md) §18. Earlier SHA‑256 guidance is deprecated in favor of XXH3 for general cache identity and non-Option-A flows.
 
 ### 10.2 Normalization rules
 
@@ -1569,7 +1550,7 @@ C) Two-pool duplicates (A→B)
 }
 ```
 
-D) Two-pool similarity (A→B) and “A without matches in B”
+D) Two-pool similarity (A→B) and "A without matches in B"
 ```json
 {
   "id": "9b0d3f12-0d0a-4a3b-8e0f-4c1d2e3f4a5b",
@@ -1589,7 +1570,7 @@ D) Two-pool similarity (A→B) and “A without matches in B”
 }
 ```
 
-To produce “A without matches in B”, change only:
+To produce "A without matches in B", change only:
 ```json
 "scope": { "kind": "two_pool", "direction": "A_WITHOUT_IN_B" }
 ```
@@ -1642,4 +1623,3 @@ E) Two-pool similarity (A without matches in B)
   "scope": { "kind": "two_pool", "direction": "A_WITHOUT_IN_B" },
   "output": { "mode": "report_only" }
 }
-```

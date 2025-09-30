@@ -15,6 +15,7 @@ This implementation uses a single SQLite database file, leveraging SQLite's robu
 | **WAL Mode** | The database is configured to use Write-Ahead Logging (`PRAGMA journal_mode=WAL`) to improve concurrency, especially on Windows, allowing multiple readers while a writer is active. |
 | **Unified Schema** | All computed metadata (hashes, quality scores) for a single file path are stored in one row, simplifying lookups and updates. |
 | **Concurrency Warning (Windows)** | While WAL mode helps, SQLite concurrency can still be a bottleneck if multiple processes attempt heavy writes simultaneously. This is mitigated by the application's single-threaded processing model for core tasks. |
+| **Schema Evolution** | As of schema version 5.0.0, non-essential metadata columns (e.g., `file_name`, `extension`, `pool`, `format`, `color_mode`, `exif_data`, `camera_make`, `camera_model`, `date_taken`, `gps_latitude`, `gps_longitude`) have been removed to streamline the cache. These fields are now handled on-demand during processing or derived from the filesystem (e.g., `extension` from `Path.suffix`, `pool` from profile paths). This reduces storage overhead and simplifies maintenance while preserving core validation and computed data. Indexes `idx_pool` and `idx_date_taken` have also been removed as they are no longer relevant. |
 
 ## Configuration and Integration
 
@@ -25,7 +26,6 @@ The Flat Cache is an optional feature controlled by the application settings pro
 The Flat Cache is now **enabled by default** for all new profiles, providing persistent, file-stat validated storage for computed metadata.
 
 **Schema Definition (from [`settings_schema.py`](src/pk_py_lib/core/settings_schema.py:134)):**
-
 ```json
 "use_flat_cache": {
     "type": "boolean",
@@ -45,62 +45,92 @@ The [`FlatCacheManager`](src/pk_py_lib/core/flat_cache.py:149) is instantiated o
 
 ## Database Schema
 
-The cache uses a single table, `flat_cache_entries`, indexed by the normalized file path.
+The cache uses a single table, `flat_cache_entries`, indexed by the normalized file path. The schema version is now 5.0.0, reflecting the removal of non-core metadata columns to focus on essential file stats, dimensions, and computed hashes/quality data.
 
-**Table Definition (from [`flat_cache.py`](src/pk_py_lib/core/flat_cache.py:122)):**
-
+**Table Definition (from [`flat_cache.py`](src/pk_py_lib/core/flat_cache.py:212)):**
 ```sql
 CREATE TABLE IF NOT EXISTS flat_cache_entries (
-    file TEXT PRIMARY KEY NOT NULL,
+    path TEXT PRIMARY KEY NOT NULL,
     size INTEGER NOT NULL,
-    mod_date INTEGER NOT NULL,
-    file_inode TEXT NOT NULL,
-    file_device TEXT NOT NULL,
-    blake3_hash TEXT,
-    xxh3_hash TEXT,
-    phash TEXT,
-    whash TEXT,
-    color_phash TEXT,
-    brisque_score REAL,
-    niqe_score REAL,
-    piqe_score REAL,
-    quality_algorithm TEXT,
-    computed_at INTEGER NOT NULL,
-    entry_version INTEGER DEFAULT 1
+    mtime REAL NOT NULL,
+    mtime_ns TEXT,
+    file_inode TEXT,
+    file_device TEXT,
+    width INTEGER,
+    height INTEGER,
+    bit_depth INTEGER,
+    lens_model TEXT,
+    last_scanned REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+    scan_version TEXT,
+    is_valid INTEGER NOT NULL DEFAULT 1 CHECK (is_valid IN (0, 1)),
+    hash_data TEXT,
+    created_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+    updated_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_computed_at ON flat_cache_entries (computed_at);
+-- Indexes for performance and queries
+CREATE INDEX IF NOT EXISTS idx_size ON flat_cache_entries (size);
+CREATE INDEX IF NOT EXISTS idx_last_scanned ON flat_cache_entries (last_scanned);
+CREATE INDEX IF NOT EXISTS idx_updated_at ON flat_cache_entries (updated_at);
+CREATE INDEX IF NOT EXISTS idx_is_valid ON flat_cache_entries (is_valid);
 ```
 
 | Column | Type | Description |
 | :--- | :--- | :--- |
-| `file` | `TEXT` | Normalized, absolute POSIX path of the file (Primary Key). |
+| `path` | `TEXT` | Normalized, absolute POSIX path of the file (Primary Key). |
 | `size` | `INTEGER` | File size in bytes (for validation). |
-| `mod_date` | `INTEGER` | Unix timestamp of last modification time (`mtime`) (for validation). |
-| `file_inode` | `TEXT` | File system inode number (for robust identity check). |
-| `file_device` | `TEXT` | Device ID (for robust identity check across mounts). |
-| `blake3_hash` | `TEXT` | Content hash (e.g., for exact duplicates). |
-| `xxh3_hash` | `TEXT` | Content hash (e.g., for exact duplicates). |
-| `phash` | `TEXT` | Perceptual hash (DCT-based). |
-| `whash` | `TEXT` | Wavelet hash (DWT-based). |
-| `color_phash` | `TEXT` | Color-aware perceptual hash. |
-| `brisque_score` | `REAL` | BRISQUE image quality score. |
-| `niqe_score` | `REAL` | NIQE image quality score. |
-| `piqe_score` | `REAL` | PIQE image quality score. |
-| `quality_algorithm` | `TEXT` | Name of the algorithm used for the quality score (e.g., 'brisque'). |
-| `computed_at` | `INTEGER` | Unix timestamp of when the entry was last updated. |
-| `entry_version` | `INTEGER` | Internal schema version of the entry structure. |
+| `mtime` | `REAL` | Modification time (mtime) as Unix timestamp float (for validation). |
+| `mtime_ns` | `TEXT` | Modification time in nanoseconds (stored as string to handle large values). |
+| `file_inode` | `TEXT` | File inode number (stored as string to handle large values, for identity validation). |
+| `file_device` | `TEXT` | File device ID (stored as string to handle large values, for identity validation). |
+| `width` | `INTEGER` | Image width in pixels. |
+| `height` | `INTEGER` | Image height in pixels. |
+| `bit_depth` | `INTEGER` | Bit depth. |
+| `lens_model` | `TEXT` | Lens model. |
+| `last_scanned` | `REAL` | Last scan timestamp. |
+| `scan_version` | `TEXT` | Scan version identifier. |
+| `is_valid` | `INTEGER` | Validity flag (0 or 1, DEFAULT 1). |
+| `hash_data` | `TEXT` | JSON-serialized dictionary of computed hashes and quality data (e.g., {'phash': 'abc123...', 'brisque_score': 75.5}). |
+| `created_at` | `REAL` | Unix timestamp when entry was created. |
+| `updated_at` | `REAL` | Unix timestamp of last update. |
+
+**FlatCacheEntry Dataclass (from [`flat_cache.py`](src/pk_py_lib/core/flat_cache.py:64)):**
+
+The `FlatCacheEntry` dataclass has been updated to reflect the streamlined schema in version 5.0.0. It now includes only the retained fields for core validation and computed data:
+
+```python
+@dataclass
+class FlatCacheEntry:
+    path: str
+    size: int
+    mtime: float
+    mtime_ns: Optional[str] = None
+    file_inode: Optional[str] = None
+    file_device: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    bit_depth: Optional[int] = None
+    lens_model: Optional[str] = None
+    last_scanned: float = field(default_factory=lambda: time.time())
+    scan_version: Optional[str] = None
+    is_valid: bool = True
+    hash_data: Optional[Dict[str, Any]] = None
+    created_at: float = field(default_factory=lambda: time.time())
+    updated_at: float = field(default_factory=lambda: time.time())
+```
+
+Removed fields (e.g., `file_name`, `extension`, `pool`) are no longer stored in the cache and are derived dynamically when needed (e.g., via `Path` object properties or profile configurations).
 
 ## Validation Criteria and Edge Cases
 
 Cache validation is critical to ensure that cached data corresponds to the current state of the file on disk.
 
-The [`_validate_entry`](src/pk_py_lib/core/flat_cache.py:284) method performs four checks against the current file system statistics (`os.stat`):
+The [`_validate_entry`](src/pk_py_lib/core/flat_cache.py:527) method performs four checks against the current file system statistics (`os.stat`):
 
 1.  **Size Check**: `current_size == entry.size`
-2.  **Modification Date Check**: `current_mtime == entry.mod_date`
-3.  **Inode Check**: `current_inode == entry.file_inode`
-4.  **Device Check**: `current_device == entry.file_device`
+2.  **Modification Date Check**: `current_mtime == entry.mtime` (with float tolerance for precision)
+3.  **Inode Check**: `current_inode == entry.file_inode` (if present)
+4.  **Device Check**: `current_device == entry.file_device` (if present)
 
 If any of these checks fail, a [`FlatCacheValidationError`](src/pk_py_lib/core/flat_cache.py:48) is raised, indicating a cache miss and forcing recomputation.
 
@@ -115,14 +145,15 @@ If any of these checks fail, a [`FlatCacheValidationError`](src/pk_py_lib/core/f
 -   If `os.stat` raises `FileNotFoundError`, validation fails, and the entry is treated as stale/invalid.
 -   If `os.stat` raises `PermissionError` (e.g., access denied), validation fails, forcing recomputation if possible, or logging a warning.
 -   Database errors (e.g., connection issues, corruption) are wrapped in [`FlatCacheDBError`](src/pk_py_lib/core/flat_cache.py:36) and typically result in a fallback to computation or a graceful failure, depending on the calling function.
+-   EXIF extraction in [`_extract_image_metadata`](src/pk_py_lib/core/flat_cache.py:947) now includes serialization via [`_serialize_exif`](src/pk_py_lib/core/flat_cache.py:946) to convert non-JSON-serializable types (e.g., IFDRational to (numerator, denominator) tuples, bytes to UTF-8 strings) before JSON storage, preventing serialization errors during cache updates. Note: Full EXIF data is no longer cached; only essential fields like `lens_model` are retained, with others computed on-demand.
 
 ## API Reference (FlatCacheManager)
 
 The [`FlatCacheManager`](src/pk_py_lib/core/flat_cache.py:149) is the primary interface for interacting with the cache.
 
-### `__init__(self, db_path: Path | str, logger: Optional[logging.Logger] = None)`
+### `__init__(self, db_path: Optional[Path | str] = None, logger: Optional[logging.Logger] = None)`
 
-Initializes the manager, resolves the database path, and ensures the database file and schema exist.
+Initializes the manager, resolves the database path, and ensures the database file and schema exist (including migration to version 5.0.0 if needed).
 
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
@@ -141,7 +172,7 @@ Queries the cache for an entry by file path and performs file stat validation.
 
 ### `set_entry(self, entry: FlatCacheEntry) -> bool`
 
-Inserts or replaces a cache entry (UPSERT). Automatically normalizes the path, updates the `computed_at` timestamp, and fetches current file stats before saving.
+Inserts or replaces a cache entry (UPSERT). Automatically normalizes the path, updates the `computed_at` timestamp, and fetches current file stats before saving. The entry must conform to the updated schema (version 5.0.0).
 
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
@@ -149,24 +180,23 @@ Inserts or replaces a cache entry (UPSERT). Automatically normalizes the path, u
 
 **Returns**: `bool`. `True` if the operation succeeded, `False` otherwise (e.g., file inaccessible).
 
-**Example Usage (from [`similarity.py`](src/pk_py_lib/core/image/similarity.py:327)):**
-
+**Example Usage (from [`similarity.py`](src/pk_py_lib/core/image/similarity.py:429)):**
 ```python
 # Get current entry or create a new one with file stats
 current_entry = flat_cache_manager.get_entry(image_path)
 if current_entry is None:
     size, mtime, inode, device = flat_cache_manager._get_file_stats(image_path)
     current_entry = FlatCacheEntry(
-        file=image_path, size=size, mod_date=mtime, file_inode=inode, file_device=device
+        path=image_path, size=size, mtime=mtime, file_inode=inode, file_device=device
     )
 
-current_entry.phash = hash_str
+current_entry.hash_data = {'phash': hash_str}
 flat_cache_manager.set_entry(current_entry)
 ```
 
 ### `batch_set(self, entries: List[FlatCacheEntry]) -> int`
 
-Performs a transactional batch UPSERT of multiple cache entries, optimizing database performance. Skips entries for inaccessible files.
+Performs a transactional batch UPSERT of multiple cache entries, optimizing database performance. Skips entries for inaccessible files. Entries must use the updated `FlatCacheEntry` structure.
 
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
@@ -186,7 +216,7 @@ Identifies which files in a provided list are either missing from the cache or h
 
 ### `cleanup_old_entries(self, days: int = 30) -> int`
 
-Deletes cache entries older than the specified number of days based on the `computed_at` timestamp.
+Deletes cache entries older than the specified number of days based on the `updated_at` timestamp.
 
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
@@ -198,10 +228,11 @@ Deletes cache entries older than the specified number of days based on the `comp
 
 The Flat Cache implementation is covered by [`tests/test_flat_cache.py`](tests/test_flat_cache.py:1), which includes comprehensive unit tests for:
 
--   Database initialization and connection handling (including WAL mode verification).
+-   Database initialization and connection handling (including WAL mode verification and schema migration to 5.0.0).
 -   File stat retrieval and error handling (`FileNotFoundError`, `PermissionError`).
 -   Cache validation logic, ensuring mismatches in size, `mtime`, `inode`, or `device` result in cache misses.
 -   CRUD operations (`get_entry`, `set_entry`, `invalidate_entry`).
 -   Batch operations (`batch_set`, `get_uncached_files`).
 -   Cleanup functionality (`cleanup_old_entries`).
 -   Data retrieval by hash algorithm (`get_all_hashes_by_algorithm`).
+-   Compatibility with the updated `FlatCacheEntry` dataclass and schema.

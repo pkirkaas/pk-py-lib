@@ -80,6 +80,7 @@ Set A initial states (GUI):
 
 - Next iterations: N‑pool support, extended similarity algorithms, action endpoints, pagination for large results
 - Evolve schema versioning alongside changes (profile_version baseline; see [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md))
+
 ## Option A Overview — Data Model, Validator, and GUI Enablement (v1)
 
 Scope
@@ -134,8 +135,7 @@ src/pk_py_lib/
 │   │   ├── paths.py      # Path manipulation & validation
 │   │   ├── operations.py # File/directory operations
 │   │   ├── organization.py # File organization utilities
-│   │   ├── traversal.py  # Directory walking & filtering
-│   │   ├── safety.py     # Safe operations with rollback
+│   │   └── traversal.py  # Directory walking & filtering
 │   │   └── monitoring/   # Real-time file system monitoring
 │   │       ├── __init__.py
 │   │       ├── watcher.py    # Core file watcher
@@ -149,8 +149,7 @@ src/pk_py_lib/
 │   │   │   ├── __init__.py
 │   │   │   ├── console.py    # Terminal output with colors
 │   │   │   ├── file.py       # File rotation and management
-│   │   │   ├── gui.py        # GUI panel integration
-│   │   │   └── database.py   # DB logging (future)
+│   │   │   └── gui.py        # GUI panel integration
 │   │   ├── formatters/   # Log formatting
 │   │   │   ├── __init__.py
 │   │   │   └── rich.py       # Rich formatting
@@ -380,6 +379,7 @@ Implementation guidance diagrams
 - Startup + migration: see [img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1)
 - Staged hashing: see [img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1)
 - Results semantics: see [img-app-implementation-guide.md](docs/roo/img-app-implementation-guide.md:1)
+
 ### Purpose
 
 - Provide a thin, user-facing PySide6 application shell to exercise and validate pk-py-lib GUI widgets, file system utilities, and future processing APIs
@@ -462,6 +462,7 @@ python -m img_app
 3. Implement the first vertical slice
 4. Iterate based on what you learn
 5. Add img_app plan and scaffolding per sections above
+
 ## Settings/Profile Manager (References)
 
 Status: Implemented (Integrated)

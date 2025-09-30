@@ -33,10 +33,10 @@ from typing import Optional, Dict, Any, List, Tuple, Mapping, Sequence
 from pathlib import Path
 from src.pk_py_lib.gui.utils.messages import show_selectable_info, show_selectable_error, gui_error_handler, gui_error_context
 from src.pk_py_lib.gui.dialogs.progress_dialog import ProgressDialog
-from src.pk_py_lib.core.database import CACHE_SCHEMA
+# CACHE_SCHEMA deprecated; cache.db functionality migrated to flat_cache.db in flat_cache.py
 from src.pk_py_lib.core.filesystem.paths import PathOperations
 from src.pk_py_lib.core.filesystem.traversal import DirectoryTraversal, IMAGE_EXTENSIONS
-from src.pk_py_lib.core.filesystem.identity import get_inode_device, compute_sha256
+from src.pk_py_lib.core.filesystem.identity import get_inode_device, compute_xxh3
 from datetime import datetime
 import traceback
 from src.pk_py_lib.core.logging.logger import get_logger
@@ -153,20 +153,20 @@ class ScanWorker(QThread):
     error = Signal(str)
     finished = Signal(str, dict)
 
-    def __init__(self, db_manager, flat_cache_manager, profile_json: dict, algorithm: str = "sha256", mode: str = 'duplicates', compute_hashes: bool = False, profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
+    def __init__(self, db_manager, flat_cache_manager, profile_json: dict, algorithm: str = "xxh3", mode: str = 'duplicates', compute_hashes: bool = False, profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
         """
         Initialize worker.
      
         Parameters
         ----------
         db_manager : DatabaseManager
-            Database manager providing cache_db path and connection helper.
+            Database manager providing settings.db connection helper.
         flat_cache_manager : Optional[FlatCacheManager]
             Flat cache manager for file stat validation and hash caching.
         profile_json : dict
             Structured Settings Profile (Option A) JSON object.
         algorithm : str
-            Hash algorithm token to ensure in image_hashes (default 'sha256').
+            Hash algorithm token to ensure in image_hashes (default 'xxh3').
         mode : str
             Scan mode ('duplicates' or 'similarity').
         compute_hashes : bool
@@ -181,7 +181,7 @@ class ScanWorker(QThread):
         self.db_manager = db_manager
         self.flat_cache_manager = flat_cache_manager
         self.profile = profile_json or {}
-        self.algorithm = (algorithm or "sha256").lower().strip()
+        self.algorithm = (algorithm or "xxh3").lower().strip()
         self.mode = mode
         self.compute_hashes = compute_hashes
         self.exact_grouping = (mode == 'duplicates')
@@ -342,7 +342,7 @@ class ScanWorker(QThread):
             # The traversal module is implemented in src/pk_py_lib/core/filesystem/traversal.py,
             # not locally in img_app/img_app/.
             from pk_py_lib.core.filesystem.traversal import scan_directory
-            # Compute hashes for both similarity (perceptual) and duplicates (exact SHA256) modes to enable grouping
+            # Compute hashes for both similarity (perceptual) and duplicates (exact xxh3) modes to enable grouping
             effective_compute_hashes = self.compute_hashes or self.exact_grouping
             # Pass the progress signal emitter and the stop flag callable to enable real-time updates and cancellation
             scan_result = scan_directory(
@@ -352,7 +352,6 @@ class ScanWorker(QThread):
                 exact_grouping=self.exact_grouping,
                 algorithms=self.profile.get('similarity', {}).get('enabled_algorithms', ['phash']) if effective_compute_hashes else None,
                 db_manager=self.db_manager,
-                cache_manager=None,  # Not used here
                 flat_cache_manager=self.flat_cache_manager, # Pass the flat cache manager
                 settings=self.profile,
                 follow_symlinks=False,  # Default; can add from profile if needed
@@ -873,33 +872,29 @@ class MainWindow(QMainWindow):
             
         placeholders = ",".join("?" for _ in run_paths)
         
-        with db_manager.get_connection(db_manager.cache_db) as conn:
-            # Restrict to current run paths
-            conn.execute("CREATE TEMP TABLE IF NOT EXISTS temp_run_files (file_path TEXT PRIMARY KEY)")
-            conn.execute("DELETE FROM temp_run_files")
-            conn.executemany(
-                "INSERT OR IGNORE INTO temp_run_files(file_path) VALUES (?)",
-                [(p,) for p in run_paths]
-            )
+        # Use FlatCacheManager to get hashes for the run paths
+        if self.flat_cache_manager:
+            # Get entries for all run paths
+            entries = self.flat_cache_manager.get_entries(run_paths)
             
-            rows = conn.execute(
-                f"""
-                SELECT im.file_path AS path,
-                       ih.hash_value AS hash,
-                       im.pool AS pool
-                FROM image_hashes ih
-                JOIN image_metadata im ON im.id = ih.image_id
-                JOIN temp_run_files tr ON tr.file_path = im.file_path
-                WHERE ih.algorithm = ?
-                  AND ih.hash_value IS NOT NULL
-                """,
-                (algorithm,),
-            ).fetchall()
-            
-            for row in rows:
-                path = str(row["path"])
-                hash_value = str(row["hash"])
-                hashes.append({"path": path, "hash": hash_value})
+            # Extract hashes based on the requested algorithm
+            for path, entry in entries.items():
+                hash_value = None
+                if algorithm == "xxh3":
+                    hash_value = entry.xxh3 if entry else None
+                elif algorithm == "phash":
+                    hash_value = entry.get('perceptual_hash')
+                elif algorithm == "whash":
+                    hash_value = entry.get('wavelet_hash')
+                
+                if hash_value:
+                    hashes.append({
+                        "path": path,
+                        "hash": str(hash_value),
+                        "pool": entry.get('pool', 'A')
+                    })
+        else:
+            logger.warning("FlatCacheManager not available for similarity grouping")
                 
         # 3. Compute similarity groups
         # find_similar_images returns List[Group] directly, enriched with metadata
@@ -1105,7 +1100,7 @@ class MainWindow(QMainWindow):
         # Cache menu (new)
         cache_menu = menubar.addMenu("&Cache")
         clear_cache_action = QAction("Clear Cache", self)
-        clear_cache_action.setStatusTip("Delete cache.db and recreate it empty")
+        clear_cache_action.setStatusTip("Clear flat_cache.db and recreate it empty")
         clear_cache_action.triggered.connect(self._on_clear_cache)
         cache_menu.addAction(clear_cache_action)
         
@@ -1577,7 +1572,7 @@ class MainWindow(QMainWindow):
             db_manager=db_mgr,
             flat_cache_manager=flat_cache_mgr,
             profile_json=payload,
-            algorithm="sha256",
+            algorithm="xxh3",
             mode=mode,
             compute_hashes=compute_hashes,
             profile_name=prof_name,
@@ -1775,9 +1770,9 @@ class MainWindow(QMainWindow):
             self._last_run_file_map = {}
             self._metadata_cache = {}
         try:
-            algo = str(summary.get("algorithm") or "sha256")
+            algo = str(summary.get("algorithm") or "xxh3")
         except Exception:
-            algo = "sha256"
+            algo = "xxh3"
         try:
             used_profile_id = summary.get("profile_id")
         except Exception:
@@ -1932,35 +1927,37 @@ class MainWindow(QMainWindow):
         try:
             if db_mgr is not None:
                 from collections import defaultdict
-                with db_mgr.get_connection(db_mgr.cache_db) as conn:
-                    # Restrict to current run
-                    conn.execute("CREATE TEMP TABLE IF NOT EXISTS temp_run_files (file_path TEXT PRIMARY KEY)")
-                    conn.execute("DELETE FROM temp_run_files")
-                    if run_paths:
-                        conn.executemany(
-                            "INSERT OR IGNORE INTO temp_run_files(file_path) VALUES (?)",
-                            [(p,) for p in run_paths]
-                        )
-
+                
+                # Use FlatCacheManager for duplicate detection instead of old cache_db
+                if self.flat_cache_manager:
+                    # Get all entries for run paths
+                    entries = self.flat_cache_manager.get_entries(run_paths)
+                    
                     if two_pool:
                         if direction == "duplicates":
                             # Two-Pool Duplicate Clustering (A vs B)
-                            rows = conn.execute("""
-                                SELECT ia.file_path AS a_path, ib.file_path AS b_path
-                                FROM image_hashes ih
-                                JOIN image_metadata ia ON ia.id = ih.image_id AND ia.pool = 'A'
-                                JOIN temp_run_files tra ON tra.file_path = ia.file_path
-                                JOIN image_hashes ihb ON ihb.algorithm = ih.algorithm AND ihb.hash_value = ih.hash_value
-                                JOIN image_metadata ib ON ib.id = ihb.image_id AND ib.pool = 'B'
-                                JOIN temp_run_files trb ON trb.file_path = ib.file_path
-                                WHERE ih.algorithm = ? AND ih.hash_value IS NOT NULL
-                                ORDER BY ia.file_path, ib.file_path
-                            """, (algo,)).fetchall()
+                            # Group files by pool
+                            pool_a_files = {path: entry for path, entry in entries.items()
+                                          if entry.get('pool') == 'A'}
+                            pool_b_files = {path: entry for path, entry in entries.items()
+                                          if entry.get('pool') == 'B'}
                             
+                            # Find duplicates between pools
                             groups_map: dict[str, list[str]] = defaultdict(list)
-                            for r in rows:
-                                a = str(r["a_path"]); b = str(r["b_path"])
-                                groups_map[a].append(b)
+                            
+                            # Create hash lookup for pool B
+                            b_hash_lookup = {}
+                            for path, entry in pool_b_files.items():
+                                hash_value = entry.xxh3 if entry else None
+                                if hash_value:
+                                    b_hash_lookup[hash_value] = path
+                            
+                            # Check pool A files against pool B
+                            for a_path, a_entry in pool_a_files.items():
+                                a_hash = a_entry.xxh3 if a_entry else None
+                                if a_hash and a_hash in b_hash_lookup:
+                                    b_path = b_hash_lookup[a_hash]
+                                    groups_map[a_path].append(b_path)
                             
                             report_lines.append("Two-Pool Report — duplicates (A vs B)")
                             all_paths_in_groups = set()
@@ -1978,16 +1975,6 @@ class MainWindow(QMainWindow):
 
                             # Prepare data for DuplicateManagerDialog (groups_data_prepared)
                             if all_paths_in_groups:
-                                placeholders = ",".join("?" for _ in all_paths_in_groups)
-                                sql = f"""
-                                    SELECT im.file_path, im.file_size, im.file_modified, im.pool
-                                    FROM image_metadata im
-                                    JOIN temp_run_files tr ON tr.file_path = im.file_path
-                                    WHERE im.file_path IN ({placeholders})
-                                """
-                                rows_meta = conn.execute(sql, list(all_paths_in_groups)).fetchall()
-                                meta_lookup = {str(r["file_path"]): r for r in rows_meta}
-                                
                                 group_id = 1
                                 for a_path, b_list in groups_map.items():
                                     if not b_list:
@@ -1996,25 +1983,25 @@ class MainWindow(QMainWindow):
                                     group_files = []
                                     
                                     # Add A path (reference)
-                                    meta_a = meta_lookup.get(a_path)
-                                    if meta_a:
+                                    a_entry = entries.get(a_path)
+                                    if a_entry:
                                         group_files.append({
                                             "path": a_path,
-                                            "size": int(meta_a["file_size"] or 0),
-                                            "modified": int(meta_a["file_modified"] or 0),
-                                            "pool": str(meta_a["pool"] or "A"),
+                                            "size": a_entry.size,
+                                            "modified": int(a_entry.mtime),
+                                            "pool": a_entry.pool,
                                             "score": 1.0
                                         })
                                     
                                     # Add B paths (duplicates)
                                     for b_path in b_list:
-                                        meta_b = meta_lookup.get(b_path)
-                                        if meta_b:
+                                        b_entry = entries.get(b_path)
+                                        if b_entry:
                                             group_files.append({
                                                 "path": b_path,
-                                                "size": int(meta_b["file_size"] or 0),
-                                                "modified": int(meta_b["file_modified"] or 0),
-                                                "pool": str(meta_b["pool"] or "B"),
+                                                "size": b_entry.size,
+                                                "modified": int(b_entry.mtime),
+                                                "pool": b_entry.pool,
                                                 "score": 1.0
                                             })
                                     
@@ -2027,119 +2014,68 @@ class MainWindow(QMainWindow):
                                         group_id += 1
                         else:
                             # Two-Pool Non-Duplicates (B not in A) - Only report generation needed
-                            rows = conn.execute("""
-                                SELECT ib.file_path AS b_path
-                                FROM image_hashes hb
-                                JOIN image_metadata ib ON ib.id = hb.image_id AND ib.pool = 'B'
-                                JOIN temp_run_files trb ON trb.file_path = ib.file_path
-                                WHERE hb.algorithm = ? AND hb.hash_value IS NOT NULL
-                                  AND NOT EXISTS (
-                                      SELECT 1
-                                      FROM image_hashes ha
-                                      JOIN image_metadata ia ON ia.id = ha.image_id AND ia.pool = 'A'
-                                      JOIN temp_run_files tra ON tra.file_path = ia.file_path
-                                      WHERE ha.algorithm = hb.algorithm
-                                        AND ha.hash_value = hb.hash_value
-                                  )
-                                ORDER BY ib.file_path
-                            """, (algo,)).fetchall()
+                            # Create hash lookup for pool A
+                            pool_a_hashes = set()
+                            for path, entry in entries.items():
+                                if entry.pool == 'A':
+                                    hash_value = entry.xxh3 if entry else None
+                                    if hash_value:
+                                        pool_a_hashes.add(hash_value)
+                            
+                            # Find files in pool B that are not in pool A
                             report_lines.append("Two-Pool Report — non_duplicates (B not in A)")
-                            for r in rows:
-                                b = str(r["b_path"])
-                                non_matches += 1
-                                report_lines.append(f"  - {b}")
+                            for path, entry in entries.items():
+                                if entry.pool == 'B':
+                                    hash_value = entry.xxh3 if entry else None
+                                    if hash_value and hash_value not in pool_a_hashes:
+                                        non_matches += 1
+                                        report_lines.append(f"  - {path}")
                     else:
                         # Single-pool duplicate clustering
-                        rows = conn.execute("""
-                            SELECT ih.hash_value AS hv, im.file_path AS p
-                            FROM image_hashes ih
-                            JOIN image_metadata im ON im.id = ih.image_id AND im.is_valid = 1
-                            JOIN temp_run_files tr ON tr.file_path = im.file_path
-                            WHERE ih.algorithm = ? AND ih.hash_value IS NOT NULL
-                            ORDER BY hv, p
-                        """, (algo,)).fetchall()
- 
-                        current_hash: str | None = None
-                        current_files: list[str] = []
+                        # Group files by hash
+                        hash_groups: dict[str, list[str]] = defaultdict(list)
+                        for path, entry in entries.items():
+                            hash_value = entry.xxh3 if entry else None
+                            if hash_value:
+                                hash_groups[hash_value].append(path)
+                        
                         report_lines.append("Duplicate Report — Single Pool")
- 
-                        def _flush():
-                            nonlocal groups, total_dups, report_lines, current_hash, current_files
-                            if current_hash is not None and len(current_files) >= 2:
+                        
+                        for hash_value, paths in hash_groups.items():
+                            if len(paths) >= 2:
                                 groups += 1
-                                total_dups += len(current_files)
-                                report_lines.append(f"\nHash: {current_hash}")
-                                for fp in current_files:
-                                    report_lines.append(f"  - {fp}")
- 
-                        for r in rows:
-                            hv = str(r["hv"]); p = str(r["p"])
-                            if hv != current_hash:
-                                _flush()
-                                current_hash = hv
-                                current_files = [p]
-                            else:
-                                current_files.append(p)
-                        _flush()
- 
-                        # Prepare data for DuplicateManagerDialog
-                        hv_to_paths: dict[str, list[str]] = defaultdict(list)
-                        for r in rows:
-                            h = str(r["hv"]); p = str(r["p"])
-                            hv_to_paths[h].append(p)
- 
-                        dup_hashes = [h for h, lst in hv_to_paths.items() if len(lst) >= 2]
-                        groups_data_fallback = [
-                            {
-                                "hash": h,
-                                "count": len(hv_to_paths[h]),
-                                "files": [{"path": p, "size": 0, "modified": 0, "pool": ""} for p in hv_to_paths[h]],
-                            }
-                            for h in dup_hashes
-                        ]
- 
-                        if dup_hashes:
-                            placeholders = ",".join("?" for _ in dup_hashes)
-                            sql = f"""
-                                SELECT ih.hash_value AS hash,
-                                       im.file_path,
-                                       im.file_size,
-                                       im.file_modified,
-                                       im.pool
-                                FROM image_hashes ih
-                                JOIN image_metadata im ON im.id = ih.image_id
-                                JOIN temp_run_files tr ON tr.file_path = im.file_path
-                                WHERE ih.algorithm = ? AND ih.hash_value IN ({placeholders})
-                                ORDER BY ih.hash_value, im.file_path
-                            """
-                            params = [algo, *dup_hashes]
-                            rows2 = conn.execute(sql, params).fetchall()
- 
-                            by_hash: dict[str, dict] = {}
-                            for rr in rows2:
-                                h = str(rr["hash"])
-                                g = by_hash.get(h)
-                                if g is None:
-                                    g = {"hash": h, "count": 0, "files": []}
-                                    by_hash[h] = g
-                                fp = str(rr["file_path"])
-                                try:
-                                    sz = int(rr["file_size"]) if rr["file_size"] is not None else 0
-                                except Exception:
-                                    sz = 0
-                                try:
-                                    # Use the robust converter to handle potential string timestamps
-                                    mod = MainWindow._to_int_timestamp(rr["file_modified"])
-                                except Exception:
-                                    mod = 0
-                                pl = str(rr["pool"] or "")
-                                g["files"].append({"path": fp, "size": sz, "modified": mod, "pool": pl})
- 
-                            groups_data_prepared = []
-                            for h, g in by_hash.items():
-                                g["count"] = len(g["files"])
-                                if g["count"] >= 2:
-                                    groups_data_prepared.append(g)
+                                total_dups += len(paths)
+                                report_lines.append(f"\nHash: {hash_value}")
+                                for path in paths:
+                                    report_lines.append(f"  - {path}")
+                                
+                                # Prepare data for DuplicateManagerDialog
+                                group_files = []
+                                for path in paths:
+                                    entry = entries.get(path)
+                                    if entry:
+                                        group_files.append({
+                                            "path": path,
+                                            "size": entry.size,
+                                            "modified": int(entry.mtime),
+                                            "pool": entry.pool,
+                                            "score": 1.0
+                                        })
+                                
+                                if len(group_files) >= 2:
+                                    groups_data_prepared.append({
+                                        "hash": hash_value,
+                                        "count": len(group_files),
+                                        "files": group_files,
+                                    })
+                        
+                        # Fallback groups (empty since we're using flat cache)
+                        groups_data_fallback = []
+                else:
+                    logger.warning("FlatCacheManager not available for duplicate detection")
+                    # Fallback to empty groups if flat cache manager is not available
+                    groups_data_prepared = []
+                    groups_data_fallback = []
         except Exception as e:
             try:
                 tb = traceback.format_exc()

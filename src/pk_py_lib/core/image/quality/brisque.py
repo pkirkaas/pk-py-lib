@@ -376,7 +376,7 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
                     # Since we already validated file existence above, we can safely call _get_file_stats.
                     size, mtime, inode, device = flat_cache_manager._get_file_stats(path)
                     current_entry = FlatCacheEntry(
-                        file=path, size=size, mod_date=mtime, file_inode=inode, file_device=device
+                        path=path, size=size, mtime=mtime
                     )
                 
                 current_entry.brisque_score = normalized_score

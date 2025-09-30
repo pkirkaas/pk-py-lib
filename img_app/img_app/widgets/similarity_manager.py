@@ -57,6 +57,7 @@ from src.pk_py_lib.gui.utils.messages import show_selectable_error, show_selecta
 from src.pk_py_lib.gui.widgets import FileGroupView, SimilarityPreviewPane
 from src.pk_py_lib.core.logging import get_logger
 
+
 LOGGER = get_logger("img_app.widgets.similarity_manager")
 
 
@@ -113,6 +114,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         pool_map: Optional[Mapping[str, str]] = None,
         selection_store: Optional[SelectionStore] = None,
         db_manager: Optional[DatabaseManager] = None,
+        flat_cache_manager=None,
         summary_text: str = "",
         report_text: str = "",
         initial_direction: PoolDirection = PoolDirection.ALL,
@@ -127,6 +129,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         self._profile_payload: Optional[dict] = None
         self._validator_errors: List[str] = []
         self._db_manager = db_manager
+        self._flat_cache_manager = flat_cache_manager
         self._algorithms = tuple(algorithms or self._DEFAULT_ALGORITHMS)
 
         super().__init__(
@@ -420,6 +423,50 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         self.refresh_groups(groups, pool_map=pool_map, direction=direction)
         self._select_first_group()
 
+    def _get_pool_for_path(self, path: str, profile: Optional[dict]) -> str:
+        """
+        Determine the pool (A or B) for a given file path based on profile pool configurations.
+
+        Args:
+            path: Absolute file path.
+            profile: Settings profile payload with "pools" configuration.
+
+        Returns:
+            Pool label ("A" or "B"), defaults to "A" if undetermined.
+        """
+        if not profile or "pools" not in profile:
+            return "A"
+
+        pools = profile["pools"]
+        path_obj = Path(path)
+
+        # Check Pool A paths
+        if "A" in pools:
+            a_paths = pools["A"].get("paths", [])
+            for p in a_paths:
+                pool_path = Path(p)
+                try:
+                    if path_obj.is_relative_to(pool_path):
+                        return "A"
+                except ValueError:
+                    # Not relative, continue
+                    pass
+
+        # Check Pool B paths
+        if "B" in pools:
+            b_paths = pools["B"].get("paths", [])
+            for p in b_paths:
+                pool_path = Path(p)
+                try:
+                    if path_obj.is_relative_to(pool_path):
+                        return "B"
+                except ValueError:
+                    # Not relative, continue
+                    pass
+
+        # Default to A if no match
+        return "A"
+
     def _compute_groups_from_database(
         self,
         algorithm: str,
@@ -429,26 +476,38 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         hashes: List[Dict[str, str]] = []
         pool_map: Dict[str, str] = {}
 
-        with self._db_manager.get_connection(self._db_manager.cache_db) as conn:  # type: ignore[arg-type]
-            rows = conn.execute(
-                """
-                SELECT im.file_path AS path,
-                       ih.hash_value AS hash,
-                       im.pool AS pool
-                FROM image_hashes ih
-                JOIN image_metadata im ON im.id = ih.image_id
-                WHERE ih.algorithm = ?
-                  AND ih.hash_value IS NOT NULL
-                """,
-                (algorithm,),
-            ).fetchall()
+        # Use FlatCacheManager to get hashes instead of old cache.db
+        if not hasattr(self, '_flat_cache_manager'):
+            show_selectable_error(
+                self,
+                "Cache Unavailable",
+                "FlatCacheManager instance is required to compute similarity groups.",
+            )
+            return [], {}
+        
+        # Get all entries with the specified algorithm hash
+        entries = self._flat_cache_manager.get_entries()
+        hashes = []
+        pool_map = {}
+        
+        for entry in entries:
+            # Get hash value directly from entry columns
+            if algorithm == 'phash':
+                hash_value = entry.get('phash')
+            elif algorithm == 'xxh3':
+                hash_value = entry.get('xxh3')
+            else:
+                hash_value = None
+                
+            if hash_value:
+                path = entry.get('path') or entry.get('file_path')
+                # Compute pool based on profile paths since 'pool' column removed from cache
+                pool = self._get_pool_for_path(path, self._profile_payload)
+                hashes.append({"path": path, "hash": hash_value})
+                pool_map[path] = pool
 
-        for row in rows:
-            path = str(row["path"])
-            hash_value = str(row["hash"])
-            hashes.append({"path": path, "hash": hash_value})
-            pool_label = str(row["pool"] or "A").upper()
-            pool_map[path] = pool_label
+        # Remove erroneous loop referencing undefined 'rows' (legacy DB query remnant)
+        # All data now comes from flat_cache_manager.get_entries()
 
         if not hashes:
             return [], pool_map

@@ -9,13 +9,17 @@ DB lookup functions are provided by callers to keep the module decoupled from an
 
 from __future__ import annotations
 
-import hashlib
 import os
 import math
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Callable, NamedTuple
 
-__all__ = ["FileIdentity", "compute_sha256", "compute_xxh3", "get_inode_device", "make_identity", "IdentityResolver"]
+from ..logging.decorators import log_errors
+from ..logging import get_logger
+
+logger = get_logger(__name__)
+
+__all__ = ["FileIdentity", "compute_xxh3", "get_inode_device", "make_identity", "IdentityResolver"]
 
 
 class FileIdentity(NamedTuple):
@@ -24,8 +28,9 @@ class FileIdentity(NamedTuple):
 
     Attributes
     ----------
-    sha256 : Optional[str]
-        Hex SHA-256 digest of the file contents, when computed.
+    xxh3 : Optional[str]
+        Hex XXH3 digest of the file contents, when computed.
+        XXH3 is a fast, non-cryptographic hash suitable for duplicate detection.
     inode : Optional[int]
         OS inode number where available (None on unsupported platforms).
     device : Optional[int]
@@ -35,44 +40,14 @@ class FileIdentity(NamedTuple):
     mtime : Optional[int]
         Last modification time as integer epoch seconds.
     """
-    sha256: Optional[str]
+    xxh3: Optional[str]
     inode: Optional[int]
     device: Optional[int]
     size: Optional[int]
     mtime: Optional[int]
 
 
-def compute_sha256(path: Path, chunk_size: int = 65536) -> str:
-    """
-    Compute SHA-256 hash for a file by streaming it in chunks.
-
-    Parameters
-    ----------
-    path : Path
-        Path to the file to hash.
-    chunk_size : int
-        Read buffer size in bytes.
-
-    Returns
-    -------
-    str
-        Hexadecimal SHA-256 digest.
-
-    Raises
-    ------
-    FileNotFoundError, PermissionError, OSError
-        Propagates IO-related exceptions to caller.
-    """
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        while True:
-            chunk = fh.read(chunk_size)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
-
-
+@log_errors()
 def compute_xxh3(path: Path, chunk_size: int = 65536) -> str:
     """
     Compute XXH3 hash for a file by streaming it in chunks.
@@ -114,6 +89,7 @@ def compute_xxh3(path: Path, chunk_size: int = 65536) -> str:
     return h.hexdigest()
 
 
+@log_errors()
 def get_inode_device(path: Path) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
     """
     Obtain filesystem stat information useful for identity heuristics.
@@ -136,7 +112,8 @@ def get_inode_device(path: Path) -> Tuple[Optional[int], Optional[int], Optional
         size = int(st.st_size) if hasattr(st, "st_size") else None
         mtime = int(st.st_mtime) if hasattr(st, "st_mtime") else None
         return inode, device, size, mtime
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to get inode/device for {path}: {e}")
         return None, None, None, None
 
 
@@ -149,21 +126,21 @@ def make_identity(path: Path, compute_hash: bool = True) -> FileIdentity:
     path : Path
         File path to inspect.
     compute_hash : bool
-        Whether to compute and include the SHA-256 content hash.
+        Whether to compute and include the XXH3 content hash.
 
     Returns
     -------
     FileIdentity
     """
     inode, device, size, mtime = get_inode_device(path)
-    sha = None
+    xxh3_hash = None
     if compute_hash:
         try:
-            sha = compute_sha256(path)
+            xxh3_hash = compute_xxh3(path)
         except Exception:
-            # If hashing fails (permissions, IO), leave sha as None and rely on inode/device heuristics
-            sha = None
-    return FileIdentity(sha256=sha, inode=inode, device=device, size=size, mtime=mtime)
+            # If hashing fails (permissions, IO), leave xxh3 as None and rely on inode/device heuristics
+            xxh3_hash = None
+    return FileIdentity(xxh3=xxh3_hash, inode=inode, device=device, size=size, mtime=mtime)
 
 
 class IdentityResolver:
@@ -185,7 +162,7 @@ class IdentityResolver:
         Parameters
         ----------
         compute_hash_by_default : bool
-            Whether to compute SHA-256 by default when resolving identities.
+            Whether to compute XXH3 by default when resolving identities.
         """
         self.compute_hash_by_default = bool(compute_hash_by_default)
 
@@ -198,7 +175,7 @@ class IdentityResolver:
         path : Path
             Path to the file.
         compute_hash : Optional[bool]
-            Override whether to compute the SHA-256 hash for this call.
+            Override whether to compute the XXH3 hash for this call.
 
         Returns
         -------
@@ -213,7 +190,7 @@ class IdentityResolver:
         Determine whether two FileIdentity objects refer to the same underlying file.
 
         Heuristic order:
-        1. If both have sha256 -> compare sha equality.
+        1. If both have xxh3 -> compare xxh3 equality.
         2. Else if both have inode and device -> compare device+inode equality.
         3. Else if size and mtime both equal (best-effort) -> consider match.
         4. Else -> not match
@@ -227,9 +204,9 @@ class IdentityResolver:
         -------
         bool
         """
-        # 1: SHA-256 equality
-        if a.sha256 and b.sha256:
-            return a.sha256 == b.sha256
+        # 1: XXH3 equality
+        if a.xxh3 and b.xxh3:
+            return a.xxh3 == b.xxh3
         # 2: inode/device
         if a.inode is not None and b.inode is not None and a.device is not None and b.device is not None:
             return (a.inode == b.inode) and (a.device == b.device)
@@ -238,16 +215,16 @@ class IdentityResolver:
             return (a.size == b.size) and (a.mtime == b.mtime)
         return False
 
-    def find_moved_by_hash(self, db_lookup_by_hash: Callable[[str], Optional[Dict[str, Any]]], sha256: str) -> Optional[Dict[str, Any]]:
+    def find_moved_by_hash(self, db_lookup_by_hash: Callable[[str], Optional[Dict[str, Any]]], xxh3: str) -> Optional[Dict[str, Any]]:
         """
-        Query a supplied DB lookup callable for an entry matching sha256.
+        Query a supplied DB lookup callable for an entry matching xxh3.
 
         Parameters
         ----------
         db_lookup_by_hash : Callable[[str], Optional[Dict[str, Any]]]
-            Function that accepts a sha256 hex string and returns a DB row dict or None.
-        sha256 : str
-            SHA-256 hex string to search for.
+            Function that accepts an xxh3 hex string and returns a DB row dict or None.
+        xxh3 : str
+            XXH3 hex string to search for.
 
         Returns
         -------
@@ -255,7 +232,7 @@ class IdentityResolver:
             Returned DB row (dict-like) or None if not found.
         """
         try:
-            return db_lookup_by_hash(sha256)
+            return db_lookup_by_hash(xxh3)
         except Exception:
             # Caller will handle None / errors
             return None

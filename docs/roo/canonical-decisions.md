@@ -135,18 +135,18 @@ Scope
 
 ### 4) File Hashing Strategy (canonical)
 
-- **Algorithm**: SHA-256 for identical file detection
+- **Algorithm**: XXH3 for identical file detection (fast non-cryptographic hash; BLAKE3 used specifically for Option A duplicates mode)
 - **Staged hashing pipeline** (when enabled):
   1. **Size filter**: Group files by exact size
   2. **Partial hash**: For files ≥ 512 KiB:
      - Hash first 256 KiB of file
      - Hash last 256 KiB of file
      - Combine as partial signature
-  3. **Full hash**: Compute full-file SHA-256 only for candidates with matching partial hashes
+  3. **Full hash**: Compute full-file XXH3 only for candidates with matching partial hashes
 - **Cache strategy**:
   - Store both partial and full hashes in cache.db
   - Invalidate cache when file signature changes (size, mtime_ns, inode)
-- **For files < 512 KiB**: Skip partial hashing, go directly to full-file SHA-256
+- **For files < 512 KiB**: Skip partial hashing, go directly to full-file XXH3
 - Implementation targets:
   - [`src/pk_py_lib/core/filesystem/identity.py`](src/pk_py_lib/core/filesystem/identity.py:1)
   - [`src/pk_py_lib/core/cache.py`](src/pk_py_lib/core/cache.py:1)

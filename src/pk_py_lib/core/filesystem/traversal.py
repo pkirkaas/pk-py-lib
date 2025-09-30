@@ -6,7 +6,6 @@ duplicate detection, and directory statistics.
 """
 
 import os
-import sqlite3
 import traceback
 from pathlib import Path
 from typing import Iterator, Optional, List, Dict, Any, Pattern, Set, Union, Callable
@@ -17,13 +16,10 @@ from dataclasses import dataclass
 
 from ..logging import get_logger
 from ..image import similarity
-from ..database import DatabaseManager
-from ..cache import CacheManager
 from ..flat_cache import FlatCacheManager # Import FlatCacheManager
 import hashlib
 
-# Logger instance 'log = get_logger(__name__)' is used for consistent logging throughout the module, including DB storage errors in scan_directory
-
+# Logger instance 'log = get_logger(__name__)' is used for consistent logging throughout the module
 log = get_logger(__name__)
 
 # Image file extensions for similarity hash computation
@@ -576,7 +572,7 @@ class SmartTraversal:
     progress callbacks and result caching.
     """
     
-    def __init__(self, progress_callback: Optional[callable] = None):
+    def __init__(self, progress_callback: Optional[Callable] = None):
         """
         Initialize smart traversal.
         
@@ -630,44 +626,44 @@ class SmartTraversal:
 
 # Standalone functions for backward compatibility and convenience
 def walk_files(
-   roots: Union[Path, List[Path]],
-   patterns: Optional[List[str]] = None,
-   exclude_patterns: Optional[List[str]] = None,
-   follow_symlinks: bool = False,
-   max_depth: Optional[int] = None,
-   min_size: int = 0,
-   max_size: Optional[int] = None,
-   include_hidden: bool = False
+    roots: Union[Path, List[Path]],
+    patterns: Optional[List[str]] = None,
+    exclude_patterns: Optional[List[str]] = None,
+    follow_symlinks: bool = False,
+    max_depth: Optional[int] = None,
+    min_size: int = 0,
+    max_size: Optional[int] = None,
+    include_hidden: bool = False
 ) -> Iterator[Path]:
-   """
-   Standalone function for walking files with multiple path support.
-   
-   This is a convenience wrapper around DirectoryTraversal.walk_files
-   for backward compatibility and simpler imports.
-   
-   Args:
-       roots: Single root directory or list of root directories to traverse
-       patterns: Include patterns (glob-style)
-       exclude_patterns: Exclude patterns (glob-style)
-       follow_symlinks: Whether to follow symbolic links
-       max_depth: Maximum recursion depth (None for unlimited)
-       min_size: Minimum file size in bytes
-       max_size: Maximum file size in bytes (None for unlimited)
-       include_hidden: Whether to include hidden files
-       
-   Yields:
-       Path objects for matching files
-   """
-   return DirectoryTraversal.walk_files(
-       roots=roots,
-       patterns=patterns,
-       exclude_patterns=exclude_patterns,
-       follow_symlinks=follow_symlinks,
-       max_depth=max_depth,
-       min_size=min_size,
-       max_size=max_size,
-       include_hidden=include_hidden
-   )
+    """
+    Standalone function for walking files with multiple path support.
+    
+    This is a convenience wrapper around DirectoryTraversal.walk_files
+    for backward compatibility and simpler imports.
+    
+    Args:
+        roots: Single root directory or list of root directories to traverse
+        patterns: Include patterns (glob-style)
+        exclude_patterns: Exclude patterns (glob-style)
+        follow_symlinks: Whether to follow symbolic links
+        max_depth: Maximum recursion depth (None for unlimited)
+        min_size: Minimum file size in bytes
+        max_size: Maximum file size in bytes (None for unlimited)
+        include_hidden: Whether to include hidden files
+        
+    Yields:
+        Path objects for matching files
+    """
+    return DirectoryTraversal.walk_files(
+        roots=roots,
+        patterns=patterns,
+        exclude_patterns=exclude_patterns,
+        follow_symlinks=follow_symlinks,
+        max_depth=max_depth,
+        min_size=min_size,
+        max_size=max_size,
+        include_hidden=include_hidden
+    )
 
 
 def compute_exact_hash(path: Path) -> str:
@@ -678,15 +674,14 @@ def compute_exact_hash(path: Path) -> str:
             hasher.update(chunk)
     return hasher.hexdigest()
 
+
 def scan_directory(
     roots: Union[Path, List[Path]],
     patterns: Optional[List[str]] = None,
     compute_hashes: bool = False,
     exact_grouping: bool = False,
     algorithms: Optional[List[str]] = None,
-    db_manager: Optional[DatabaseManager] = None,
-    cache_manager: Optional[CacheManager] = None,
-    flat_cache_manager: Optional[FlatCacheManager] = None, # Add FlatCacheManager
+    flat_cache_manager: Optional[FlatCacheManager] = None,
     settings: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
     stop_event: Optional[Callable[[], bool]] = None,
@@ -694,36 +689,34 @@ def scan_directory(
 ) -> Optional[Dict[str, Any]]:
     """
     Scan a directory for image files and optionally compute perceptual hashes.
- 
+  
     Extends directory traversal to collect file metadata and compute/store similarity
     hashes (pHash/wHash) for images during scanning. Uses existing walk_files for
     efficient traversal with filtering. Results include basic file info and optional
-    hashes dict. Hashes are stored in DB/cache if managers provided. Supports cooperative
+    hashes dict. Hashes are stored in flat_cache if manager provided. Supports cooperative
     cancellation and real-time progress reporting.
- 
+
     Args:
         roots (Union[Path, List[Path]]): Root directory or list of roots to scan.
         patterns (Optional[List[str]]): Glob patterns for files (default: image extensions).
         compute_hashes (bool): If True, compute perceptual hashes for images (default: False).
         exact_grouping (bool): If True, group files by exact SHA256 hash.
         algorithms (Optional[List[str]]): Algorithms to compute ('phash', 'whash'; default from settings or ['phash']).
-        db_manager (Optional[DatabaseManager]): For storing metadata/hashes in cache.db.
-        cache_manager (Optional[CacheManager]): For caching computed hashes.
         flat_cache_manager (Optional[FlatCacheManager]): For caching computed hashes using file stats validation.
         settings (Optional[Dict[str, Any]]): Settings dict; if algorithms None, uses settings['similarity']['enabled_algorithms'].
         progress_callback (Optional[Callable[[int, int, str, str], None]]): Callback function for progress updates.
             Signature: progress_callback(current_count, total_count, current_file_path, status_message).
         stop_event (Optional[Callable[[], bool]]): Callable that returns True if cancellation is requested.
         **walk_kwargs: Additional kwargs passed to walk_files (e.g., exclude_patterns, max_depth).
- 
+  
     Returns:
         Optional[Dict[str, Any]]: Dictionary containing 'files', 'exact_groups', and 'error_details'
             if successful, or None if the operation was cancelled.
- 
+  
     Raises:
         SimilarityError: If hash computation fails for an image (logged, but scan continues).
         ValueError: If invalid algorithms or root not dir.
- 
+  
     Example:
         >>> from threading import Event
         >>> stop = Event()
@@ -733,10 +726,10 @@ def scan_directory(
         ...     progress_callback=progress, stop_event=stop.is_set
         ... )
         >>> if results is None: print("Scan cancelled.")
- 
+  
     Note:
         - Only image files (by extension) are included unless patterns override.
-        - DB storage: Upserts image_metadata by file_path, then image_hashes by algorithm.
+        - All hash computation and storage handled by flat_cache_manager.
         - Logging: Progress for hash computation; errors per file.
         - PoC: Sequential; no parallelism. Mime-type via extension check.
     """
@@ -769,11 +762,13 @@ def scan_directory(
     # Traverse for files (images if patterns default, all if None)
     all_paths = []
     for root_path in roots:
-        paths = list(DirectoryTraversal.walk_files(root_path, patterns=patterns, **walk_kwargs))
+        # Remove db_manager from walk_kwargs since walk_files doesn't accept it
+        filtered_kwargs = {k: v for k, v in walk_kwargs.items() if k != 'db_manager'}
+        paths = list(DirectoryTraversal.walk_files(root_path, patterns=patterns, **filtered_kwargs))
         all_paths.extend(paths)
     # Deduplicate paths (rare, but possible with overlapping roots)
     unique_paths = list({p.as_posix(): p for p in all_paths}.values())
- 
+  
     results: List[Dict[str, Any]] = []
     error_details: List[Dict[str, Any]] = []
     file_count = len(unique_paths)
@@ -782,7 +777,7 @@ def scan_directory(
     processed_count = 0
     if progress_callback:
         progress_callback(processed_count, file_count, "", f"Starting scan of {file_count} files...")
- 
+  
     groups: Dict[str, List[str]] = defaultdict(list) if exact_grouping else None
 
     for path in unique_paths:
@@ -792,24 +787,33 @@ def scan_directory(
             if progress_callback:
                 progress_callback(processed_count, file_count, str(path), "Scan cancelled.")
             return None
-            
+        
         try:
             file_info = FileInfo.from_path(path)
             if file_info.size == 0:
                 processed_count += 1
                 continue  # Skip empty/broken files
- 
-            # Always compute exact SHA256 hash
-            try:
+
+            # Use flat_cache_manager for all hashes if available, else compute manually
+            if flat_cache_manager:
+                all_types = list(set(algorithms + ['sha256']))
+                hashes_dict = flat_cache_manager.get_hashes([str(path)], all_types)
+                hashes = hashes_dict[str(path)]
+                exact_hash = hashes.get('xxh3')
+                perceptual_hashes = {k: v for k, v in hashes.items() if k != 'xxh3'}
+            else:
                 exact_hash = compute_exact_hash(path)
-            except Exception as e:
-                import traceback
-                error_details.append({
-                    'path': str(path),
-                    'error': str(e),
-                    'traceback': traceback.format_exc()
-                })
-                exact_hash = None
+                perceptual_hashes = {}
+                if compute_hashes and file_info.extension in IMAGE_EXTENSIONS:
+                    for alg in algorithms:
+                        try:
+                            if alg == 'phash':
+                                perceptual_hashes[alg] = similarity.compute_phash(str(path), settings=settings)
+                            elif alg == 'whash':
+                                perceptual_hashes[alg] = similarity.compute_whash(str(path), settings=settings)
+                        except similarity.SimilarityError as e:
+                            log.error(f"Hash computation failed for {path} ({alg}): {e}")
+                            continue
 
             result: Dict[str, Any] = {
                 'path': str(path),
@@ -817,95 +821,17 @@ def scan_directory(
                 'modified_time': file_info.modified_time,
                 'extension': file_info.extension,
                 'exact_hash': exact_hash,
+                'hashes': perceptual_hashes
             }
 
-            if compute_hashes and file_info.extension in IMAGE_EXTENSIONS:
-                hashes: Dict[str, str] = {}
-                for alg in algorithms:
-                    try:
-                        if alg == 'phash':
-                            hash_val = similarity.compute_phash(str(path), settings=settings, cache_manager=cache_manager, flat_cache_manager=flat_cache_manager)
-                        elif alg == 'whash':
-                            hash_val = similarity.compute_whash(str(path), settings=settings, cache_manager=cache_manager, flat_cache_manager=flat_cache_manager)
-                        else:
-                            continue
-                        hashes[alg] = hash_val
-                    except similarity.SimilarityError as e:
-                        log.error(f"Hash computation failed for {path} ({alg}): {e}")
-                        continue  # Skip this algorithm, continue with others
-
-                if hashes:
-                    result['hashes'] = hashes
-
-            # Store metadata and exact hash in DB always if manager provided
-            if db_manager and exact_hash:
-                try:
-                    with db_manager.get_connection(db_manager.cache_db) as conn:
-                        # Determine primary hash and algorithm: prefer perceptual if computed, fallback to exact
-                        primary_hash = exact_hash
-                        primary_alg = 'sha256'
-                        if 'hashes' in result and result['hashes']:
-                            # Prioritize first perceptual alg (e.g., 'phash')
-                            first_alg = next(iter(result['hashes']))
-                            primary_hash = result['hashes'][first_alg]
-                            primary_alg = first_alg
-                            log.debug(f"Using perceptual hash for {path}")
-
-                        # Single upsert to image_metadata with unified hash/algorithm
-                        conn.execute("""
-                            INSERT OR REPLACE INTO image_metadata (
-                                file_path, file_name, extension, file_size, file_modified,
-                                file_hash_sha256, algorithm, last_scanned, is_valid
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 1)
-                        """, (str(path), path.name, file_info.extension, file_info.size, file_info.modified_time,
-                              primary_hash, primary_alg))
-                        log.debug(f"Stored metadata for {path}")
-                        row = conn.execute(
-                            "SELECT id FROM image_metadata WHERE file_path = ?",
-                            (str(path),)
-                        ).fetchone()
-                        if row is None:
-                            raise RuntimeError(f"image_metadata id resolution failed for {path}")
-                        image_id = row["id"] if hasattr(row, "keys") else row[0]
-                        image_id = int(image_id)
-                        if exact_hash:
-                            conn.execute(
-                                """
-                                INSERT OR REPLACE INTO image_hashes (image_id, algorithm, hash_value)
-                                VALUES (?, ?, ?)
-                                """,
-                                (image_id, "sha256", exact_hash),
-                            )
-                        if "hashes" in result:
-                            for alg_name, hash_value in result["hashes"].items():
-                                if not hash_value:
-                                    continue
-                                alg_token = str(alg_name or "").strip().lower()
-                                if not alg_token:
-                                    continue
-                                conn.execute(
-                                    """
-                                    INSERT OR REPLACE INTO image_hashes (image_id, algorithm, hash_value)
-                                    VALUES (?, ?, ?)
-                                    """,
-                                    (image_id, alg_token, hash_value),
-                                )
-                except Exception as e_db:
-                    log.error(f"DB storage failed for {path}: {e_db}", exc_info=True)
-                    error_details.append({
-                        'path': str(path),
-                        'error': f"DB storage failed: {str(e_db)}",
-                        'traceback': traceback.format_exc()
-                    })
- 
             results.append(result)
             processed_count += 1
             
             # Report progress
             if progress_callback:
                 status = f"Processing file {processed_count}/{file_count}"
-                if 'hashes' in result:
-                    status += f" (Hashes: {', '.join(result['hashes'].keys())})"
+                if perceptual_hashes:
+                    status += f" (Hashes: {', '.join(perceptual_hashes.keys())})"
                 progress_callback(processed_count, file_count, str(path), status)
                 
         except Exception as e:
@@ -933,7 +859,7 @@ def scan_directory(
         total_grouped_files = sum(len(g) for g in groups.values())
         log.info(f"Exact groups: {len(groups)} groups with {total_grouped_files} files")
     if compute_hashes:
-        perceptual_count = sum(1 for r in results if 'hashes' in r)
+        perceptual_count = sum(1 for r in results if 'hashes' in r and r['hashes'])
         log.info(f"Perceptual hash computation complete: {perceptual_count} images processed")
 
     if progress_callback:

@@ -256,16 +256,16 @@ Each settings profile includes:
 
 ## 6. Identical file detection (exact duplicates)
 
-- Algorithm: SHA-256 content hash
+- Algorithm: XXH3 content hash (fast non-cryptographic; BLAKE3 used specifically for Option A duplicates mode)
 - Staged hashing pipeline (when enabled):
   - Stage 1: Group by exact file size
   - Stage 2: Partial hash for files ≥ 512 KiB
     - Hash first 256 KiB and last 256 KiB; combine as partial signature
-  - Stage 3: Full-file SHA-256 only for candidates whose partial signatures match
+  - Stage 3: Full-file XXH3 only for candidates whose partial signatures match
 - Cache strategy:
-  - Store both partial and full SHA-256 in cache.db
+  - Store both partial and full XXH3 in cache.db
   - Invalidate when file signature changes (size, mtime_ns, inode)
-  - Files < 512 KiB skip partial hashing and go directly to full SHA-256
+  - Files < 512 KiB skip partial hashing and go directly to full XXH3
 - Reference: [canonical-decisions.md](docs/roo/canonical-decisions.md:93)
 
 ## 7. Results semantics

@@ -31,10 +31,9 @@ from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerControl
 
 from src.pk_py_lib.core.database import DatabaseManager
 from src.pk_py_lib.core.configuration import ConfigurationManager
-from src.pk_py_lib.core.cache import CacheManager
-from src.pk_py_lib.core.flat_cache import FlatCacheManager
 from src.pk_py_lib.core.logging.logger import configure_logging, LogLevel
 from src.pk_py_lib.core import get_data_dir # Unified data directory function
+from src.pk_py_lib.core.flat_cache import FlatCacheManager
 
 
 def _ensure_application(argv: Optional[list[str]] = None) -> QApplication:
@@ -165,26 +164,22 @@ Examples:
             
             # Initialize ConfigurationManager to get cache size
             config_mgr = None
-            cache_mgr = None
             try:
                 config_mgr = ConfigurationManager(db_mgr)
                 max_mb = int(getattr(config_mgr, "get_app_setting", lambda k: 5120)("cache_size_mb") or 5120)
-                # CacheManager now uses data_dir/cache.db, but still needs a base dir for thumbnails
-                cache_mgr = CacheManager(db_mgr.cache_dir, max_size_mb=max_mb)
             except Exception:
-                pass
+                max_mb = 5120
             
             # Collect and print actual resolved paths with existence checks
             settings_db = db_mgr.settings_db.resolve()
-            cache_db = db_mgr.cache_db.resolve()
             backups_dir = (data_dir / 'backups').resolve()
             sessions_db = (data_dir / 'sessions.db').resolve() # Assuming sessions.db is also in data_dir
             
             # Log file path
             app_log = LOG_FILE_PATH.resolve()
             
-            # Thumbnail path (CacheManager uses db_mgr.cache_dir, which is now DATA_DIR)
-            thumbnails_dir = cache_mgr.thumb_base.resolve() if cache_mgr else (data_dir / 'thumbnails').resolve()
+            # Flat cache path
+            flat_cache_db = (data_dir / 'flat_cache.db').resolve()
             
             def status(path: Path):
                 return " ✓" if path.exists() else " ✗ (does not exist)"
@@ -192,10 +187,9 @@ Examples:
             print(f"--- Unified Data Directory ---")
             print(f"Base Data Dir: {data_dir}{status(data_dir)}")
             print(f"Settings DB: {settings_db}{status(settings_db)}")
-            print(f"Cache DB: {cache_db}{status(cache_db)}")
+            print(f"Flat Cache DB: {flat_cache_db}{status(flat_cache_db)}")
             print(f"Backups Dir: {backups_dir}{status(backups_dir)}")
             print(f"Log File: {app_log}{status(app_log)}")
-            print(f"Thumbnails Dir: {thumbnails_dir}{status(thumbnails_dir)}")
             print(f"Sessions DB: {sessions_db}{status(sessions_db)}")
             sys.exit(0)
         except Exception as exc:
@@ -208,18 +202,17 @@ Examples:
     # Will be attached to the MainWindow if initialized successfully
     db_mgr = None
     config_mgr = None
-    cache_mgr = None
     flat_cache_mgr = None # Add FlatCacheManager
     controller = None # New variable for the controller
     active_profile: Optional[Dict[str, Any]] = None
     
     try:
         # Core managers imported at module top; using them directly
-    
+
         # 2) Initialize/open DBs and run migrations
         db_mgr = DatabaseManager()
         db_mgr.initialize()
-    
+
         # 3) Profiles API bound to this DB; ensure a default/active profile exists
         api = SettingsProfilesAPI(db_mgr)
         ensured = api.ensure_default_profile()
@@ -255,14 +248,6 @@ Examples:
         # Optional managers (best-effort; failures are non-fatal)
         try:
             config_mgr = ConfigurationManager(db_mgr)
-            cache_dir = db_mgr.cache_dir
-            try:
-                max_mb = int(getattr(config_mgr, "get_app_setting", lambda k: 5120)("cache_size_mb") or 5120)
-            except Exception:
-                max_mb = 5120
-            cache_mgr = CacheManager(cache_dir, max_size_mb=max_mb)
-            
-            # Initialize FlatCacheManager (uses default path: ~/.pk_py_lib/flat_cache.db)
             flat_cache_mgr = FlatCacheManager()
             
         except Exception as exc:
@@ -284,8 +269,6 @@ Examples:
         setattr(window, "database_manager", db_mgr)
     if config_mgr is not None:
         setattr(window, "configuration_manager", config_mgr)
-    if cache_mgr is not None:
-        setattr(window, "cache_manager", cache_mgr)
     
     if flat_cache_mgr is not None:
         setattr(window, "flat_cache_manager", flat_cache_mgr)
