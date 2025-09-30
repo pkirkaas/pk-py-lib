@@ -126,11 +126,16 @@ class CentralPlaceholder(QWidget):
 class ScanWorker(QThread):
     """
     Background worker that scans filesystem paths from a Settings Profile,
-    validates/refreshes cache entries (image_metadata, image_hashes), and reports progress.
+    validates/refreshes cache entries based on search_type, and reports progress.
+
+    For search_type='duplicate': Computes only file hashes (xxh3) without image loading or
+    perceptual hash/metadata extraction. Preserves existing image data in cache.
+
+    For search_type='similarity': Computes perceptual hashes (phash/whash), extracts dimensions,
+    and quality scores (BRISQUE if enabled).
 
     This worker performs all I/O and SQLite work off the GUI thread to keep the UI responsive.
-    It uses a single connection created via DatabaseManager.get_connection(...) within the worker
-    thread context (each connection is bound to the creating thread per sqlite3).
+    It uses flat_cache_manager for conditional caching and computation based on search_type.
 
     Signals
     -------
@@ -143,17 +148,17 @@ class ScanWorker(QThread):
 
     Notes
     -----
-    - Hash algorithm is currently fixed/parametrized to 'sha256' per MVP; future versions
-      may read this from the profile under criteria/settings.
-    - Include/Exclude pattern semantics are simplified for MVP: we honor path roots and
-      file type filters; glob patterns are not fully evaluated relative to roots yet.
+    - search_type ('duplicate' or 'similarity') controls computation scope: duplicate mode is
+      file-hash only (fast, no PIL.open() calls), similarity mode includes image analysis.
+    - exact_grouping=True for duplicate mode to enable xxh3-based grouping.
+    - Include/Exclude patterns honored; for duplicate: all files; similarity: images only.
     """
 
     progress = Signal(int, int, str, str)
     error = Signal(str)
     finished = Signal(str, dict)
 
-    def __init__(self, db_manager, flat_cache_manager, profile_json: dict, algorithm: str = "xxh3", mode: str = 'duplicates', compute_hashes: bool = False, search_type: Optional[str] = None, profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
+    def __init__(self, db_manager, flat_cache_manager, profile_json: dict, algorithm: str = "xxh3", mode: str = 'duplicate', compute_hashes: bool = False, search_type: Optional[str] = None, profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
         """
         Initialize worker.
      
@@ -168,7 +173,7 @@ class ScanWorker(QThread):
         algorithm : str
             Hash algorithm token to ensure in image_hashes (default 'xxh3').
         mode : str
-            Scan mode ('duplicates' or 'similarity').
+            Scan mode ('duplicate' or 'similarity').
         compute_hashes : bool
             Whether to compute perceptual hashes for similarity (renamed mentally to perceptual_hashes).
         profile_name : Optional[str]
@@ -185,10 +190,14 @@ class ScanWorker(QThread):
         self.mode = mode
         self.search_type = search_type or mode
         self.compute_hashes = compute_hashes
-        self.exact_grouping = (mode == 'duplicates')
+        self.exact_grouping = (mode == 'duplicate')
         # Capture the profile name used for this run (best effort)
         try:
             self.profile_name = str(profile_name or (self.profile.get("name") if isinstance(self.profile, dict) else "") or "")
+            # Ensure search_type is set correctly for conditional logic
+            if self.search_type is None:
+                self.search_type = self.mode  # Default to mode if not specified
+            LOGGER.debug(f"ScanWorker initialized: mode={self.mode}, search_type={self.search_type}, compute_hashes={self.compute_hashes}")
         except Exception:
             self.profile_name = str(profile_name or "")
         # Capture the profile id used for this run (best effort; may be empty)
@@ -334,32 +343,48 @@ class ScanWorker(QThread):
             if not roots:
                 raise ValueError("No valid roots to scan")
             
-            # Determine patterns
+            # Determine patterns based on search_type for efficient traversal
+            # For 'duplicate': patterns=None to include all files for comprehensive exact hashing
+            # For 'similarity': image extensions only to focus on perceptual hash candidates
             image_exts = [f"*{ext}" for ext in IMAGE_EXTENSIONS]
             patterns = image_exts if self.mode == 'similarity' else None
             
-            # Call extended scan_directory
-            # Changed to absolute import from the pk_py_lib library to resolve ModuleNotFoundError.
-            # The traversal module is implemented in src/pk_py_lib/core/filesystem/traversal.py,
-            # not locally in img_app/img_app/.
-            from pk_py_lib.core.filesystem.traversal import scan_directory
-            # Compute hashes for both similarity (perceptual) and duplicates (exact xxh3) modes to enable grouping
+            # Resolve algorithms with search_type awareness
+            # For 'duplicate': Limit to ['xxh3'] for file content hashing (no perceptual)
+            # For 'similarity': Use perceptual algorithms from profile or defaults
             effective_compute_hashes = self.compute_hashes or self.exact_grouping
-            # Pass the progress signal emitter and the stop flag callable to enable real-time updates and cancellation
+            algorithms_param = None
+            if effective_compute_hashes:
+                if self.search_type == 'duplicate':
+                    algorithms_param = ['xxh3']  # Explicit for duplicate mode: file hash only
+                else:
+                    algorithms_param = self.profile.get('similarity', {}).get('enabled_algorithms', ['phash', 'whash'])
+            LOGGER.debug(f"Calling scan_directory: search_type={self.search_type}, algorithms={algorithms_param}, exact_grouping={self.exact_grouping}, patterns={patterns}")
+            
+            # Prepare walk_kwargs from profile for traversal parameters (e.g., max_depth, exclude_patterns, include_patterns)
+            # Only include valid traversal-related keys to prevent passing irrelevant profile fields (e.g., db_manager, similarity settings) to underlying walk_files
+            # This ensures only applicable kwargs like max_depth, exclude_patterns, include_patterns are forwarded, avoiding TypeError on invalid params
+            valid_traversal_keys = {'max_depth', 'exclude_patterns', 'include_patterns'}  # Extend with other walk_files-compatible keys as needed (e.g., 'recurse')
+            walk_kwargs = {k: v for k, v in self.profile.items() if k in valid_traversal_keys}
+            
+            # Call extended scan_directory with explicit search_type for conditional logic in cache and hashing
+            # For duplicate mode: patterns=None (all files for xxh3 hashing), algorithms=['xxh3'], search_type='duplicate' (skips image metadata/phash/whash)
+            # For similarity mode: patterns=image extensions, algorithms=perceptual (phash/whash) from profile, extracts metadata (width/height/phash/whash)
+            from pk_py_lib.core.filesystem.traversal import scan_directory
             scan_result = scan_directory(
                 roots=roots,
+                profile_name=self.profile_name,
                 patterns=patterns,
                 compute_hashes=effective_compute_hashes,
                 exact_grouping=self.exact_grouping,
-                algorithms=self.profile.get('similarity', {}).get('enabled_algorithms', ['phash']) if effective_compute_hashes else None,
-                db_manager=self.db_manager,
-                flat_cache_manager=self.flat_cache_manager, # Pass the flat cache manager
-                settings=self.profile,
-                search_type=self.search_type,
-                follow_symlinks=False,  # Default; can add from profile if needed
+                algorithms=algorithms_param,
+                flat_cache_manager=self.flat_cache_manager,  # Essential for conditional caching
+                search_type=self.search_type,  # Critical for duplicate vs similarity logic
+                follow_symlinks=False,
                 include_hidden=False,
-                progress_callback=lambda processed, total, path, message: self.progress.emit(processed, total, path, message),
+                progress_callback=lambda processed, total, path, message: self.progress.emit(processed, total, path or "", message),
                 stop_event=lambda: self._stop,
+                **{k: v for k, v in walk_kwargs.items() if k not in ['db_manager', 'profile_name']}  # Filter to exclude non-traversal keys already handled explicitly
             )
             
             if scan_result is None:
@@ -1524,7 +1549,7 @@ class MainWindow(QMainWindow):
     def _on_start(self) -> None:
         """
         Handle start button click to begin the operation.
-
+ 
         Behavior update:
         - If the embedded settings editor has unsaved changes (dirty), attempt a synchronous save before starting.
         - On save failure, an error dialog is shown and the operation is aborted.
@@ -1533,12 +1558,12 @@ class MainWindow(QMainWindow):
         if not self.active_profile:
             self.status_label.setText("No active profile selected")
             return
-
+ 
         db_mgr = getattr(self, "database_manager", None)
         if db_mgr is None:
             show_selectable_error(self, "Cache Error", "DatabaseManager is not available on the main window.")
             return
-
+ 
         # 1) Save pending settings if editor is dirty (supports either structured_editor or legacy editor attribute)
         editor = getattr(self, "structured_editor", None)
         if editor is None and hasattr(self, "editor"):
@@ -1546,7 +1571,7 @@ class MainWindow(QMainWindow):
                 editor = getattr(self, "editor")
             except Exception:
                 editor = None
-
+ 
         def _editor_is_dirty(ed) -> bool:
             """Best-effort dirty check across editor variants."""
             try:
@@ -1560,7 +1585,7 @@ class MainWindow(QMainWindow):
                 return bool(getattr(ed, "_dirty", False))
             except Exception:
                 return False
-
+ 
         if _editor_is_dirty(editor):
             # Disable Start during save and inform user
             self.start_btn.setEnabled(False)
@@ -1572,10 +1597,10 @@ class MainWindow(QMainWindow):
                 QApplication.processEvents()
             except Exception:
                 pass
-
+ 
             # Attempt synchronous save using existing handler; it validates and persists
             self._on_save_profile()
-
+ 
             # Re-check dirty state; failure → abort with error
             if _editor_is_dirty(editor):
                 show_selectable_error(
@@ -1585,13 +1610,13 @@ class MainWindow(QMainWindow):
                 )
                 self.start_btn.setEnabled(True)
                 return
-
+ 
         # 2) Create and show modal ProgressDialog
         self._progress_dialog = ProgressDialog(self, title="Image Organizer Operation")
         self._progress_dialog.set_indeterminate("Starting operation...")
         self._progress_dialog.cancellation_requested.connect(self._on_cancellation_requested)
         self.start_btn.setEnabled(False)
-
+ 
         # 3) Resolve full profile JSON for the run (now guaranteed to include saved changes)
         try:
             if self.controller is None:
@@ -1608,26 +1633,26 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Error preparing run: {exc}")
             self.start_btn.setEnabled(True)
             return
-
+ 
         # 4) Start background worker
         import time
         self.start_time = time.time()
         self._scan_errors = []
-
+ 
         # Determine the profile name used for this run and pass it to the worker
         try:
             prof_name = str((payload.get("name") if isinstance(payload, dict) else (self.active_profile.get("name") if self.active_profile else "")) or "")
         except Exception:
             prof_name = str(self.active_profile.get("name")) if getattr(self, "active_profile", None) else ""
-
-        mode = payload.get('mode', 'duplicates')
+ 
+        mode = payload.get('mode', 'duplicate')
         self._current_scan_mode = mode
         compute_hashes = mode == 'similarity'
-
+ 
         flat_cache_mgr = getattr(self, "flat_cache_manager", None)
         if flat_cache_mgr is None:
             self.logger.warning("FlatCacheManager not available on MainWindow. Proceeding without cache.")
-
+ 
         self._scan_worker = ScanWorker(
             db_manager=db_mgr,
             flat_cache_manager=flat_cache_mgr,

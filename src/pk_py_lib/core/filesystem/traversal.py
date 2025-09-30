@@ -694,50 +694,68 @@ def scan_directory(
     **walk_kwargs
 ) -> Optional[Dict[str, Any]]:
     """
-    Scan a directory for image files and optionally compute perceptual hashes.
-  
-    Extends directory traversal to collect file metadata and compute/store similarity
-    hashes (pHash/wHash) for images during scanning. Uses existing walk_files for
-    efficient traversal with filtering. Results include basic file info and optional
-    hashes dict. Hashes are stored in flat_cache if manager provided. Supports cooperative
-    cancellation and real-time progress reporting.
+    Scan a directory for files and compute hashes/metadata based on search_type.
+
+    For search_type='duplicate': Traverses all files (patterns=None), computes only file-based
+    hashes (xxh3) via flat_cache_manager.get_hashes (limited mode: no image loading, no perceptual
+    hashes, no metadata extraction). Groups by exact xxh3 for duplicate detection. Preserves
+    existing image data in cache from prior similarity scans.
+
+    For search_type='similarity': Filters to images (patterns=image extensions), computes perceptual
+    hashes (phash/whash) and extracts dimensions/quality scores. Full cache update including
+    image metadata.
+
+    Uses flat_cache_manager for efficient caching with file stat validation. Supports progress
+    reporting and cooperative cancellation. Manual computation fallback (no cache) respects
+    search_type to skip image loading in duplicate mode.
 
     Args:
         roots (Union[Path, List[Path]]): Root directory or list of roots to scan.
-        patterns (Optional[List[str]]): Glob patterns for files (default: image extensions).
+        patterns (Optional[List[str]]): Glob patterns for files. Defaults based on search_type.
         compute_hashes (bool): If True, compute perceptual hashes for images (default: False).
-        exact_grouping (bool): If True, group files by exact SHA256 hash.
-        algorithms (Optional[List[str]]): Algorithms to compute ('phash', 'whash'; default from settings or ['phash']).
-        flat_cache_manager (Optional[FlatCacheManager]): For caching computed hashes using file stats validation.
-        settings (Optional[Dict[str, Any]]): Settings dict; if algorithms None, uses settings['similarity']['enabled_algorithms'].
-        progress_callback (Optional[Callable[[int, int, str, str], None]]): Callback function for progress updates.
-            Signature: progress_callback(current_count, total_count, current_file_path, status_message).
-        stop_event (Optional[Callable[[], bool]]): Callable that returns True if cancellation is requested.
-        **walk_kwargs: Additional kwargs passed to walk_files (e.g., exclude_patterns, max_depth).
-  
+            For 'duplicate', set to True internally for xxh3 grouping.
+        exact_grouping (bool): If True, group files by exact xxh3 hash (default for 'duplicate').
+        algorithms (Optional[List[str]]): Algorithms to compute. For 'duplicate': ['xxh3'].
+            For 'similarity': ['phash', 'whash'] or from settings.
+        flat_cache_manager (Optional[FlatCacheManager]): For caching with stat validation and
+            conditional updates based on search_type.
+        settings (Optional[Dict[str, Any]]): Settings dict for algorithm/threshold overrides.
+        progress_callback (Optional[Callable[[int, int, str, str], None]]): Progress updates.
+            Signature: (processed, total, current_path, status_message).
+        stop_event (Optional[Callable[[], bool]]): Returns True if cancellation requested.
+        search_type (Optional[str]): 'duplicate' or 'similarity' to control computation scope.
+            Defaults to None (treated as 'similarity' for backward compatibility).
+        **walk_kwargs: Passed to walk_files (e.g., exclude_patterns, max_depth).
+
     Returns:
-        Optional[Dict[str, Any]]: Dictionary containing 'files', 'exact_groups', and 'error_details'
-            if successful, or None if the operation was cancelled.
-  
+        Optional[Dict[str, Any]]: {'files': List[Dict], 'exact_groups': Dict (if exact_grouping),
+            'error_details': List[Dict]} or None if cancelled.
+
     Raises:
-        SimilarityError: If hash computation fails for an image (logged, but scan continues).
-        ValueError: If invalid algorithms or root not dir.
-  
+        ValueError: Invalid roots, algorithms, or search_type.
+        SimilarityError: Hash computation failures (logged, scan continues).
+
     Example:
-        >>> from threading import Event
-        >>> stop = Event()
-        >>> def progress(c, t, p, m): print(f"{c}/{t}: {m} ({p})")
+        >>> # Duplicate scan (all files, xxh3 only, no image loading)
         >>> results = scan_directory(
-        ...     Path("/photos"), compute_hashes=True, algorithms=['phash'],
-        ...     progress_callback=progress, stop_event=stop.is_set
+        ...     [Path("/mixed_files")], search_type='duplicate',
+        ...     flat_cache_manager=manager, exact_grouping=True
         ... )
-        >>> if results is None: print("Scan cancelled.")
-  
+        >>> # Results: files with xxh3, groups by exact hash; width/phash remain None or prior values
+
+        >>> # Similarity scan (images only, perceptual + metadata)
+        >>> results = scan_directory(
+        ...     [Path("/photos")], search_type='similarity',
+        ...     flat_cache_manager=manager, compute_hashes=True
+        ... )
+        >>> # Results: files with phash/whash, width/height populated
+
     Note:
-        - Only image files (by extension) are included unless patterns override.
-        - All hash computation and storage handled by flat_cache_manager.
-        - Logging: Progress for hash computation; errors per file.
-        - PoC: Sequential; no parallelism. Mime-type via extension check.
+        - Duplicate mode: Fast, file-hash only; skips PIL.open() to handle non-images safely.
+        - Similarity mode: Image-focused; extracts dimensions and quality (BRISQUE if enabled).
+        - Cache: Conditional updates prevent overwriting image data in duplicate mode.
+        - PoC: Sequential processing; no parallelism. Extension-based image filtering.
+        - Errors: Per-file failures logged; scan continues. Full traceback in error_details.
     """
     # Normalize roots to list
     if isinstance(roots, Path):
@@ -750,19 +768,25 @@ def scan_directory(
     if not valid_roots:
         raise ValueError(f"No valid root directories provided: {roots}")
 
-    # Default to image patterns if none provided
+    # Default patterns based on search_type for optimal traversal
     if patterns is None:
         if search_type == 'duplicate':
-            patterns = None  # Include all files for duplicate search
+            # Traverse all files for comprehensive exact duplicate detection across any type
+            patterns = None
+            log.debug("Duplicate mode: No patterns (includes all files for xxh3 hashing)")
         else:
+            # Filter to images for perceptual hashing and metadata extraction efficiency
             patterns = [f"*{ext}" for ext in IMAGE_EXTENSIONS]
+            log.debug(f"Similarity mode: Image patterns: {patterns}")
 
-    # Resolve algorithms
+    # Resolve algorithms with search_type awareness
     if algorithms is None:
         if search_type == 'duplicate':
+            # Only file content hash for exact grouping; no perceptual
             algorithms = ['xxh3']
-            compute_hashes = True
+            compute_hashes = True  # Enable for xxh3 grouping
             exact_grouping = True
+            log.debug("Duplicate mode: Algorithms limited to ['xxh3']")
         elif settings and 'similarity' in settings:
             algorithms = settings['similarity'].get('enabled_algorithms', ['phash', 'whash'])
         else:
@@ -771,40 +795,42 @@ def scan_directory(
             else:
                 algorithms = ['phash']
     if search_type == 'duplicate':
+        # Override to ensure only xxh3; ignore perceptual requests
         algorithms = ['xxh3']
     else:
+        # Filter to valid perceptual algorithms
         algorithms = [alg.lower() for alg in algorithms if alg.lower() in ['phash', 'whash']]
 
     if not algorithms:
-        raise ValueError("No valid algorithms specified")
+        raise ValueError("No valid algorithms specified for the given search_type")
 
-    # Traverse for files (images if patterns default, all if None)
+    # Traverse files: all for duplicate, images for similarity
     all_paths = []
     for root_path in roots:
-        # Remove db_manager from walk_kwargs since walk_files doesn't accept it
+        # Filter out invalid kwargs for walk_files
         filtered_kwargs = {k: v for k, v in walk_kwargs.items() if k != 'db_manager'}
         paths = list(DirectoryTraversal.walk_files(root_path, patterns=patterns, **filtered_kwargs))
         all_paths.extend(paths)
-    # Deduplicate paths (rare, but possible with overlapping roots)
+    # Deduplicate paths (handles overlapping roots)
     unique_paths = list({p.as_posix(): p for p in all_paths}.values())
 
-    # For similarity, ensure compute_hashes is True
+    # Ensure compute_hashes for similarity (perceptual + grouping)
     if search_type == 'similarity':
         compute_hashes = True
-  
+   
     results: List[Dict[str, Any]] = []
     error_details: List[Dict[str, Any]] = []
     file_count = len(unique_paths)
-    log.info(f"Scanning {file_count} files from {len(roots)} roots")
+    log.info(f"Scanning {file_count} files from {len(roots)} roots (search_type={search_type})")
     
     processed_count = 0
     if progress_callback:
-        progress_callback(processed_count, file_count, "", f"Starting scan of {file_count} files...")
-  
+        progress_callback(processed_count, file_count, "", f"Starting {search_type} scan of {file_count} files...")
+   
     groups: Dict[str, List[str]] = defaultdict(list) if exact_grouping else None
 
     for path in unique_paths:
-        # Check for cancellation
+        # Cooperative cancellation check
         if stop_event and stop_event():
             log.info("Scan cancelled by stop event.")
             if progress_callback:
@@ -817,17 +843,21 @@ def scan_directory(
                 processed_count += 1
                 continue  # Skip empty/broken files
 
-            # Use flat_cache_manager for all hashes if available, else compute manually
+            # Prefer flat_cache_manager for conditional hashing based on search_type
             if flat_cache_manager:
+                # all_types includes only relevant hashes; get_hashes handles skipping perceptual in duplicate mode
                 all_types = list(set(algorithms + ['xxh3']))
                 hashes_dict = flat_cache_manager.get_hashes([str(path)], all_types, search_type=search_type)
                 hashes = hashes_dict[str(path)]
                 exact_hash = hashes.get('xxh3')
                 perceptual_hashes = {k: v for k, v in hashes.items() if k != 'xxh3'}
+                log.debug(f"Cache-based hashes for {path}: xxh3={bool(exact_hash)}, perceptual={list(perceptual_hashes.keys())}")
             else:
+                # Manual fallback: respect search_type to avoid image loading in duplicate mode
                 exact_hash = compute_xxh3_hash(path)
                 perceptual_hashes = {}
-                if compute_hashes and file_info.extension in IMAGE_EXTENSIONS:
+                if compute_hashes and file_info.extension in IMAGE_EXTENSIONS and search_type != 'duplicate':
+                    # Only compute perceptual if similarity mode and image file
                     for alg in algorithms:
                         try:
                             if alg == 'phash':
@@ -835,8 +865,14 @@ def scan_directory(
                             elif alg == 'whash':
                                 perceptual_hashes[alg] = similarity.compute_whash(str(path), settings=settings)
                         except similarity.SimilarityError as e:
-                            log.error(f"Hash computation failed for {path} ({alg}): {e}")
+                            log.error(f"Perceptual hash failed for {path} ({alg}): {e}")
                             continue
+                    log.debug(f"Manual perceptual hashes for {path}: {list(perceptual_hashes.keys())}")
+                else:
+                    if search_type == 'duplicate':
+                        log.debug(f"Manual mode: Skipped perceptual for duplicate scan: {path}")
+                    else:
+                        log.debug(f"Manual mode: Skipped non-image or non-compute: {path}")
 
             result: Dict[str, Any] = {
                 'path': str(path),
@@ -844,17 +880,19 @@ def scan_directory(
                 'modified_time': file_info.modified_time,
                 'extension': file_info.extension,
                 'exact_hash': exact_hash,
-                'hashes': perceptual_hashes
+                'hashes': perceptual_hashes  # Empty {} for duplicate mode
             }
 
             results.append(result)
             processed_count += 1
             
-            # Report progress
+            # Progress reporting with mode-specific status
             if progress_callback:
-                status = f"Processing file {processed_count}/{file_count}"
+                status = f"Processing file {processed_count}/{file_count} ({search_type} mode)"
+                if exact_hash:
+                    status += f" (xxh3 computed)"
                 if perceptual_hashes:
-                    status += f" (Hashes: {', '.join(perceptual_hashes.keys())})"
+                    status += f" (perceptual: {', '.join(perceptual_hashes.keys())})"
                 progress_callback(processed_count, file_count, str(path), status)
                 
         except Exception as e:
@@ -868,25 +906,26 @@ def scan_directory(
             processed_count += 1
             continue
 
-    # Build exact groups if requested
+    # Build exact groups if requested (only for duplicate mode with xxh3)
     if exact_grouping:
         for f in results:
             eh = f.get('exact_hash')
             if eh:
                 groups[eh].append(f)
-        # Filter empty groups
+        # Filter to groups with 2+ files
         groups = {h: fs for h, fs in groups.items() if len(fs) > 1}
 
-    log.info(f"Scan complete: {len(results)} files processed, exact hashes computed")
+    # Mode-specific logging
+    log.info(f"Scan complete: {len(results)} files processed (search_type={search_type})")
     if exact_grouping:
         total_grouped_files = sum(len(g) for g in groups.values())
-        log.info(f"Exact groups: {len(groups)} groups with {total_grouped_files} files")
-    if compute_hashes:
+        log.info(f"Exact duplicate groups: {len(groups)} groups with {total_grouped_files} files")
+    if compute_hashes and search_type == 'similarity':
         perceptual_count = sum(1 for r in results if 'hashes' in r and r['hashes'])
         log.info(f"Perceptual hash computation complete: {perceptual_count} images processed")
 
     if progress_callback:
-        progress_callback(file_count, file_count, "", "Scan completed successfully.")
+        progress_callback(file_count, file_count, "", f"{search_type.capitalize()} scan completed successfully.")
 
     return {
         'files': results,

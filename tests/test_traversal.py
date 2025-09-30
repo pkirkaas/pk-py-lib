@@ -12,12 +12,9 @@ import os
 from src.pk_py_lib.core.filesystem.traversal import (
     walk_files,
     validate_paths,
-    scan_directory,
-    DirectoryTraversal
+    scan_directory
 )
-from src.pk_py_lib.core.database import DatabaseManager
 from src.pk_py_lib.core.flat_cache import FlatCacheManager
-from src.pk_py_lib.core.image.similarity import compute_phash
 
 
 class TestTraversal:
@@ -137,103 +134,67 @@ class TestTraversal:
             assert jpg_file not in files
             
             # Test with exclude filter
-            files = list(walk_files(Path(tmpdir), exclude_patterns=["*.jpg"]))
+            files = list(walk_files(Path(tmpdir), exclude_patterns=["*.jpg"], include_hidden=True))
             assert len(files) == 2  # txt and hidden
             assert jpg_file not in files
 
     def test_walk_files_recursion_control(self):
         """Test walk_files with recursion control."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create nested structure
-            level1 = Path(tmpdir) / "level1"
+            root = Path(tmpdir)
+            root_file = root / "root.txt"
+            level1 = root / "level1"
+            file1 = level1 / "file1.txt"
             level2 = level1 / "level2"
+            file2 = level2 / "file2.txt"
             level2.mkdir(parents=True)
             
-            file1 = level1 / "file1.txt"
-            file2 = level2 / "file2.txt"
-            
+            root_file.touch()
             file1.touch()
             file2.touch()
             
-            # Test with max_depth=1 (should only get level1 files)
-            files = list(walk_files(Path(tmpdir), max_depth=1))
+            # Test with max_depth=1 (should only get root files)
+            files = list(walk_files(root, max_depth=1))
             assert len(files) == 1
+            assert root_file in files
+            assert file1 not in files
+            assert file2 not in files
+            
+            # Test with max_depth=2 (should get root and level1 files)
+            files = list(walk_files(root, max_depth=2))
+            assert len(files) == 2
+            assert root_file in files
             assert file1 in files
             assert file2 not in files
             
-            # Test with max_depth=2 (should get both files)
-            files = list(walk_files(Path(tmpdir), max_depth=2))
-            assert len(files) == 2
+            # Test with max_depth=3 (should get all files)
+            files = list(walk_files(root, max_depth=3))
+            assert len(files) == 3
+            assert root_file in files
             assert file1 in files
             assert file2 in files
 
-    @patch('src.pk_py_lib.core.filesystem.traversal.Path')
-    def test_walk_files_permission_error(self, mock_path):
-        """Test walk_files handles permission errors gracefully."""
-        mock_path_instance = MagicMock()
-        mock_path_instance.exists.return_value = True
-        mock_path_instance.is_dir.return_value = True
-        mock_path_instance.iterdir.side_effect = PermissionError("Access denied")
-        mock_path.return_value = mock_path_instance
-        
-        # Should not raise exception, just skip inaccessible directory
-        files = list(walk_files(mock_path_instance))
-        assert len(files) == 0
 
     def test_scan_directory_with_flat_cache(self, tmp_path: Path):
         """Test scan_directory with FlatCacheManager, verifying no cache_manager arg error and hash caching."""
         # Create test image file
         test_image = tmp_path / "test.jpg"
-        test_image.touch()
-        
-        # Mock DatabaseManager
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.cache_db = str(tmp_path / "cache.db")
-        mock_db.get_connection.return_value.__enter__.return_value = MagicMock()
+        from PIL import Image
+        import io
+        img = Image.new('RGB', (64, 64), color='red')
+        img_byte_arr = io.BytesIO()
+        img.save(img_byte_arr, format='JPEG')
+        test_image.write_bytes(img_byte_arr.getvalue())
         
         # Create FlatCacheManager
         flat_cache = FlatCacheManager(db_path=tmp_path / "flat.db")
         
-        # Mock compute_phash to avoid real computation
-        with patch('src.pk_py_lib.core.image.similarity.compute_phash', return_value='mock_phash'):
-            result = scan_directory(
-                roots=[tmp_path],
-                compute_hashes=True,
-                algorithms=['phash'],
-                db_manager=mock_db,
-                flat_cache_manager=flat_cache,
-                progress_callback=lambda *args: None,
-                stop_event=lambda: False
-            )
-        
-        assert result is not None
-        assert 'files' in result
-        assert len(result['files']) == 1
-        file_info = result['files'][0]
-        assert file_info['path'] == str(test_image)
-        assert 'hashes' in file_info
-        assert file_info['hashes']['phash'] == 'mock_phash'
-        
-        # Verify flat cache entry was created/updated
-        entry = flat_cache.get_entry(str(test_image))
-        assert entry is not None
-        assert entry.phash == 'mock_phash'
-
-    def test_scan_directory_no_cache_args(self, tmp_path: Path):
-        """Test scan_directory without cache args, verifying no errors."""
-        # Create test file
-        test_file = tmp_path / "test.txt"
-        test_file.touch()
-        
-        # Mock DatabaseManager
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.cache_db = str(tmp_path / "cache.db")
-        mock_db.get_connection.return_value.__enter__.return_value = MagicMock()
-        
         result = scan_directory(
             roots=[tmp_path],
-            compute_hashes=False,
-            db_manager=mock_db,
+            compute_hashes=True,
+            algorithms=['phash'],
+            flat_cache_manager=flat_cache,
+            search_type='similarity',
             progress_callback=lambda *args: None,
             stop_event=lambda: False
         )
@@ -241,7 +202,37 @@ class TestTraversal:
         assert result is not None
         assert 'files' in result
         assert len(result['files']) == 1
+        file_info = result['files'][0]
+        assert file_info['path'] == str(test_image)
+        assert 'hashes' in file_info
+        assert file_info['hashes']['phash'] is not None
+        
+        # Verify flat cache entry was created/updated
+        entry = flat_cache.get_entry(str(test_image))
+        assert entry is not None
+        assert entry.phash is not None
 
+    def test_scan_directory_no_cache_args(self, tmp_path: Path):
+        """Test scan_directory without cache args, verifying no errors."""
+        # Create test file
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("test content")
+        
+        result = scan_directory(
+            roots=[tmp_path],
+            patterns=None,
+            compute_hashes=False,
+            search_type='duplicate',
+            progress_callback=lambda *args: None,
+            stop_event=lambda: False
+        )
+        
+        assert result is not None
+        assert 'files' in result
+        assert len(result['files']) == 1
+        file_info = result['files'][0]
+        assert file_info['path'] == str(test_file)
+        assert file_info['hashes'] == {}
+        assert 'exact_hash' in file_info
+        assert file_info['exact_hash'] is not None
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

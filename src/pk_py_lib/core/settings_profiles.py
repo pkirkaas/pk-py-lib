@@ -447,7 +447,7 @@ class SettingsProfilesManager:
                 )
             else:
                 cur = conn.execute(
-                    "SELECT id, name, description, is_active, created_at, updated_at FROM settings_profiles WHERE id = ?",
+                    "SELECT id, name, description, is_active, created_at, updated_at, json_data FROM settings_profiles WHERE id = ?",
                     (profile_id,),
                 )
             row = cur.fetchone()
@@ -473,10 +473,10 @@ class SettingsProfilesManager:
             # Repair
             return self._ensure_single_active_locked(conn)
 
-    def set_active_profile(self, profile_id: str) -> SettingsProfile:
+    def set_active_profile(self, profile_id: str, _conn: Optional[sqlite3.Connection] = None) -> SettingsProfile:
         """
         Set exactly one active profile.
-
+    
         Raises
         ------
         NotFoundError
@@ -484,15 +484,20 @@ class SettingsProfilesManager:
         StorageError
             On storage errors.
         """
+        def _set(conn: sqlite3.Connection) -> SettingsProfile:
+            p = self.get_profile(profile_id, _conn=conn)
+            if not p:
+                raise NotFoundError(f"Profile id={profile_id} not found")
+            conn.execute("UPDATE settings_profiles SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END", (profile_id,))
+            self._write_meta_active(conn, profile_id)
+            logger.info("Active profile set to id=%s name=%s", p.id, p.name)
+            return self.get_profile(profile_id, _conn=conn) or p
+    
         try:
+            if _conn is not None:
+                return _set(_conn)
             with self.db.get_connection(self.db.settings_db) as conn:
-                p = self.get_profile(profile_id, _conn=conn)
-                if not p:
-                    raise NotFoundError(f"Profile id={profile_id} not found")
-                conn.execute("UPDATE settings_profiles SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END", (profile_id,))
-                self._write_meta_active(conn, profile_id)
-                logger.info("Active profile set to id=%s name=%s", p.id, p.name)
-                return self.get_profile(profile_id, _conn=conn) or p
+                return _set(conn)
         except sqlite3.OperationalError as e:
             if "locked" in str(e).lower():
                 raise ConcurrencyError("Database is locked") from e
@@ -791,36 +796,36 @@ class SettingsProfilesManager:
         with self.db.get_connection(self.db.settings_db) as conn:
             return _get(conn)
 
-    def set_values(self, profile_id: str, values: Dict[str, Any]) -> int:
+    def set_values(self, profile_id: str, values: Dict[str, Any], _conn: Optional[sqlite3.Connection] = None) -> int:
         """
         Upsert a dictionary of key -> value for a profile.
-
+    
         Note: For JSON format profiles, this method is a no-op and returns 0,
         as items should be updated via update_profile() with json_data.
-
+    
         Returns
         -------
         int
-            Number of keys written (0 for JSON format profiles).
+        Number of keys written (0 for JSON format profiles).
         """
-        with self.db.get_connection(self.db.settings_db) as conn:
+        def _set(conn: sqlite3.Connection) -> int:
             profile = self.get_profile(profile_id, _conn=conn, include_items=False)
             if not profile:
                 raise NotFoundError(f"Profile id={profile_id} not found")
-            
+    
             # For JSON format profiles, return 0 (items are stored in json_data)
             if profile.is_json_format():
                 logger.warning("set_values called on JSON format profile %s, ignoring", profile_id)
                 return 0
-            
+    
             # For legacy profiles, update items table
             if not isinstance(values, dict):
                 raise ValidationError("values must be a dict")
-            
+    
             self.validate_keys(values.keys())
             ts = self._now_iso()
             written = 0
-            
+    
             for k, v in values.items():
                 data = self._jdumps(v)
                 # Try update (case-insensitive match)
@@ -835,8 +840,13 @@ class SettingsProfilesManager:
                         (str(uuid.uuid4()), profile_id, k, data, ts, ts),
                     )
                 written += 1
-            
+    
             return written
+    
+        if _conn is not None:
+            return _set(_conn)
+        with self.db.get_connection(self.db.settings_db) as conn:
+            return _set(conn)
 
     def remove_values(self, profile_id: str, keys: Iterable[str]) -> int:
         """
@@ -970,8 +980,8 @@ class SettingsProfilesManager:
                                                     make_active=make_active)
                         # Set items for legacy profile
                         if items:
-                            self.set_values(created.id, items)
-                    return created
+                            self.set_values(created.id, items, _conn=conn)
+                        return created
 
                 existing_id = str(row[0])
                 if strategy == "fail_on_conflict":
@@ -992,8 +1002,8 @@ class SettingsProfilesManager:
                         created = self.create_profile(name=candidate, description=description,
                                                     make_active=make_active)
                         if items:
-                            self.set_values(created.id, items)
-                    return created
+                            self.set_values(created.id, items, _conn=conn)
+                        return created
                 else:
                     # overwrite: clear existing data and update
                     existing_profile = self.get_profile(existing_id, _conn=conn, include_items=False)
@@ -1009,10 +1019,10 @@ class SettingsProfilesManager:
                         # Clear existing items and set new ones
                         conn.execute("DELETE FROM settings_profile_items WHERE profile_id = ?", (existing_id,))
                         if items:
-                            self.set_values(existing_id, items)
+                            self.set_values(existing_id, items, _conn=conn)
                     
                     if make_active:
-                        self.set_active_profile(existing_id)
+                        self.set_active_profile(existing_id, _conn=conn)
                     
                     return self.get_profile(existing_id, _conn=conn) or SettingsProfile(
                         id=existing_id, name=name, description=description, is_active=False,

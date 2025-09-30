@@ -219,7 +219,7 @@ def log_errors(
                 if params_str:
                     error_msg += f"\nParameters: {params_str}"
                 
-                func_logger.log(level, error_msg)
+                func_logger.error(error_msg)
                 
                 if include_traceback:
                     tb_str = traceback.format_exc()

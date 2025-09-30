@@ -42,6 +42,9 @@ class TestSettingsSchema:
         assert "criteria" in SETTINGS_PROFILE_SCHEMA["properties"]
         assert "scope" in SETTINGS_PROFILE_SCHEMA["properties"]
         assert "output" in SETTINGS_PROFILE_SCHEMA["properties"]
+        assert "similarity" in SETTINGS_PROFILE_SCHEMA["properties"]
+        assert "image_quality_evaluator" in SETTINGS_PROFILE_SCHEMA["properties"]
+        assert "use_flat_cache" in SETTINGS_PROFILE_SCHEMA["properties"]
 
     def test_create_default_profile(self):
         """Test creating a default profile."""
@@ -55,6 +58,12 @@ class TestSettingsSchema:
         assert "id" in profile
         assert "created_at" in profile
         assert "updated_at" in profile
+        assert profile["similarity"]["phash_threshold"] == 10
+        assert profile["similarity"]["enabled_algorithms"] == ["phash"]
+        assert profile["criteria"]["algorithm"] == "xxh3"
+        assert profile["pools"]["A"]["paths"] == [str(Path.home())]
+        assert profile["image_quality_evaluator"] == "brisque"
+        assert profile["use_flat_cache"] is True
 
     @patch('src.pk_py_lib.core.settings_schema.Path')
     def test_validate_minimal_duplicates_profile(self, mock_path):
@@ -154,7 +163,7 @@ class TestSettingsSchema:
             },
             "scope": {
                 "kind": "two_pool",
-                "direction": "A_TO_B"
+                "direction": "duplicates"
             },
             "output": {
                 "mode": "report_only"
@@ -323,7 +332,7 @@ class TestSettingsSchema:
             },
             "scope": {
                 "kind": "two_pool",
-                "direction": "A_TO_B"
+                "direction": "duplicates"
             },
             "output": {
                 "mode": "report_only"
@@ -392,7 +401,7 @@ class TestSettingsSchema:
             },
             "scope": {
                 "kind": "two_pool",
-                "direction": "A_TO_B"
+                "direction": "duplicates"
             },
             "output": {
                 "mode": "report_only"
@@ -404,7 +413,7 @@ class TestSettingsSchema:
         # Check that defaults are applied to both pools
         assert normalized["pools"]["A"]["recurse"] is True
         assert normalized["pools"]["B"]["recurse"] is True
-        assert normalized["scope"]["direction"] == "A_TO_B"
+        assert normalized["scope"]["direction"] == "duplicates"
 
     @patch('src.pk_py_lib.core.settings_schema.Path')
     def test_path_validation_existing_directory(self, mock_path):
