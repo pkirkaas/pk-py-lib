@@ -150,16 +150,17 @@ def get_image_quality_score(
     flat_cache_manager: Optional[FlatCacheManager] = None
 ) -> tuple[Optional[float], Optional[str]]:
     """
-    Compute the image quality score using the provided evaluator.
+    Compute the image quality score using the provided evaluator, preferring cached value if available.
 
     If the evaluator is None (quality evaluation disabled), returns (None, None).
+    If flat_cache_manager is provided, checks for cached brisque score first.
     If evaluation fails, logs an error and returns (None, evaluator.name).
 
     Args:
         path (str): Path to the image file.
         evaluator (Optional[ImageQualityEvaluator]): Instantiated quality evaluator or None.
         flat_cache_manager (Optional[FlatCacheManager]): Optional FlatCacheManager instance
-            to pass to the evaluator for cache lookup/storage.
+            to check for cached score and store new computation.
 
     Returns:
         tuple[Optional[float], Optional[str]]: (quality_score, algorithm_name)
@@ -176,8 +177,27 @@ def get_image_quality_score(
     if evaluator is None:
         return None, None
 
+    # Prefer cached value if available
+    if flat_cache_manager:
+        try:
+            entry = flat_cache_manager.get_entry(path)
+            if entry and entry.brisque is not None:
+                logger.debug(f"Cached brisque score found for {path}: {entry.brisque}")
+                return entry.brisque, evaluator.name
+        except Exception as e:
+            logger.warning(f"Failed to retrieve cached brisque for {path}: {e}")
+
     try:
         score = evaluator.evaluate(path, flat_cache_manager=flat_cache_manager)
+        # Store in cache if manager provided and computation succeeded
+        if flat_cache_manager and score is not None:
+            try:
+                entry = flat_cache_manager.get_entry(path)
+                if entry:
+                    entry.brisque = score
+                    flat_cache_manager.set_entry(entry)
+            except Exception as cache_e:
+                logger.warning(f"Failed to cache brisque score for {path}: {cache_e}")
         return score, evaluator.name
     except Exception as e:
         logger.error(f"Image quality evaluation failed for {path} using {evaluator.name}: {e}", exception=e)
@@ -462,7 +482,8 @@ def find_similar_phash(
     hashes: List[Dict[str, str]],
     threshold: Optional[int] = None,
     settings: Optional[Dict] = None,
-    flat_cache_manager: Optional[FlatCacheManager] = None
+    flat_cache_manager: Optional[FlatCacheManager] = None,
+    search_type: str = 'similarity'
 ) -> List[Group]:
     """
     Find groups of visually similar images using pHash Hamming distances.
@@ -485,6 +506,7 @@ def find_similar_phash(
             settings['similarity']['phash_threshold'] (default 10).
         flat_cache_manager (Optional[FlatCacheManager]): Optional FlatCacheManager instance
             to pass to quality evaluators for caching.
+        search_type (str): 'similarity' to ensure full computations.
 
     Returns:
         List[Group]: List of groups, each a Group with:
@@ -685,7 +707,7 @@ def find_similar_phash(
         groups.append(group_obj)
         group_id += 1
 
-    logger.info(f"Found {len(groups)} similar pHash groups (threshold={threshold}, n={n})")
+    logger.info(f"Found {len(groups)} similar pHash groups (threshold={threshold}, n={n}, search_type={search_type})")
     return groups
 
 
@@ -954,7 +976,8 @@ def find_similar_whash(
     hashes: List[Dict[str, str]],
     threshold: Optional[int] = None,
     settings: Optional[Dict] = None,
-    flat_cache_manager: Optional[FlatCacheManager] = None
+    flat_cache_manager: Optional[FlatCacheManager] = None,
+    search_type: str = 'similarity'
 ) -> List[Group]:
     """
     Find groups of visually similar images using wHash Hamming distances.
@@ -977,6 +1000,7 @@ def find_similar_whash(
             settings['similarity']['whash_threshold'] (default 12).
         flat_cache_manager (Optional[FlatCacheManager]): Optional FlatCacheManager instance
             to pass to quality evaluators for caching.
+        search_type (str): 'similarity' to ensure full computations.
 
     Returns:
         List[Group]: List of groups, each a Group with:
@@ -1177,7 +1201,7 @@ def find_similar_whash(
         groups.append(group_obj)
         group_id += 1
 
-    logger.info(f"Found {len(groups)} similar wHash groups (threshold={threshold}, n={n})")
+    logger.info(f"Found {len(groups)} similar wHash groups (threshold={threshold}, n={n}, search_type={search_type})")
     return groups
 
 
@@ -1252,7 +1276,8 @@ def compute_whash_batch(
 
 def find_exact_duplicates(
     hashes: List[Dict[str, str]],
-    flat_cache_manager: Optional[FlatCacheManager] = None
+    flat_cache_manager: Optional[FlatCacheManager] = None,
+    search_type: Optional[str] = None
 ) -> List[Group]:
     """
     Find groups of exact duplicate images based on content hash equality.
@@ -1289,7 +1314,10 @@ def find_exact_duplicates(
     from collections import defaultdict
 
     # Retrieve the active quality evaluator once for the entire batch
-    quality_evaluator = get_active_image_quality_evaluator()
+    if search_type != 'duplicate':
+        quality_evaluator = get_active_image_quality_evaluator()
+    else:
+        quality_evaluator = None
 
     hash_to_paths = defaultdict(list)
     for h in hashes:
@@ -1310,7 +1338,11 @@ def find_exact_duplicates(
             try:
                 meta = get_image_metadata(path)
                 score = 1.0
-                quality_score, quality_algorithm = get_image_quality_score(path, quality_evaluator, flat_cache_manager)
+                if search_type == 'duplicate':
+                    quality_score = 1.0
+                    quality_algorithm = None
+                else:
+                    quality_score, quality_algorithm = get_image_quality_score(path, quality_evaluator, flat_cache_manager)
                 
                 file_item = FileItem(
                     path=path,

@@ -690,6 +690,7 @@ def scan_directory(
     settings: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
     stop_event: Optional[Callable[[], bool]] = None,
+    search_type: Optional[str] = None,
     **walk_kwargs
 ) -> Optional[Dict[str, Any]]:
     """
@@ -751,15 +752,28 @@ def scan_directory(
 
     # Default to image patterns if none provided
     if patterns is None:
-        patterns = [f"*{ext}" for ext in IMAGE_EXTENSIONS]
+        if search_type == 'duplicate':
+            patterns = None  # Include all files for duplicate search
+        else:
+            patterns = [f"*{ext}" for ext in IMAGE_EXTENSIONS]
 
     # Resolve algorithms
     if algorithms is None:
-        if settings and 'similarity' in settings:
-            algorithms = settings['similarity'].get('enabled_algorithms', ['phash'])
+        if search_type == 'duplicate':
+            algorithms = ['xxh3']
+            compute_hashes = True
+            exact_grouping = True
+        elif settings and 'similarity' in settings:
+            algorithms = settings['similarity'].get('enabled_algorithms', ['phash', 'whash'])
         else:
-            algorithms = ['phash']
-    algorithms = [alg.lower() for alg in algorithms if alg.lower() in ['phash', 'whash']]
+            if search_type == 'similarity':
+                algorithms = ['phash', 'whash']
+            else:
+                algorithms = ['phash']
+    if search_type == 'duplicate':
+        algorithms = ['xxh3']
+    else:
+        algorithms = [alg.lower() for alg in algorithms if alg.lower() in ['phash', 'whash']]
 
     if not algorithms:
         raise ValueError("No valid algorithms specified")
@@ -773,6 +787,10 @@ def scan_directory(
         all_paths.extend(paths)
     # Deduplicate paths (rare, but possible with overlapping roots)
     unique_paths = list({p.as_posix(): p for p in all_paths}.values())
+
+    # For similarity, ensure compute_hashes is True
+    if search_type == 'similarity':
+        compute_hashes = True
   
     results: List[Dict[str, Any]] = []
     error_details: List[Dict[str, Any]] = []
@@ -802,7 +820,7 @@ def scan_directory(
             # Use flat_cache_manager for all hashes if available, else compute manually
             if flat_cache_manager:
                 all_types = list(set(algorithms + ['xxh3']))
-                hashes_dict = flat_cache_manager.get_hashes([str(path)], all_types)
+                hashes_dict = flat_cache_manager.get_hashes([str(path)], all_types, search_type=search_type)
                 hashes = hashes_dict[str(path)]
                 exact_hash = hashes.get('xxh3')
                 perceptual_hashes = {k: v for k, v in hashes.items() if k != 'xxh3'}

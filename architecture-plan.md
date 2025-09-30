@@ -367,6 +367,31 @@ The repository will host a development-only, extractable desktop GUI application
   - Staged prefilters: size grouping → partial SHA-256 (first/last 256 KiB) for files ≥ 512 KiB → full-file SHA-256 for candidates
   - Cache both partial and full hashes; invalidate on absolute_path, file_size, mtime_ns, inode changes
   - **Persistent Cache**: The new [`FlatCacheManager`](docs/roo/flat-cache-implementation.md:1) provides file-stat validated persistence for all computed hashes (BLAKE3, XXH3, pHash, wHash) and image quality scores. This feature is now **enabled by default** via the `use_flat_cache` setting, replacing the need for the old `image_metadata` table for these specific computed values.
+  - **Caching and Computation Optimizations**: To minimize unnecessary calculations in searches, the FlatCacheManager supports a `search_type` parameter ('duplicate' or 'similarity') that controls conditional computations. For 'duplicate' mode, only lightweight XXH3 hashing is performed on all files, skipping perceptual hashes, image dimensions, and quality scores (e.g., BRISQUE) even for images. For 'similarity' mode, full computations (pHash, wHash, XXH3, dimensions, and BRISQUE if enabled) are applied only to image files. This optimization reduces CPU usage by avoiding image decoding and analysis in duplicate workflows, while ensuring comprehensive data for perceptual similarity. The `search_type` is derived from the profile mode and propagated through traversal and similarity functions, with cache entries storing only the required data in the `hash_data` JSON field.
+    - **Example Pseudocode for Conditional Caching**:
+      ```python
+      def compute_and_cache(file_path: str, search_type: str, cache_mgr: FlatCacheManager):
+          if search_type == 'duplicate':
+              # Minimal: only XXH3 for all files
+              xxh3 = compute_xxh3(file_path)
+              cache_mgr.set_entry(FlatCacheEntry(path=file_path, hash_data={'xxh3': xxh3}))
+          elif search_type == 'similarity':
+              if is_image(file_path):
+                  # Full: perceptual hashes, dimensions, quality for images
+                  phash = compute_phash(file_path)
+                  whash = compute_whash(file_path)
+                  width, height = get_dimensions(file_path)
+                  brisque = compute_brisque(file_path) if quality_enabled else None
+                  cache_mgr.set_entry(FlatCacheEntry(
+                      path=file_path,
+                      width=width, height=height,
+                      hash_data={'phash': phash, 'whash': whash, 'xxh3': compute_xxh3(file_path)}
+                  ))
+              else:
+                  # Non-images: only XXH3
+                  cache_mgr.set_entry(FlatCacheEntry(path=file_path, hash_data={'xxh3': compute_xxh3(file_path)}))
+      ```
+    - This approach ensures cache efficiency, with validation checks ensuring stale entries are recomputed only as needed for the current `search_type`.
   - Canonical reference: [canonical-decisions.md](docs/roo/canonical-decisions.md:93)
 
 - Pools and results semantics
@@ -454,6 +479,59 @@ python -m img_app
 - Incremental vertical slices, keeping img_app thin and delegating functionality to pk-py-lib
 - Maintain clear module boundaries and avoid cross-imports from img_app into pk-py-lib
 - Ensure all new reusable logic lands in pk-py-lib and is consumed by img_app
+
+### Image Processing and Similarity
+
+The image processing pipeline leverages OpenCV, Pillow, and imagehash for perceptual similarity detection, with BLAKE3 for exact duplicates. Key optimizations include conditional computations via `search_type` to ensure efficiency:
+
+- **Efficiency via search_type**: In 'duplicate' mode, no image operations (e.g., decoding, perceptual hashing, or quality assessment) are performed, even on image files—only fast XXH3 hashing is used for content identity. This avoids unnecessary CPU-intensive tasks like DCT transforms for pHash/wHash or BRISQUE scoring. In 'similarity' mode, full caching and computation (pHash, wHash, dimensions, BRISQUE if active) are applied selectively to image files only, enabling accurate visual similarity grouping while skipping non-images. The FlatCacheManager integrates this by storing conditional data, reducing recomputation on subsequent runs and minimizing I/O for large directories.
+
+- **Pipeline Flow**:
+  1. Traversal (`scan_directory` in [`traversal.py`](src/pk_py_lib/core/filesystem/traversal.py)) uses `search_type` to compute minimal or full metadata via FlatCacheManager.
+  2. Similarity computation (`find_similar_images` in [`similarity.py`](src/pk_py_lib/core/image/similarity.py)) retrieves perceptual hashes from cache, applying Hamming distance thresholds normalized from the profile's degree_ui.
+  3. Quality filtering (optional): BRISQUE scores from cache can filter low-quality matches pre-grouping.
+
+- **Example Pseudocode for Similarity Processing**:
+  ```python
+  def process_similarity(profile: SettingsProfile, cache_mgr: FlatCacheManager):
+      search_type = 'similarity' if profile.mode == 'similarity' else 'duplicate'
+      files_data = scan_directory(profile.pool_a.root_path, search_type=search_type, cache_mgr=cache_mgr)
+      
+      # For similarity: use perceptual hashes
+      groups = []
+      for file1 in files_data:
+          for file2 in files_data:
+              if file1.path != file2.path:
+                  phash1 = cache_mgr.get_hashes(file1.path, search_type)['phash']
+                  phash2 = cache_mgr.get_hashes(file2.path, search_type)['phash']
+                  distance = hamming_distance(phash1, phash2)
+                  similarity_score = 1 - (distance / 64)  # For 64-bit pHash
+                  if similarity_score >= profile.degree_normalized:
+                      groups.append([file1.path, file2.path])
+                      # Optional: Filter by BRISQUE if quality_enabled
+                      if profile.quality_enabled:
+                          brisque1 = cache_mgr.get_entry(file1.path).hash_data['brisque_score']
+                          if brisque1 < threshold:
+                              continue  # Skip low-quality images
+      return groups
+  ```
+
+This design ensures scalable processing, with cache hits accelerating repeated scans.
+
+### Integration with MainWindow, ScanWorker, and Widgets
+
+The asynchronous workflow in [`MainWindow`](img_app/img_app/main_window.py) integrates the conditional caching seamlessly:
+
+- **ScanWorker**: This QThread (defined in MainWindow) executes `scan_directory` with the profile-derived `search_type`, passing the FlatCacheManager for optimized hashing/metadata extraction. Progress updates reflect conditional computations (e.g., "Hashing files (XXH3 only)" for duplicates vs. "Analyzing images (pHash + quality)" for similarity). Upon completion, it emits scanned files/hashes to the orchestrator.
+
+- **ComparisonWorker**: Builds on ScanWorker results, using `search_type` to perform grouping (exact matches for duplicates via XXH3/BLAKE3; perceptual via pHash). It integrates with the cache for quick lookups, emitting final groups to the MainWindow.
+
+- **Widgets Integration**:
+  - **DuplicateManager** ([img_app/img_app/widgets/duplicate_manager.py](img_app/img_app/widgets/duplicate_manager.py)): Receives duplicate groups from ComparisonWorker, displaying them in a tree view with selection states. It queries the cache for additional metadata (e.g., file sizes) but relies on pre-computed XXH3 for grouping.
+  - **SimilarityManager** ([img_app/img_app/widgets/similarity_manager.py](img_app/img_app/widgets/similarity_manager.py)): Handles similarity results, showing perceptual scores and optional BRISQUE filters. It uses cache-retrieved dimensions and hashes for previews/sorting, with custom painting for consistent UI across platforms.
+  - Both widgets support text selectability in reports and integrate with the collapsible Summary/Report pane in BaseFileManagerDialog for detailed outputs.
+
+This integration ensures the GUI remains responsive during scans, with results flowing directly to specialized managers for user interaction (e.g., selection, deletion, reporting).
 
 ## Next Steps
 
@@ -712,15 +790,15 @@ Summary
 
 Architecture Details
 - **Main Layout**: The dialog uses a `QSplitter` (vertical) to divide the layout into two main sections:
-    1. Top Pane: Contains the Summary/Report header and content. This pane is set to be collapsible (`QSplitter.setCollapsible(0, True)`).
-    2. Content Area: Contains subclass-specific controls and the main results view (e.g., image group tree).
+  1. Top Pane: Contains the Summary/Report header and content. This pane is set to be collapsible (`QSplitter.setCollapsible(0, True)`).
+  2. Content Area: Contains subclass-specific controls and the main results view (e.g., image group tree).
 - **Header Component**: The header remains visible even when collapsed and contains:
-    - A `QTabBar` for switching between "Summary" and "Report" views.
-    - A `QToolButton` (`self._collapse_button`) which toggles the visibility of the content area below it.
+  - A `QTabBar` for switching between "Summary" and "Report" views.
+  - A `QToolButton` (`self._collapse_button`) which toggles the visibility of the content area below it.
 - **Content Component**: The content area of the Summary/Report pane is a `QStackedWidget` (`self._tab_content_stack`) containing the `QTextEdit` widgets for Summary and Report output.
 - **Collapse Mechanism**:
-    - The `QToolButton`'s `clicked` signal is connected to `_toggle_collapse()`.
-    - `_toggle_collapse()` toggles the visibility of the `QStackedWidget` (`self._tab_content_stack.setVisible()`) and updates the `QToolButton`'s arrow icon (UpArrow for expanded, DownArrow for collapsed).
+  - The `QToolButton`'s `clicked` signal is connected to `_toggle_collapse()`.
+  - `_toggle_collapse()` toggles the visibility of the `QStackedWidget` (`self._tab_content_stack.setVisible()`) and updates the `QToolButton`'s arrow icon (UpArrow for expanded, DownArrow for collapsed).
 - **Text Selectability**: Both the Summary and Report `QTextEdit` widgets maintain the project requirement for selectable text (`Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard`).
 
 Implementation Reference
@@ -731,7 +809,7 @@ Implementation Reference
 Summary
 - The application's core operations (file scanning/hashing and image comparison) are now executed asynchronously using dedicated `QThread` workers to prevent GUI blocking.
 - A reusable modal dialog, `ProgressDialog`, provides real-time progress updates and supports cooperative cancellation for long-running tasks.
-- The `MainWindow` orchestrates the sequential execution of the two main phases: scanning and comparison.
+- The `MainWindow` orchestrates the sequential execution of the two main phases: scanning and comparison, with conditional optimizations via `search_type` integrated into the workers.
 
 ### Components and Responsibilities
 
@@ -741,53 +819,53 @@ Summary
 - **Signals**: Emits signals to update the progress bar and status text from the worker thread.
 
 #### 2. `ScanWorker` (QThread subclass, defined in [`img_app/img_app/main_window.py`](img_app/img_app/main_window.py))
-- **Role**: Executes the file system traversal and hashing phase.
-- **Core Logic**: Calls the updated [`scan_directory`](src/pk_py_lib/core/filesystem/traversal.py) function, passing a `progress_callback` (to report progress back to the GUI) and the `stop_event` (for cancellation).
-- **Output**: Emits a signal upon completion, carrying the list of scanned files/hashes, or an error/cancellation status.
+- **Role**: Executes the file system traversal and hashing phase, with conditional computations based on `search_type`.
+- **Core Logic**: Calls the updated [`scan_directory`](src/pk_py_lib/core/filesystem/traversal.py) function, passing a `progress_callback` (to report progress back to the GUI), the `stop_event` (for cancellation), and `search_type` (derived from profile mode) to the FlatCacheManager for optimized metadata extraction (e.g., XXH3 only for duplicates).
+- **Output**: Emits a signal upon completion, carrying the list of scanned files/hashes (conditional on `search_type`), or an error/cancellation status.
 
 #### 3. `ComparisonWorker` (QThread subclass, defined in [`img_app/img_app/main_window.py`](img_app/img_app/main_window.py))
-- **Role**: Executes the image comparison phase (e.g., pHash similarity or BLAKE3 duplicates) on the results from the `ScanWorker`.
-- **Core Logic**: Performs the comparison logic, respecting the `stop_event` for cooperative cancellation and using a progress callback for updates.
+- **Role**: Executes the image comparison phase (e.g., pHash similarity or BLAKE3 duplicates) on the results from the `ScanWorker`, using cache-retrieved data tailored to `search_type`.
+- **Core Logic**: Performs the comparison logic, respecting the `stop_event` for cooperative cancellation and using a progress callback for updates. For 'similarity', it leverages perceptual hashes and quality scores from the cache; for 'duplicate', it uses exact hash matches.
 - **Output**: Emits a signal upon completion, carrying the final results (groups of similar/duplicate images).
 
 #### 4. [`MainWindow`](img_app/img_app/main_window.py)
-- **Role**: The central orchestrator of the asynchronous workflow.
+- **Role**: The central orchestrator of the asynchronous workflow, mapping profile mode to `search_type` and passing it to workers.
 - **Orchestration Flow**:
-    1. User triggers the operation (e.g., clicks "Run").
-    2. `MainWindow` instantiates and shows the `ProgressDialog`.
-    3. `MainWindow` instantiates `ScanWorker`, connects its signals to the `ProgressDialog` for updates, and starts the thread.
-    4. Upon `ScanWorker` completion (success or cancellation):
-        - If successful, `MainWindow` instantiates `ComparisonWorker`, connects its signals, and starts the thread, reusing the `ProgressDialog`.
-        - If cancelled or failed, the `ProgressDialog` is closed, and an appropriate message is displayed.
-    5. Upon `ComparisonWorker` completion:
-        - The `ProgressDialog` is closed.
-        - The results (or error) are passed to the appropriate results manager dialog (`Duplicate File Manager` or `Similar Image Manager`).
+  1. User triggers the operation (e.g., clicks "Run").
+  2. `MainWindow` instantiates and shows the `ProgressDialog`.
+  3. `MainWindow` instantiates `ScanWorker` with `search_type` (e.g., 'duplicate' for BLAKE3 mode), connects its signals to the `ProgressDialog` for updates, and starts the thread.
+  4. Upon `ScanWorker` completion (success or cancellation):
+     - If successful, `MainWindow` instantiates `ComparisonWorker` with the same `search_type`, connects its signals, and starts the thread, reusing the `ProgressDialog`.
+     - If cancelled or failed, the `ProgressDialog` is closed, and an appropriate message is displayed.
+  5. Upon `ComparisonWorker` completion:
+     - The `ProgressDialog` is closed.
+     - The results (or error) are passed to the appropriate results manager dialog (`Duplicate File Manager` or `Similar Image Manager`), which display groups using cache metadata.
 
 ### Workflow Diagram (Simplified)
 
 ```mermaid
 graph TD
     A[MainWindow: Run Operation] --> B(Instantiate & Show ProgressDialog);
-    B --> C(Instantiate ScanWorker);
+    B --> C(Instantiate ScanWorker with search_type);
     C --> D{ScanWorker: Start Thread};
-    D --> E[ScanWorker: Traversal & Hashing];
+    D --> E[ScanWorker: Traversal & Conditional Hashing];
     E -- Progress/Status --> B;
     E -- Cancellation Request --> E;
     E -- Success --> F(MainWindow: Scan Complete);
     E -- Failure/Cancel --> K(MainWindow: Handle Error/Cancel);
-    F --> G(Instantiate ComparisonWorker);
+    F --> G(Instantiate ComparisonWorker with search_type);
     G --> H{ComparisonWorker: Start Thread};
-    H --> I[ComparisonWorker: Image Comparison];
+    H --> I[ComparisonWorker: Conditional Image Comparison];
     I -- Progress/Status --> B;
     I -- Cancellation Request --> I;
     I -- Success --> J(MainWindow: Comparison Complete);
     I -- Failure/Cancel --> K;
     J --> L(Close ProgressDialog);
-    J --> M(Show Results Manager Dialog);
+    J --> M(Show Results Manager Dialog: duplicate_manager or similarity_manager);
     K --> L;
 ```
 
 ### Implementation References
 - `ProgressDialog` definition: [`src/pk_py_lib/gui/dialogs/progress_dialog.py`](src/pk_py_lib/gui/dialogs/progress_dialog.py)
-- `scan_directory` update (progress/cancellation support): [`src/pk_py_lib/core/filesystem/traversal.py`](src/pk_py_lib/core/filesystem/traversal.py)
-- `MainWindow` orchestration and worker definitions: [`img_app/img_app/main_window.py`](img_app/img_app/main_window.py)
+- `scan_directory` update (progress/cancellation support with search_type): [`src/pk_py_lib/core/filesystem/traversal.py`](src/pk_py_lib/core/filesystem/traversal.py)
+- `MainWindow` orchestration and worker definitions (with search_type integration): [`img_app/img_app/main_window.py`](img_app/img_app/main_window.py)

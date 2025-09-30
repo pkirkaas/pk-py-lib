@@ -110,6 +110,7 @@ class FlatCacheEntry:
         is_valid (bool): Validity flag (DEFAULT True).
         xxh3 (Optional[str]): File content hash using xxh3 algorithm.
         phash (Optional[str]): Perceptual hash for image similarity.
+        brisque (Optional[float]): BRISQUE no-reference image quality score, nullable for images not yet evaluated.
         created_at (float): Unix timestamp when entry was created.
         updated_at (float): Unix timestamp of last update.
     """
@@ -121,6 +122,8 @@ class FlatCacheEntry:
     is_valid: bool = True
     xxh3: Optional[str] = None
     phash: Optional[str] = None
+    brisque: Optional[float] = None
+    whash: Optional[str] = None
     created_at: float = 0.0
     updated_at: float = 0.0
 
@@ -156,8 +159,8 @@ class FlatCacheEntry:
 # --- SQL Schema ---
 
 FLAT_CACHE_SCHEMA = f"""
--- Flat Cache DB schema: Simplified file metadata and hash storage
--- Stores essential file metadata and dedicated hash columns
+-- Flat Cache DB schema: Simplified file metadata, hash storage, and image quality scores
+-- Stores essential file metadata, dedicated hash columns, and BRISQUE quality scores
 CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
     path TEXT PRIMARY KEY NOT NULL,
     size INTEGER NOT NULL,
@@ -167,6 +170,8 @@ CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
     is_valid INTEGER NOT NULL DEFAULT 1 CHECK (is_valid IN (0, 1)),
     xxh3 TEXT,
     phash TEXT,
+    whash TEXT,
+    brisque REAL,
     created_at REAL NOT NULL DEFAULT (strftime('%s', 'now')),
     updated_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
 );
@@ -177,6 +182,7 @@ CREATE INDEX IF NOT EXISTS idx_updated_at ON {TABLE_NAME} (updated_at);
 CREATE INDEX IF NOT EXISTS idx_is_valid ON {TABLE_NAME} (is_valid);
 CREATE INDEX IF NOT EXISTS idx_xxh3 ON {TABLE_NAME} (xxh3);
 CREATE INDEX IF NOT EXISTS idx_phash ON {TABLE_NAME} (phash);
+CREATE INDEX IF NOT EXISTS idx_whash ON {TABLE_NAME} (whash);
 
 -- Schema version table for migration tracking
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -184,7 +190,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 """
 
-SCHEMA_VERSION = 6  # Version 6.0.0: Removed mtime_ns, file_inode, file_device, bit_depth, lens_model, last_scanned, scan_version, hash_data JSON; added dedicated xxh3 and phash columns
+SCHEMA_VERSION = 8  # Version 8: Added whash TEXT column for wavelet perceptual hash
 
 # --- Manager Class ---
 
@@ -562,33 +568,57 @@ class FlatCacheManager:
                     
                     # If version mismatch, migrate (for PoC: drop and recreate)
                     if current_version < SCHEMA_VERSION:
-                        self.logger.info(f"Schema migration needed: version {current_version} -> {SCHEMA_VERSION}. Recreating table.")
-                        
-                        # Drop existing table if it exists (no inner retry needed if we deleted files already)
-                        try:
-                            self.logger.info(f"Diagnostic: Attempting DROP TABLE IF EXISTS {self.table_name}")
-                            conn.execute(f"DROP TABLE IF EXISTS {self.table_name}")
-                            self.logger.info(f"Diagnostic: DROP TABLE succeeded")
-                        except sqlite3.OperationalError as drop_error:
-                            error_msg = str(drop_error).lower()
-                            if "locked" in error_msg:
-                                self.logger.error(f"Unexpected lock after file deletion: {drop_error}")
+                        if current_version == 7:
+                            # Migration from v7 to v8: add whash column
+                            cursor = conn.execute(f"PRAGMA table_info({self.table_name})")
+                            column_names = [row[1] for row in cursor.fetchall()]
+                            if 'whash' not in column_names:
+                                conn.execute(f"ALTER TABLE {self.table_name} ADD COLUMN whash TEXT")
+                                self.logger.info(f"Migration v7 to v8: Added whash column to {self.table_name} table.")
+                            conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+                            self.logger.info(f"Schema migration complete: v{current_version} to v{SCHEMA_VERSION}.")
+                        elif current_version == 6:
+                            # Migration from v6 to v7: add brisque column
+                            cursor = conn.execute(f"PRAGMA table_info({self.table_name})")
+                            column_names = [row[1] for row in cursor.fetchall()]
+                            if 'brisque' not in column_names:
+                                conn.execute(f"ALTER TABLE {self.table_name} ADD COLUMN brisque REAL")
+                                self.logger.info(f"Migration v6 to v7: Added brisque column to {self.table_name} table.")
+                            # Then add whash for v8
+                            if 'whash' not in column_names:
+                                conn.execute(f"ALTER TABLE {self.table_name} ADD COLUMN whash TEXT")
+                                self.logger.info(f"Migration v6 to v8: Added whash column to {self.table_name} table.")
+                            conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+                            self.logger.info(f"Schema migration complete: v{current_version} to v{SCHEMA_VERSION}.")
+                        else:
+                            # For older versions, drop and recreate
+                            self.logger.info(f"Schema migration needed for older version {current_version}. Recreating table.")
+                            
+                            # Drop existing table if it exists (no inner retry needed if we deleted files already)
+                            try:
+                                self.logger.info(f"Diagnostic: Attempting DROP TABLE IF EXISTS {self.table_name}")
+                                conn.execute(f"DROP TABLE IF EXISTS {self.table_name}")
+                                self.logger.info(f"Diagnostic: DROP TABLE succeeded")
+                            except sqlite3.OperationalError as drop_error:
+                                error_msg = str(drop_error).lower()
+                                if "locked" in error_msg:
+                                    self.logger.error(f"Unexpected lock after file deletion: {drop_error}")
+                                    raise
+                                else:
+                                    self.logger.error(f"Diagnostic: DROP TABLE failed with OperationalError: {drop_error}")
+                                    raise
+                            except Exception as drop_error:
+                                self.logger.error(f"Diagnostic: DROP TABLE failed with unexpected error: {drop_error}")
                                 raise
-                            else:
-                                self.logger.error(f"Diagnostic: DROP TABLE failed with OperationalError: {drop_error}")
-                                raise
-                        except Exception as drop_error:
-                            self.logger.error(f"Diagnostic: DROP TABLE failed with unexpected error: {drop_error}")
-                            raise
-                        
-                        # Run full schema
-                        self.logger.info("Diagnostic: Executing full schema creation")
-                        conn.executescript(FLAT_CACHE_SCHEMA)
-                        
-                        # Update version
-                        conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-                        
-                        self.logger.info("Schema migration complete: table recreated.")
+                            
+                            # Run full schema
+                            self.logger.info("Diagnostic: Executing full schema creation")
+                            conn.executescript(FLAT_CACHE_SCHEMA)
+                            
+                            # Update version
+                            conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+                            
+                            self.logger.info("Schema migration complete: table recreated with v{}.".format(SCHEMA_VERSION))
                     else:
                         # Ensure table and indexes exist
                         conn.executescript(FLAT_CACHE_SCHEMA)
@@ -737,7 +767,7 @@ class FlatCacheManager:
         try:
             with self._get_connection() as conn:
                 cursor = conn.execute(
-                    f"SELECT path, size, mtime, width, height, is_valid, xxh3, phash, created_at, updated_at FROM {self.table_name} WHERE path = ?",
+                    f"SELECT path, size, mtime, width, height, is_valid, xxh3, phash, whash, brisque, created_at, updated_at FROM {self.table_name} WHERE path = ?",
                     (normalized_path,)
                 )
                 row = cursor.fetchone()
@@ -920,7 +950,7 @@ class FlatCacheManager:
 
         # Query all existing entries for the given paths
         placeholders = ', '.join(['?'] * len(normalized_paths))
-        sql = f"SELECT path, size, mtime, width, height, is_valid, xxh3, phash, created_at, updated_at FROM {self.table_name} WHERE path IN ({placeholders})"
+        sql = f"SELECT path, size, mtime, width, height, is_valid, xxh3, phash, brisque, created_at, updated_at FROM {self.table_name} WHERE path IN ({placeholders})"
 
         cached_entries: Dict[str, FlatCacheEntry] = {}
         try:
@@ -1000,15 +1030,18 @@ class FlatCacheManager:
         except Exception:
             return False
 
-    def _extract_image_metadata(self, file_path: str) -> Dict[str, Any]:
+    def _extract_image_metadata(self, file_path: str, search_type: Optional[str] = None) -> Dict[str, Any]:
         """
         Extracts image-specific metadata (dimensions) using PIL.
         
+        For search_type='similarity', also computes BRISQUE quality score if evaluator is active.
+        
         Parameters:
             file_path (str): Path to the image file.
+            search_type (Optional[str]): If 'similarity', compute quality score.
         
         Returns:
-            Dict[str, Any]: Metadata dict with width and height.
+            Dict[str, Any]: Metadata dict with width, height, and optionally 'brisque'.
         
         Raises:
             Exception: If image cannot be opened or metadata extraction fails.
@@ -1018,6 +1051,17 @@ class FlatCacheManager:
             with Image.open(file_path) as img:
                 metadata['width'] = img.width
                 metadata['height'] = img.height
+
+            if search_type == 'similarity':
+                from pk_py_lib.core.image.quality.registry import get_active_image_quality_evaluator
+                evaluator = get_active_image_quality_evaluator()
+                if evaluator:
+                    try:
+                        score = evaluator.evaluate(file_path)
+                        metadata['brisque'] = score
+                    except Exception as e:
+                        self.logger.warning(f"Failed to compute brisque for {file_path}: {e}")
+                        metadata['brisque'] = None
 
             return metadata
         except Exception as e:
@@ -1072,7 +1116,7 @@ class FlatCacheManager:
         except Exception as e:
             raise CacheComputeError(file_path, hash_type, e)
 
-    def _process_single_file(self, file_path: str, hash_types: List[str]) -> Dict[str, str]:
+    def _process_single_file(self, file_path: str, hash_types: List[str], search_type: Optional[str] = None) -> Dict[str, str]:
         """
         Processes a single file: checks cache, validates, computes missing hashes and image metadata, stores.
         
@@ -1108,18 +1152,23 @@ class FlatCacheManager:
             # Extract image metadata if image
             if self._is_image_file(file_path):
                 try:
-                    img_meta = self._extract_image_metadata(file_path)
+                    img_meta = self._extract_image_metadata(file_path, search_type)
                     entry.width = img_meta.get('width')
                     entry.height = img_meta.get('height')
+                    if search_type == 'similarity' and 'brisque' in img_meta:
+                        entry.brisque = img_meta['brisque']
                 except Exception as e:
                     self.logger.warning(f"Failed to extract image metadata for {file_path}: {e}")
             self.logger.debug(f"Creating new cache entry for {normalized_path}")
         else:
             self.logger.debug(f"Retrieved valid cache entry for {normalized_path}")
 
-        # Check and compute missing hashes (only support xxh3 and phash)
+        # Check and compute missing hashes (support xxh3, phash, whash)
         result = {}
         for ht in hash_types:
+            if search_type == 'duplicate' and ht != 'xxh3':
+                result[ht] = None
+                continue
             if ht == 'xxh3':
                 if entry.xxh3 is None:
                     try:
@@ -1149,12 +1198,31 @@ class FlatCacheManager:
                         self.logger.warning(f"Failed to compute phash for {file_path}: {e}")
                         entry.phash = None
                 result['phash'] = entry.phash
+            elif ht == 'whash':
+                if entry.whash is None:
+                    try:
+                        hash_value = self._compute_hash(file_path, 'whash')
+                        entry.whash = hash_value
+                        self.logger.info(f"Computed whash for {normalized_path}")
+                    except ValueError as ve:
+                        self.logger.warning(str(ve))
+                        entry.whash = None
+                    except Exception as e:
+                        self.logger.warning(f"Failed to compute whash for {file_path}: {e}")
+                        entry.whash = None
+                result['whash'] = entry.whash
             else:
                 # Unsupported hash type
                 self.logger.warning(f"Unsupported hash type '{ht}' requested for {file_path}")
                 result[ht] = None
 
         # Update and save
+        if search_type == 'duplicate':
+            entry.width = None
+            entry.height = None
+            entry.brisque = None
+            entry.phash = None
+            entry.whash = None
         if self.set_entry(entry):
             self.logger.debug(f"Updated cache entry with new hashes/metadata for {normalized_path}")
         else:
@@ -1163,7 +1231,7 @@ class FlatCacheManager:
         self.logger.debug(f"Returning hashes for {normalized_path}: {result}")
         return result
 
-    def get_hashes(self, file_paths: List[str], hash_types: List[str] = ['phash']) -> Dict[str, Dict[str, str]]:
+    def get_hashes(self, file_paths: List[str], hash_types: List[str] = ['phash'], search_type: Optional[str] = None) -> Dict[str, Dict[str, str]]:
         """
         Batch processes a list of files to get or compute hashes efficiently.
         
@@ -1172,6 +1240,7 @@ class FlatCacheManager:
         Parameters:
             file_paths (List[str]): List of file paths to process.
             hash_types (List[str]): List of hash types to retrieve/compute. Defaults to ['phash'].
+            search_type (Optional[str]): If 'similarity', ensure full computations including brisque.
         
         Returns:
             Dict[str, Dict[str, str]]: Mapping of path to dict of hash_type: value.
@@ -1182,13 +1251,18 @@ class FlatCacheManager:
         if not file_paths:
             return {}
 
+        # For similarity, ensure all types including xxh3
+        if search_type == 'similarity':
+            full_types = list(set(hash_types + ['xxh3', 'phash', 'whash']))
+            hash_types = full_types
+
         results = {}
         total = len(file_paths)
-        self.logger.info(f"Processing {total} files for hashes {hash_types}")
+        self.logger.info(f"Processing {total} files for hashes {hash_types} (search_type={search_type})")
 
         for i, path in enumerate(file_paths, 1):
             try:
-                hashes = self._process_single_file(path, hash_types)
+                hashes = self._process_single_file(path, hash_types, search_type=search_type)
                 results[path] = hashes
                 self.logger.debug(f"[{i}/{total}] Successfully processed {path}")
             except (FileNotFoundError, PermissionError) as e:
@@ -1221,7 +1295,7 @@ class FlatCacheManager:
         normalized_paths = [self._normalize_path(p) for p in paths]
         results = {}
         placeholders = ', '.join(['?'] * len(normalized_paths))
-        sql = f"SELECT path, size, mtime, width, height, is_valid, xxh3, phash, created_at, updated_at FROM {self.table_name} WHERE path IN ({placeholders})"
+        sql = f"SELECT path, size, mtime, width, height, is_valid, xxh3, phash, whash, brisque, created_at, updated_at FROM {self.table_name} WHERE path IN ({placeholders})"
 
         try:
             with self._get_connection() as conn:

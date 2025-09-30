@@ -153,7 +153,7 @@ class ScanWorker(QThread):
     error = Signal(str)
     finished = Signal(str, dict)
 
-    def __init__(self, db_manager, flat_cache_manager, profile_json: dict, algorithm: str = "xxh3", mode: str = 'duplicates', compute_hashes: bool = False, profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
+    def __init__(self, db_manager, flat_cache_manager, profile_json: dict, algorithm: str = "xxh3", mode: str = 'duplicates', compute_hashes: bool = False, search_type: Optional[str] = None, profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
         """
         Initialize worker.
      
@@ -183,6 +183,7 @@ class ScanWorker(QThread):
         self.profile = profile_json or {}
         self.algorithm = (algorithm or "xxh3").lower().strip()
         self.mode = mode
+        self.search_type = search_type or mode
         self.compute_hashes = compute_hashes
         self.exact_grouping = (mode == 'duplicates')
         # Capture the profile name used for this run (best effort)
@@ -354,6 +355,7 @@ class ScanWorker(QThread):
                 db_manager=self.db_manager,
                 flat_cache_manager=self.flat_cache_manager, # Pass the flat cache manager
                 settings=self.profile,
+                search_type=self.search_type,
                 follow_symlinks=False,  # Default; can add from profile if needed
                 include_hidden=False,
                 progress_callback=lambda processed, total, path, message: self.progress.emit(processed, total, path, message),

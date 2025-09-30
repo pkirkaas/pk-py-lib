@@ -115,6 +115,51 @@ def mock_xxhash_xxh3_64():
 
 # --- Test FlatCacheEntry ---
 
+def test_extract_image_metadata_duplicate(flat_cache_manager: FlatCacheManager, mock_image_open):
+    """Test _extract_image_metadata skips image ops for search_type='duplicate'."""
+    mock_img = MagicMock()
+    mock_img.size = (100, 200)
+    mock_image_open.return_value.__enter__.return_value = mock_img
+    
+    with patch('src.pk_py_lib.core.image.quality.registry.get_active_image_quality_evaluator', return_value=None):
+        metadata = flat_cache_manager._extract_image_metadata(TEST_FILE_PATH, search_type='duplicate')
+    
+    assert metadata == {'width': 100, 'height': 200}
+    # No brisque computation
+    assert 'brisque' not in metadata
+
+def test_extract_image_metadata_similarity(flat_cache_manager: FlatCacheManager, mock_image_open):
+    """Test _extract_image_metadata performs full extraction + brisque for 'similarity'."""
+    mock_img = MagicMock()
+    mock_img.size = (100, 200)
+    mock_image_open.return_value.__enter__.return_value = mock_img
+    
+    mock_evaluator = MagicMock()
+    mock_evaluator.evaluate.return_value = 45.5
+    with patch('src.pk_py_lib.core.image.quality.registry.get_active_image_quality_evaluator', return_value=mock_evaluator):
+        metadata = flat_cache_manager._extract_image_metadata(TEST_FILE_PATH, search_type='similarity')
+    
+    assert metadata == {'width': 100, 'height': 200, 'brisque': 45.5}
+    mock_evaluator.evaluate.assert_called_once_with(TEST_FILE_PATH)
+
+def test_extract_image_metadata_similarity_no_evaluator(flat_cache_manager: FlatCacheManager, mock_image_open):
+    """Test _extract_image_metadata skips brisque if no evaluator active."""
+    mock_img = MagicMock()
+    mock_img.size = (100, 200)
+    mock_image_open.return_value.__enter__.return_value = mock_img
+    
+    with patch('src.pk_py_lib.core.image.quality.registry.get_active_image_quality_evaluator', return_value=None):
+        metadata = flat_cache_manager._extract_image_metadata(TEST_FILE_PATH, search_type='similarity')
+    
+    assert metadata == {'width': 100, 'height': 200}
+    assert 'brisque' not in metadata
+
+def test_extract_image_metadata_non_image(flat_cache_manager: FlatCacheManager):
+    """Test _extract_image_metadata raises for non-image (but in practice, called only for images)."""
+    with patch.object(flat_cache_manager, '_is_image_file', return_value=False), \
+         pytest.raises(Exception):  # Expect error from Image.open
+        flat_cache_manager._extract_image_metadata(TEST_FILE_PATH, search_type='similarity')
+
 def test_flat_cache_entry_creation(sample_entry: FlatCacheEntry):
     """Test basic creation and attribute access."""
     assert sample_entry.path == TEST_FILE_PATH
@@ -399,6 +444,157 @@ def test_set_entry_inaccessible_file_returns_false(flat_cache_manager: FlatCache
     assert flat_cache_manager.get_entry(TEST_FILE_PATH) is None
 
 # --- Test _compute_hash ---
+
+def test_process_single_file_duplicate(flat_cache_manager: FlatCacheManager, mock_xxhash_xxh3_64):
+    """Test _process_single_file for 'duplicate': only xxh3, no image fields."""
+    with patch('os.path.exists', return_value=True), \
+         patch.object(flat_cache_manager, '_is_image_file', return_value=True), \
+         patch.object(flat_cache_manager, '_extract_image_metadata', return_value={'width': 100, 'height': 200}):
+        result = flat_cache_manager._process_single_file(TEST_FILE_PATH, ['xxh3'], search_type='duplicate')
+    
+    assert result == {'xxh3': 'xxh3_hash_value'}
+    # Verify entry has no image fields after set
+    entry = flat_cache_manager.get_entry(TEST_FILE_PATH)
+    assert entry.xxh3 == 'xxh3_hash_value'
+    assert entry.phash is None
+    assert entry.whash is None
+    assert entry.width is None
+    assert entry.height is None
+    assert entry.brisque is None
+
+def test_process_single_file_similarity(flat_cache_manager: FlatCacheManager, mock_image_open, mock_imagehash_phash, mock_xxhash_xxh3_64):
+    """Test _process_single_file for 'similarity': full computations incl. brisque if evaluator."""
+    mock_img = MagicMock()
+    mock_img.size = (100, 200)
+    mock_image_open.return_value.__enter__.return_value = mock_img
+    
+    mock_evaluator = MagicMock()
+    mock_evaluator.evaluate.return_value = 45.5
+    with patch('os.path.exists', return_value=True), \
+         patch('src.pk_py_lib.core.image.quality.registry.get_active_image_quality_evaluator', return_value=mock_evaluator):
+        result = flat_cache_manager._process_single_file(TEST_FILE_PATH, ['phash', 'xxh3'], search_type='similarity')
+    
+    assert 'phash' in result
+    assert 'xxh3' in result
+    entry = flat_cache_manager.get_entry(TEST_FILE_PATH)
+    assert entry.phash == 'abc123def456'
+    assert entry.xxh3 == 'xxh3_hash_value'
+    assert entry.width == 100
+    assert entry.height == 200
+    assert entry.brisque == 45.5
+    mock_evaluator.evaluate.assert_called_once()
+
+def test_process_single_file_non_image_duplicate(flat_cache_manager: FlatCacheManager, mock_xxhash_xxh3_64):
+    """Test non-image for 'duplicate': only xxh3, no image ops."""
+    with patch('os.path.exists', return_value=True), \
+         patch.object(flat_cache_manager, '_is_image_file', return_value=False):
+        result = flat_cache_manager._process_single_file(TEST_FILE_PATH, ['xxh3'], search_type='duplicate')
+    
+    assert result == {'xxh3': 'xxh3_hash_value'}
+    entry = flat_cache_manager.get_entry(TEST_FILE_PATH)
+    assert entry.xxh3 == 'xxh3_hash_value'
+    assert entry.width is None
+    assert entry.height is None
+    assert entry.phash is None
+    assert entry.whash is None
+    assert entry.brisque is None
+
+def test_process_single_file_non_image_similarity(flat_cache_manager: FlatCacheManager, caplog):
+    """Test non-image for 'similarity': skip perceptual, log warning, only xxh3 if requested."""
+    with patch('os.path.exists', return_value=True), \
+         patch.object(flat_cache_manager, '_is_image_file', return_value=False), \
+         caplog.at_level(logging.WARNING):
+        result = flat_cache_manager._process_single_file(TEST_FILE_PATH, ['phash', 'xxh3'], search_type='similarity')
+    
+    assert result['xxh3'] is not None  # Assuming xxh3 computed
+    assert result['phash'] is None
+    assert "Perceptual hash 'phash' requested for non-image file" in caplog.text
+    entry = flat_cache_manager.get_entry(TEST_FILE_PATH)
+    assert entry.phash is None
+    assert entry.width is None
+    assert entry.height is None
+    assert entry.brisque is None
+
+def test_get_hashes_duplicate(flat_cache_manager: FlatCacheManager, mock_xxhash_xxh3_64, caplog):
+    """Test get_hashes for 'duplicate': only xxh3, no perceptual/image fields."""
+    paths = [TEST_FILE_PATH, "/non_image.txt"]
+    with patch('os.path.exists', return_value=True), \
+         patch.object(flat_cache_manager, '_is_image_file', side_effect=[True, False]):
+        result = flat_cache_manager.get_hashes(paths, ['phash', 'xxh3'], search_type='duplicate')
+    
+    for path in paths:
+        assert result[path]['xxh3'] == 'xxh3_hash_value'
+        assert result[path]['phash'] is None
+    # No image metadata computed
+    with caplog.at_level(logging.INFO):
+        flat_cache_manager.get_hashes(paths, ['phash', 'xxh3'], search_type='duplicate')
+    assert "Computed xxh3" in caplog.text
+    assert "Failed to compute phash" not in caplog.text  # Skipped, not failed
+
+def test_get_hashes_similarity(flat_cache_manager: FlatCacheManager, mock_image_open, mock_imagehash_phash, mock_xxhash_xxh3_64):
+    """Test get_hashes for 'similarity': full fields for images, skip non-images."""
+    mock_img = MagicMock()
+    mock_img.size = (100, 200)
+    mock_image_open.return_value.__enter__.return_value = mock_img
+    
+    mock_evaluator = MagicMock()
+    mock_evaluator.evaluate.return_value = 45.5
+    paths = [TEST_FILE_PATH]  # Assume image
+    with patch('os.path.exists', return_value=True), \
+         patch('src.pk_py_lib.core.image.quality.registry.get_active_image_quality_evaluator', return_value=mock_evaluator):
+        result = flat_cache_manager.get_hashes(paths, ['phash', 'xxh3'], search_type='similarity')
+    
+    assert result[TEST_FILE_PATH]['phash'] == 'abc123def456'
+    assert result[TEST_FILE_PATH]['xxh3'] == 'xxh3_hash_value'
+    entry = flat_cache_manager.get_entry(TEST_FILE_PATH)
+    assert entry.width == 100
+    assert entry.height == 200
+    assert entry.brisque == 45.5
+    mock_evaluator.evaluate.assert_called_once()
+
+def test_get_hashes_similarity_non_image(flat_cache_manager: FlatCacheManager, caplog):
+    """Test get_hashes for 'similarity' on non-image: only xxh3, warn on perceptual."""
+    paths = ["/non_image.txt"]
+    with patch('os.path.exists', return_value=True), \
+         patch.object(flat_cache_manager, '_is_image_file', return_value=False), \
+         caplog.at_level(logging.WARNING):
+        result = flat_cache_manager.get_hashes(paths, ['phash', 'xxh3'], search_type='similarity')
+    
+    assert result[paths[0]]['xxh3'] is not None
+    assert result[paths[0]]['phash'] is None
+    assert "Perceptual hash 'phash' requested for non-image file" in caplog.text
+    entry = flat_cache_manager.get_entry(paths[0])
+    assert entry.width is None
+    assert entry.height is None
+    assert entry.brisque is None
+
+def test_cache_validation_recompute_conditional(flat_cache_manager: FlatCacheManager, sample_entry: FlatCacheEntry, mock_stat_result: MagicMock, mock_imagehash_phash, mock_xxhash_xxh3_64):
+    """Test invalid entry triggers recompute only for needed types based on search_type."""
+    # Set invalid entry (size mismatch)
+    flat_cache_manager.set_entry(sample_entry)
+    mock_stat_result.st_size = TEST_SIZE + 1  # Cause invalidation
+    
+    # For duplicate: recompute only xxh3
+    result_dup = flat_cache_manager.get_hashes([TEST_FILE_PATH], ['phash', 'xxh3'], search_type='duplicate')
+    assert result_dup[TEST_FILE_PATH]['xxh3'] == 'xxh3_hash_value'
+    assert result_dup[TEST_FILE_PATH]['phash'] is None
+    # Entry updated with only xxh3, image fields None
+    entry_dup = flat_cache_manager.get_entry(TEST_FILE_PATH)
+    assert entry_dup.xxh3 == 'xxh3_hash_value'
+    assert entry_dup.phash is None
+    assert entry_dup.width is None
+    
+    # For similarity: recompute all
+    mock_img = MagicMock()
+    mock_img.size = (100, 200)
+    with patch('PIL.Image.open', return_value=mock_img.__enter__()):
+        result_sim = flat_cache_manager.get_hashes([TEST_FILE_PATH], ['phash', 'xxh3'], search_type='similarity')
+    assert result_sim[TEST_FILE_PATH]['phash'] == 'abc123def456'
+    assert result_sim[TEST_FILE_PATH]['xxh3'] == 'xxh3_hash_value'
+    entry_sim = flat_cache_manager.get_entry(TEST_FILE_PATH)
+    assert entry_sim.phash == 'abc123def456'
+    assert entry_sim.width == 100
+    assert entry_sim.height == 200
 
 def test_compute_hash_perceptual_image(flat_cache_manager: FlatCacheManager, mock_image_open, mock_imagehash_phash):
     """Test perceptual hash computation for image file."""

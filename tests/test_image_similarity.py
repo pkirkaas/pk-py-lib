@@ -64,6 +64,126 @@ def sample_hashes() -> List[Dict[str, str]]:
 class TestSimilarityFunctions:
     """Unit tests for similarity computation and grouping."""
 
+    @pytest.fixture
+    def mock_flat_cache(self):
+        """Mock FlatCacheManager for similarity tests."""
+        cache = MagicMock(spec=FlatCacheManager)
+        cache.get_entry.return_value = None  # Default no cache
+        return cache
+
+    def test_find_exact_duplicates_no_quality(self, mock_flat_cache: FlatCacheManager, sample_hashes: List[Dict[str, str]]):
+        """Test find_exact_duplicates (duplicate mode): No quality scores, entries lack image fields."""
+        # Mock no evaluator for duplicate
+        with patch('src.pk_py_lib.core.image.similarity.get_active_image_quality_evaluator', return_value=None):
+            groups = find_exact_duplicates(sample_hashes, flat_cache_manager=mock_flat_cache, search_type='duplicate')
+        
+        # Assuming sample_hashes have identical hashes for grouping
+        sample_hashes[0]['hash'] = sample_hashes[1]['hash']  # Make two identical
+        groups = find_exact_duplicates(sample_hashes, flat_cache_manager=mock_flat_cache, search_type='duplicate')
+        
+        assert len(groups) == 1
+        group = groups[0]
+        for item in group.items:
+            assert item.quality_score is None
+            assert item.quality_algorithm is None
+            # No image fields beyond basic metadata
+            assert item.resolution == 'Unknown'  # Since no cache with width/height
+        # No evaluator calls
+        assert not mock_flat_cache.get_entry.called  # No brisque fetch
+
+    def test_find_similar_phash_with_brisque(self, mock_flat_cache: FlatCacheManager, sample_hashes: List[Dict[str, str]]):
+        """Test find_similar_phash (similarity mode): Entries have all fields, brisque from cache."""
+        # Mock cache with brisque
+        mock_entry1 = MagicMock(spec=FlatCacheEntry)
+        mock_entry1.brisque = 45.5
+        mock_entry1.width = 100
+        mock_entry1.height = 200
+        mock_flat_cache.get_entry.side_effect = [mock_entry1, None, None]  # For first two paths
+        
+        mock_evaluator = MagicMock()
+        mock_evaluator.evaluate.return_value = 30.2
+        with patch('src.pk_py_lib.core.image.similarity.get_active_image_quality_evaluator', return_value=mock_evaluator):
+            # Make similar hashes
+            sample_hashes[0]['hash'] = '0000000000000000'
+            sample_hashes[1]['hash'] = '0000000000000001'  # dist=1
+            groups = find_similar_phash(sample_hashes, threshold=1, flat_cache_manager=mock_flat_cache, search_type='similarity')
+        
+        assert len(groups) == 1
+        group = groups[0]
+        assert len(group.items) == 2
+        # First item from cache
+        assert group.items[0].quality_score == 45.5
+        assert group.items[0].quality_algorithm == 'brisque'
+        assert group.items[0].resolution == '100x200'
+        # Second item computed (no cache)
+        assert group.items[1].quality_score == 30.2
+        mock_evaluator.evaluate.assert_called_once()
+        # Cache called
+        assert mock_flat_cache.get_entry.call_count == 3  # For each path + metadata?
+
+    def test_find_similar_whash_conditional_calls(self, mock_flat_cache: FlatCacheManager, sample_hashes: List[Dict[str, str]], caplog):
+        """Test find_similar_whash: conditional brisque calls based on cache/search_type."""
+        # Mock cache hit for one, miss for another
+        mock_entry_hit = MagicMock(spec=FlatCacheEntry)
+        mock_entry_hit.brisque = 50.0
+        mock_entry_hit.width = 150
+        mock_entry_hit.height = 300
+        mock_flat_cache.get_entry.side_effect = [mock_entry_hit, None]
+        
+        mock_evaluator = MagicMock()
+        mock_evaluator.evaluate.return_value = 25.0
+        with patch('src.pk_py_lib.core.image.similarity.get_active_image_quality_evaluator', return_value=mock_evaluator), \
+             caplog.at_level(logging.DEBUG):
+            # Similar hashes
+            sample_hashes[0]['hash'] = '1111000000000000'
+            sample_hashes[1]['hash'] = '1111000000000001'
+            groups = find_similar_whash(sample_hashes, threshold=1, flat_cache_manager=mock_flat_cache, search_type='similarity')
+        
+        assert len(groups) == 1
+        # Cache hit: no evaluate call for first
+        # Miss: evaluate called for second
+        assert mock_evaluator.evaluate.call_count == 1  # Only for miss
+        assert mock_flat_cache.get_entry.call_count == 2
+        # Logs cache hit
+        assert "Cached brisque score found" in caplog.text
+
+    def test_get_image_quality_score_duplicate(self, mock_flat_cache: FlatCacheManager):
+        """Test get_image_quality_score in duplicate mode: returns None, no evaluator/cache calls."""
+        with patch('src.pk_py_lib.core.image.similarity.get_active_image_quality_evaluator', return_value=None):
+            score, alg = get_image_quality_score(TEST_FILE_PATH, evaluator=None, flat_cache_manager=mock_flat_cache)
+        
+        assert score is None
+        assert alg is None
+        mock_flat_cache.get_entry.assert_not_called()
+
+    def test_get_image_quality_score_similarity_cache_hit(self, mock_flat_cache: FlatCacheManager):
+        """Test get_image_quality_score in similarity: uses cache if available."""
+        mock_entry = MagicMock(spec=FlatCacheEntry)
+        mock_entry.brisque = 42.0
+        mock_flat_cache.get_entry.return_value = mock_entry
+        
+        mock_evaluator = MagicMock()
+        score, alg = get_image_quality_score(TEST_FILE_PATH, evaluator=mock_evaluator, flat_cache_manager=mock_flat_cache)
+        
+        assert score == 42.0
+        assert alg == 'brisque'  # Assuming
+        mock_evaluator.evaluate.assert_not_called()  # Cache hit
+        mock_flat_cache.get_entry.assert_called_once_with(TEST_FILE_PATH)
+
+    def test_get_image_quality_score_similarity_cache_miss(self, mock_flat_cache: FlatCacheManager, caplog):
+        """Test get_image_quality_score in similarity: computes and caches on miss."""
+        mock_flat_cache.get_entry.return_value = None  # Miss
+        
+        mock_evaluator = MagicMock()
+        mock_evaluator.evaluate.return_value = 35.5
+        with patch('src.pk_py_lib.core.image.similarity.get_active_image_quality_evaluator', return_value=mock_evaluator):
+            score, alg = get_image_quality_score(TEST_FILE_PATH, evaluator=mock_evaluator, flat_cache_manager=mock_flat_cache)
+        
+        assert score == 35.5
+        mock_evaluator.evaluate.assert_called_once_with(TEST_FILE_PATH)
+        # Cache updated
+        mock_flat_cache.set_entry.assert_called_once()
+
     def test_compute_phash_valid(self, sample_path: str, mock_cache: CacheManager, sample_hash: str):
         """Test pHash computation for valid image path with mock."""
         with patch("PIL.Image.open") as mock_open, patch("imagehash.phash") as mock_phash:

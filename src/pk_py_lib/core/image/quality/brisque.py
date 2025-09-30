@@ -347,7 +347,7 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
                 
                 # Ensure final score is a float
                 raw_score = float(raw_score)
-                normalized_score = max(0.0, min(100.0, 100.0 - raw_score))
+                normalized_score = max(0.0, min(1.0, 1.0 - (raw_score / 100.0)))
                 self.logger.debug(f"BRISQUE raw: {raw_score:.2f}, normalized: {normalized_score:.2f} for {path}")
             except Exception as e:
                 self.logger.warning(f"BRISQUE compute failed for {path}: {str(e)}. Falling back to Laplacian.")

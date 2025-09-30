@@ -485,29 +485,18 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             )
             return [], {}
         
-        # Get all entries with the specified algorithm hash
-        entries = self._flat_cache_manager.get_entries()
-        hashes = []
-        pool_map = {}
+        # For similarity, compute all perceptual hashes + xxh3
+        all_types = ['phash', 'whash', 'xxh3']
+        hashes_dict = self._flat_cache_manager.get_hashes(list(self._flat_cache_manager.get_entries().keys()), all_types, search_type='similarity')
         
-        for entry in entries:
-            # Get hash value directly from entry columns
-            if algorithm == 'phash':
-                hash_value = entry.get('phash')
-            elif algorithm == 'xxh3':
-                hash_value = entry.get('xxh3')
-            else:
-                hash_value = None
-                
+        for path, path_hashes in hashes_dict.items():
+            # Get the specific algorithm hash
+            hash_value = path_hashes.get(algorithm)
             if hash_value:
-                path = entry.get('path') or entry.get('file_path')
-                # Compute pool based on profile paths since 'pool' column removed from cache
+                # Compute pool based on profile paths
                 pool = self._get_pool_for_path(path, self._profile_payload)
                 hashes.append({"path": path, "hash": hash_value})
                 pool_map[path] = pool
-
-        # Remove erroneous loop referencing undefined 'rows' (legacy DB query remnant)
-        # All data now comes from flat_cache_manager.get_entries()
 
         if not hashes:
             return [], pool_map

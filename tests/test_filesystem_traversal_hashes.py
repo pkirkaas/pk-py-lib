@@ -58,6 +58,79 @@ def sample_root(tmp_path: Path) -> Path:
 class TestScanDirectoryHashes:
     """Tests for scan_directory with compute_hashes integration."""
 
+    @pytest.fixture
+    def mock_flat_cache(self):
+        """Mock FlatCacheManager for scan_directory tests."""
+        cache = MagicMock(spec=FlatCacheManager)
+        cache.get_hashes.return_value = {}  # Default empty
+        return cache
+
+    def test_scan_directory_duplicate(self, sample_root: Path, mock_flat_cache: FlatCacheManager, caplog):
+        """Test scan_directory for 'duplicate': all files, only xxh3, no perceptual/image ops."""
+        with patch("src.pk_py_lib.core.filesystem.traversal.DirectoryTraversal.walk_files") as mock_walk:
+            # Include all files for duplicate
+            mock_walk.return_value = [
+                sample_root / "img1.jpg",
+                sample_root / "non_image.txt"
+            ]
+            mock_flat_cache.get_hashes.return_value = {
+                str(sample_root / "img1.jpg"): {'xxh3': 'hash1'},
+                str(sample_root / "non_image.txt"): {'xxh3': 'hash2'}
+            }
+            
+            results = scan_directory(
+                sample_root,
+                patterns=None,  # All files
+                compute_hashes=True,
+                flat_cache_manager=mock_flat_cache,
+                search_type='duplicate'
+            )
+        
+        assert len(results['files']) == 2
+        for res in results['files']:
+            assert 'exact_hash' in res
+            assert res['hashes'] == {}  # No perceptual
+            assert res['path'].endswith(('.jpg', '.txt'))
+        mock_flat_cache.get_hashes.assert_called_once_with(
+            [ANY, ANY], ['xxh3'], search_type='duplicate'
+        )
+        # No brisque or image metadata calls
+
+    def test_scan_directory_similarity(self, sample_root: Path, mock_flat_cache: FlatCacheManager, mock_image_open, mock_imagehash_phash):
+        """Test scan_directory for 'similarity': images only, full computations incl. brisque."""
+        mock_img = MagicMock()
+        mock_img.size = (100, 200)
+        mock_image_open.return_value.__enter__.return_value = mock_img
+        
+        mock_evaluator = MagicMock()
+        mock_evaluator.evaluate.return_value = 45.5
+        with patch("src.pk_py_lib.core.image.quality.registry.get_active_image_quality_evaluator", return_value=mock_evaluator):
+            with patch("src.pk_py_lib.core.filesystem.traversal.DirectoryTraversal.walk_files") as mock_walk:
+                # Only images
+                mock_walk.return_value = [sample_root / "img1.jpg"]
+                mock_flat_cache.get_hashes.return_value = {
+                    str(sample_root / "img1.jpg"): {
+                        'phash': 'abc123', 'xxh3': 'hash1', 'whash': 'def456'
+                    }
+                }
+                
+                results = scan_directory(
+                    sample_root,
+                    compute_hashes=True,
+                    flat_cache_manager=mock_flat_cache,
+                    search_type='similarity'
+                )
+            
+            assert len(results['files']) == 1
+            res = results['files'][0]
+            assert res['path'].endswith('.jpg')
+            assert 'exact_hash' in res
+            assert 'hashes' in res and len(res['hashes']) > 0
+            mock_flat_cache.get_hashes.assert_called_once_with(
+                [ANY], ['phash', 'whash', 'xxh3'], search_type='similarity'
+            )
+            mock_evaluator.evaluate.assert_called_once()
+
     def test_scan_directory_no_hashes(self, sample_root: Path, mock_db: DatabaseManager):
         """Test compute_hashes=False: no hashes, basic file info only."""
         with patch("src.pk_py_lib.core.filesystem.traversal.DirectoryTraversal.walk_files") as mock_walk:
