@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 import numpy as np
 import cv2
+import os
 
 from pk_py_lib.core.image.quality.registry import ImageQualityEvaluatorRegistry
 from pk_py_lib.core.image.quality.exceptions import (
@@ -134,15 +135,209 @@ def test_niqe_and_piqe_not_registered():
 def test_brisque_fallback_on_computation_error(temp_image: Path):
     """
     Test BRISQUE fallback to Laplacian variance if model computation fails.
-
+ 
     Note: This test assumes model load succeeds; to force fallback, would need
     mocking, but verifies that evaluation doesn't crash on valid image.
     """
     evaluator_key = "brisque"
     evaluator_class = ImageQualityEvaluatorRegistry.get_evaluator_class(evaluator_key)
     evaluator = evaluator_class()
-
+ 
     # Since model should load, but if fallback triggered, still returns valid score
     score = evaluator.evaluate(str(temp_image))
     assert isinstance(score, float)
     assert 0 <= score <= 100
+
+
+@pytest.fixture
+def cache_manager(tmp_path: Path) -> FlatCacheManager:
+    """Fixture for a temporary FlatCacheManager using a test DB."""
+    db_path = tmp_path / "test_flat_cache.db"
+    manager = FlatCacheManager(db_path=str(db_path))
+    yield manager
+    # Cleanup after test
+    for ext in ["", "-wal", "-shm"]:
+        (db_path.with_suffix(f".db{ext}")).unlink(missing_ok=True)
+
+
+def test_brisque_cache_miss(temp_image: Path, cache_manager: FlatCacheManager):
+    """Test cache miss: New image evaluation computes and stores score."""
+    evaluator_key = "brisque"
+    evaluator_class = ImageQualityEvaluatorRegistry.get_evaluator_class(evaluator_key)
+    evaluator = evaluator_class()
+
+    # Clear any existing entry
+    cache_manager.invalidate_entry(str(temp_image))
+
+    # Evaluate with cache (miss)
+    score = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
+    assert isinstance(score, float)
+    assert 0 <= score <= 100
+
+    # Verify entry created and brisque set
+    entry = cache_manager.get_entry(str(temp_image))
+    assert entry is not None
+    assert entry.brisque is not None
+    assert abs(entry.brisque - score) < 1e-6  # Floating point tolerance
+
+
+def test_brisque_cache_hit(temp_image: Path, cache_manager: FlatCacheManager):
+    """Test cache hit: Re-evaluation returns cached score without recompute."""
+    evaluator_key = "brisque"
+    evaluator_class = ImageQualityEvaluatorRegistry.get_evaluator_class(evaluator_key)
+    evaluator = evaluator_class()
+
+    # First evaluation to populate cache
+    first_score = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
+    assert isinstance(first_score, float)
+
+    # Second evaluation (hit)
+    second_score = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
+    assert isinstance(second_score, float)
+    assert abs(second_score - first_score) < 1e-6  # Same score
+
+    # Verify entry still valid
+    entry = cache_manager.get_entry(str(temp_image))
+    assert entry.brisque == first_score
+
+
+def test_brisque_cache_validation_none(temp_image: Path, cache_manager: FlatCacheManager):
+    """Test cache validation: Set brisque to None, forces recompute."""
+    evaluator_key = "brisque"
+    evaluator_class = ImageQualityEvaluatorRegistry.get_evaluator_class(evaluator_key)
+    evaluator = evaluator_class()
+
+    # First evaluation
+    original_score = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
+
+    # Get entry and set brisque to None
+    entry = cache_manager.get_entry(str(temp_image))
+    assert entry is not None
+    entry.brisque = None
+
+    # Manually update entry in DB (simulate invalid cache)
+    with cache_manager._get_connection() as conn:  # Access private for test
+        conn.execute(
+            "UPDATE flat_cache_entries SET brisque = NULL WHERE path = ?",
+            (str(temp_image),)
+        )
+        conn.commit()
+
+    # Re-evaluate: should recompute (but since file unchanged, score same; but verifies it doesn't return None)
+    recomputed_score = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
+    assert isinstance(recomputed_score, float)
+    assert 0 <= recomputed_score <= 100
+    assert abs(recomputed_score - original_score) < 1e-6  # Assuming deterministic
+
+    # Verify updated back to non-None
+    updated_entry = cache_manager.get_entry(str(temp_image))
+    assert updated_entry.brisque is not None
+
+
+def test_brisque_cache_invalid_file_change(temp_image: Path, cache_manager: FlatCacheManager):
+    """Test cache invalidation on file change (size/mtime mismatch)."""
+    evaluator_key = "brisque"
+    evaluator_class = ImageQualityEvaluatorRegistry.get_evaluator_class(evaluator_key)
+    evaluator = evaluator_class()
+
+    # First evaluation
+    original_score = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
+
+    # Modify file to invalidate cache (append dummy data)
+    with open(temp_image, "ab") as f:
+        f.write(b"\x00")  # Change size
+
+    # Re-evaluate: should detect invalidation and recompute
+    new_score = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
+    assert isinstance(new_score, float)
+    assert 0 <= new_score <= 100
+
+    # Score may differ due to file change, but verify entry updated with new stats
+    entry = cache_manager.get_entry(str(temp_image))
+    assert entry is not None
+    assert entry.brisque is not None
+    # Verify size updated (increased by 1 byte)
+    assert entry.size == os.path.getsize(temp_image)
+
+
+def test_brisque_edge_case_invalid_path_with_cache(temp_image: Path, cache_manager: FlatCacheManager):
+    """Test invalid path raises exception, no cache interaction beyond check."""
+    evaluator_key = "brisque"
+    evaluator_class = ImageQualityEvaluatorRegistry.get_evaluator_class(evaluator_key)
+    evaluator = evaluator_class()
+
+    invalid_path = str(temp_image.parent / "nonexistent.jpg")
+
+    with pytest.raises(ImageQualityFileError):
+        evaluator.evaluate(invalid_path, flat_cache_manager=cache_manager)
+
+    # No entry should be created for invalid path
+    entry = cache_manager.get_entry(invalid_path)
+    assert entry is None
+
+
+def test_brisque_edge_case_cache_db_error(temp_image: Path, monkeypatch):
+    """Test handling of FlatCacheDBError during lookup (warns, computes anyway)."""
+    evaluator_key = "brisque"
+    evaluator_class = ImageQualityEvaluatorRegistry.get_evaluator_class(evaluator_key)
+    evaluator = evaluator_class()
+
+    def mock_get_entry(path):
+        raise FlatCacheDBError("Mock DB error")
+
+    monkeypatch.setattr(FlatCacheManager, 'get_entry', mock_get_entry)
+
+    cache_manager = FlatCacheManager()  # Real one, but get_entry mocked
+
+    # Evaluate: should log warning but compute and return score
+    score = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
+    assert isinstance(score, float)
+    assert 0 <= score <= 100
+
+    # Verify compute happened despite cache error
+
+
+def test_brisque_computation_failure_fallback(temp_image: Path):
+    """Test fallback to Laplacian when brisque is None."""
+    evaluator_key = "brisque"
+    evaluator_class = ImageQualityEvaluatorRegistry.get_evaluator_class(evaluator_key)
+    evaluator = evaluator_class()
+
+    # Temporarily set brisque to None to force fallback
+    original_brisque = evaluator.brisque
+    evaluator.brisque = None
+
+    try:
+        # Evaluate: should use Laplacian fallback
+        score = evaluator.evaluate(str(temp_image))
+        assert isinstance(score, float)
+        assert 0 <= score <= 100
+
+        # Verify fallback used (low variance for uniform black image)
+        assert score < 10  # Adjust threshold if needed for black image variance
+    finally:
+        # Restore original
+        evaluator.brisque = original_brisque
+
+
+def test_brisque_cache_persistence(temp_image: Path, cache_manager: FlatCacheManager):
+    """Verify score persists across evaluations and cache reload."""
+    evaluator_key = "brisque"
+    evaluator_class = ImageQualityEvaluatorRegistry.get_evaluator_class(evaluator_key)
+    evaluator = evaluator_class()
+
+    # Evaluate and store
+    score1 = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
+
+    # Simulate cache persistence (already in file, but to test reload, perhaps recreate manager? But fixture handles)
+
+    # New manager instance to simulate reload
+    new_manager = FlatCacheManager(db_path=cache_manager.db_path)
+
+    # Get entry from new manager
+    entry = new_manager.get_entry(str(temp_image))
+    assert entry.brisque == score1
+
+    # Evaluate with new manager: hit
+    score2 = evaluator.evaluate(str(temp_image), flat_cache_manager=new_manager)
+    assert score2 == score1

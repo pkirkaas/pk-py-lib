@@ -125,6 +125,44 @@ sequenceDiagram
     Registry-->>Evaluator: instantiate if needed
     Evaluator-->>Provider: instance reference
     Provider-->>Caller: evaluator
+
+### Sequence: BRISQUE Evaluation with Caching
+
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Evaluator as BRISQUEImageQualityEvaluator
+    participant Cache as FlatCacheManager
+    participant OpenCV
+
+    Caller->>Evaluator: evaluate(path, flat_cache_manager)
+    alt Cache provided and enabled
+        Evaluator->>Cache: get_entry(path, validate_stats=true)
+        alt Valid non-None 'brisque' score
+            Cache-->>Evaluator: cached_score, algorithm, stats
+            Evaluator-->>Caller: normalized_score (from cache)
+        else Miss, stale, or invalid
+            Evaluator->>Evaluator: validate_input(path)
+            alt BRISQUE engine active
+                Evaluator->>OpenCV: imread(path); QualityBRISQUE_compute(image)
+                OpenCV-->>Evaluator: raw_score
+                Evaluator->>Evaluator: normalize(100.0 - raw_score, clamp=[0,100])
+            else Fallback
+                Evaluator->>Evaluator: laplacian_variance(grayscale_image)
+                Evaluator->>Evaluator: empirical_normalize_to_0_100()
+            end
+            alt Computation success
+                Evaluator->>Cache: update('brisque', score, algorithm, current_stats)
+                Cache-->>Evaluator: success
+            end
+            Evaluator-->>Caller: normalized_score
+        end
+    else No cache: compute only
+        Note over Evaluator,OpenCV: Full computation path (no store)
+        Evaluator-->>Caller: normalized_score
+    end
+    Note over Caller: Higher score = better quality; errors raise ImageQualityError
+```
 ```
 
 ## Settings Integration
@@ -202,15 +240,32 @@ This integration shifts the quality computation from the GUI thread to the backg
    - The `[class BRISQUEImageQualityEvaluator](src/pk_py_lib/core/image/quality/brisque.py:1)` constructor attempts to initialize `cv2.quality.QualityBRISQUE_create` using the validated local model paths.
    - If initialization fails (e.g., due to an OpenCV error like "Input file is invalid" even after repair), a detailed `ERROR` is logged with traceback, and the evaluator instance falls back to `None`, triggering Laplacian variance fallback during evaluation.
 
-3. **Evaluation Steps**
-   - Validate input path; raise `ImageQualityFileError` on failure.
-   - Load image via `cv2.imread(path, cv2.IMREAD_COLOR)`.
-   - If BRISQUE engine is active:
-     - Compute score `score, *args = self.brisque.compute(image)`. The score is extracted as a float, handling potential tuple wrapping inconsistencies in OpenCV bindings.
-     - Normalize score: `100.0 - raw_score`, clamped to [0.0, 100.0].
-   - If BRISQUE engine is inactive (fallback):
-     - Compute Laplacian variance on grayscale image.
-     - Normalize variance empirically to a 0-100 scale.
+3. **Evaluation Steps with Caching**
+   - If `flat_cache_manager` is provided:
+     - Retrieve existing entry from FlatCache using the image path.
+     - Validate the entry: check if 'brisque' score is non-None and file stats (size, mtime, inode, device) match the current file.
+     - If valid, log a DEBUG message and return the cached normalized score (0-100, higher better).
+   - If no valid cache entry or `flat_cache_manager` not provided:
+     - Validate input path; raise `ImageQualityInputError` if the file does not exist or is unreadable.
+     - Load image via `cv2.imread(path, cv2.IMREAD_COLOR)`.
+     - If BRISQUE engine is active:
+       - Compute raw score using `cv2.quality.QualityBRISQUE_compute(image, model_path, range_path)`.
+       - Normalize score: `100.0 - raw_score`, clamped to [0.0, 100.0].
+       - Set algorithm to 'brisque'.
+     - If BRISQUE engine is inactive (fallback due to model failure):
+       - Convert to grayscale if needed.
+       - Compute Laplacian variance as a sharpness proxy.
+       - Normalize variance empirically to 0-100 scale (higher better).
+       - Set algorithm to 'laplacian'.
+     - If computation succeeds and `flat_cache_manager` is provided:
+       - Update the cache entry with the normalized score in the 'brisque' column, algorithm name, and current file stats.
+       - Log INFO for successful cache update.
+   - Edge cases handled:
+     - Cache miss (no entry): Compute fresh and store.
+     - Stale/invalid cache (mismatched stats): Invalidate, compute fresh, store.
+     - Computation failure: Log WARNING with details, fallback to Laplacian if BRISQUE fails, do not update cache with failed results; return fallback score or raise if no fallback.
+     - Non-image files: Raise `ImageQualityInputError` early.
+   - Benefits: Prevents redundant BRISQUE computations for the same image across library usages (e.g., multiple similarity scans), improving efficiency in large collections. Caching is transparent and respects the `use_flat_cache` setting.
    - Return normalized score (higher = better quality).
 
 4. **Error Handling**
@@ -441,7 +496,7 @@ from pk_py_lib.core.image.quality import get_active_image_quality_evaluator
 from pk_py_lib.core.flat_cache import FlatCacheManager
 from pathlib import Path
 
-# Initialize cache manager (assuming path resolution is handled elsewhere)
+# Initialize FlatCacheManager for persistent BRISQUE score caching (path resolved via settings or default ~/.pk_py_lib/flat_cache.db)
 flat_cache = FlatCacheManager(Path.home() / ".pk_py_lib" / "flat_cache.db")
 
 evaluator = get_active_image_quality_evaluator()
@@ -514,12 +569,53 @@ print(f"Normalized quality score: {score:.2f}")  # e.g., 74.7 (higher is better)
 
 ## Caching Integration
 
-The quality evaluation system integrates directly with the unified [`FlatCacheManager`](docs/roo/flat-cache-implementation.md:1) to ensure persistence and avoid redundant computation.
+The quality evaluation system, particularly the BRISQUE evaluator, integrates with the [`FlatCacheManager`](docs/roo/flat-cache-implementation.md:1) to cache computed scores, avoiding redundant computations for image quality assessments in the library. BRISQUE serves as a primary example of metric caching, storing results in the 'brisque' column for quick retrieval during repeated evaluations.
 
-1.  **Cache Dependency**: The `[def evaluate](src/pk_py_lib/core/image/quality/base.py:75)` method accepts an optional `flat_cache_manager` instance.
-2.  **Lookup**: If the manager is provided, the evaluator first attempts to retrieve a valid `brisque_score` (or equivalent metric score) from the cache, validating the entry against the current file stats (size, mtime, inode, device).
-3.  **Update**: If a cache miss occurs (not found or stale), the evaluator computes the score and updates the cache entry with the new score, the algorithm name, and the current file stats.
-4.  **Settings Control**: This caching behavior is globally enabled or disabled via the `use_flat_cache` setting in the active profile.
+### Key Features
+- **Column Usage**: Normalized scores (0-100, higher better) are stored in the 'brisque' column, alongside metadata such as the algorithm ('brisque' or 'laplacian' fallback) and file validation stats (size, mtime, inode, device).
+- **Integration Point**: The `evaluate` method in `[class ImageQualityEvaluator](src/pk_py_lib/core/image/quality/base.py:1)` accepts an optional `flat_cache_manager: Optional[FlatCacheManager]` parameter, enabling seamless cache interaction.
+
+### Workflow
+1. **Pre-Computation Check**:
+   - If `flat_cache_manager` is provided and caching is enabled (`use_flat_cache: true` in the active profile):
+     - Query the cache entry for the image path.
+     - Validate: Ensure the 'brisque' score is non-None and file stats match the current file attributes.
+   - If a valid cached score is found: Return it immediately, logging a DEBUG message (e.g., "Retrieved cached BRISQUE score for {path}: {score}").
+
+2. **Computation and Storage**:
+   - On cache miss, invalid entry, or caching disabled:
+     - Execute the full evaluation workflow (BRISQUE computation or Laplacian fallback).
+     - If successful and `flat_cache_manager` is provided: Store the normalized score, algorithm, and current file stats in the cache. Log an INFO message (e.g., "Stored new BRISQUE score for {path}: {score}").
+   - Failed computations (e.g., OpenCV errors) do not update the cache to prevent storing invalid data; fallback scores may be returned but not cached if the primary method fails.
+
+3. **Validation and Edge Cases**:
+   - **Missing Entry**: Treated as a miss; compute fresh and store if successful.
+   - **Stale/Invalid Entry**: If file stats mismatch (e.g., image resized or modified), invalidate the entry, recompute, and overwrite.
+   - **Cache Retrieval Failure**: Log a WARNING, proceed to computation without caching for that call.
+   - **None or Invalid Score**: Skip the cached value and recompute.
+   - **Caching Disabled**: Bypass cache operations entirely, always compute fresh.
+   - **Fallback Scenarios**: If BRISQUE fails but Laplacian succeeds, store the fallback score with algorithm='laplacian' for consistency.
+
+4. **Settings Control**: Caching is toggled via the `use_flat_cache` boolean in settings profiles, allowing users to disable persistence for testing or privacy reasons.
+
+### Benefits
+- **Efficiency**: BRISQUE is computationally expensive; caching eliminates redundant runs for unchanged images, crucial for library functions like batch similarity detection or duplicate scanning.
+- **Persistence**: Scores are retained across sessions, supporting incremental analysis of large image libraries.
+- **Transparency**: The interface remains unchanged—consumers pass the cache manager optionally, and the method always returns a float (or raises an exception on irrecoverable errors).
+- **Extensibility**: Other evaluators (e.g., future NIQE) can adopt similar caching by extending the base class logic.
+
+### Example in Library Context
+During image similarity workflows in `src/pk_py_lib/core/image/similarity.py`, the evaluator is called with the cache:
+
+```python
+from pk_py_lib.core.image.quality import get_active_image_quality_evaluator
+from pk_py_lib.core.flat_cache import FlatCacheManager
+
+flat_cache_manager = FlatCacheManager(...)  # Resolved via settings
+evaluator = get_active_image_quality_evaluator()
+score = evaluator.evaluate(image_path, flat_cache_manager=flat_cache_manager)
+# Cache checked/stored automatically; score is normalized 0-100
+```
 
 ## Open Questions
 
