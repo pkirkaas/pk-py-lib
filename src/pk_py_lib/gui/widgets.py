@@ -90,10 +90,7 @@ class FileGroupView(QWidget):
     rely solely on Qt's default styling to avoid the maintenance burden of custom
     delegates.
 
-    In similarity mode, includes a "Quality" column displaying computed image quality
-    scores (float, higher better) using the active evaluator; shows "-" if none selected
-    or on error. Scores are computed on-the-fly during population and refreshed on
-    evaluator changes.
+    In similarity mode, includes a "Quality" column displaying normalized image quality scores (0-1 range, higher better) using the active evaluator; shows "-" if none selected or on error. Scores are computed on-the-fly during population and refreshed on evaluator changes.
 
     Args:
         selection_store: Shared selection store used across dialogs.
@@ -273,7 +270,6 @@ class FileGroupView(QWidget):
                 "Modified",
                 "Score",
                 "Quality",
-                "Algorithm",
             ]
             hidden_columns = set()
 
@@ -336,8 +332,7 @@ class FileGroupView(QWidget):
                 group_item.setText(6, f"{group.stats.avg_score * 100:.1f}%")
             else:
                 group_item.setText(6, "—")
-            group_item.setText(7, "—")
-            group_item.setText(8, "—") # New: Algorithm column placeholder
+            group_item.setText(7, "—")  # Quality placeholder for group
 
         group_item.setData(0, Qt.UserRole, group.ref_path)
         group_item.setFlags(Qt.ItemIsEnabled)
@@ -353,9 +348,7 @@ class FileGroupView(QWidget):
         """
         Create a child row for the provided file.
 
-        In similarity mode, computes and sets the quality score in the last column
-        using the active image quality evaluator. Displays formatted score (e.g., "74.50")
-        or "-" on error or no evaluator. Aligns quality right for numeric display.
+        In similarity mode, displays the normalized quality score (0-1 range, e.g., "0.745") from the FileItem in column 7, or "-" if unavailable. Aligns quality right for numeric display.
 
         Args:
             file_item: Immutable file metadata used to populate the row.
@@ -385,15 +378,12 @@ class FileGroupView(QWidget):
             else:
                 tree_item.setText(6, "—")
 
-            # Display quality score and algorithm name from FileItem (populated by dialog)
+            # Display normalized quality score (0-1) from FileItem (populated by dialog); Algorithm column removed
             quality_text = "—"
             if file_item.quality_score is not None:
-                quality_text = f"{file_item.quality_score:.2f}"
-            
-            algorithm_text = file_item.quality_algorithm.upper() if file_item.quality_algorithm else "—"
+                quality_text = f"{file_item.quality_score:.3f}"
             
             tree_item.setText(7, quality_text)
-            tree_item.setText(8, algorithm_text)
 
         tooltip = f"{file_item.path}\nSize: {_format_bytes(file_item.size)}"
         for column in range(self.tree_widget.columnCount()):

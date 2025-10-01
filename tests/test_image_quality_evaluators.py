@@ -69,14 +69,14 @@ def test_brisque_initialization_and_evaluation(evaluator_key: str, temp_image: P
     # 3. Successful evaluation on valid image
     score = evaluator.evaluate(str(temp_image))
     assert isinstance(score, float)
-    assert 0 <= score <= 100, f"Score {score} out of expected range 0-100"
+    assert 0 <= score <= 1, f"Score {score} out of expected range 0-1"
 
     # 4. Test with flat_cache_manager (should work, no change in behavior for single eval)
     try:
         cache_manager = FlatCacheManager()  # Temp in-memory? But uses file, fine for test
         cached_score = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
         assert isinstance(cached_score, float)
-        assert 0 <= cached_score <= 100
+        assert 0 <= cached_score <= 1
     except Exception as cache_exc:
         pytest.fail(f"Evaluation with cache failed: {cache_exc}")
 
@@ -146,7 +146,7 @@ def test_brisque_fallback_on_computation_error(temp_image: Path):
     # Since model should load, but if fallback triggered, still returns valid score
     score = evaluator.evaluate(str(temp_image))
     assert isinstance(score, float)
-    assert 0 <= score <= 100
+    assert 0 <= score <= 1
 
 
 @pytest.fixture
@@ -172,7 +172,7 @@ def test_brisque_cache_miss(temp_image: Path, cache_manager: FlatCacheManager):
     # Evaluate with cache (miss)
     score = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
     assert isinstance(score, float)
-    assert 0 <= score <= 100
+    assert 0 <= score <= 1
 
     # Verify entry created and brisque set
     entry = cache_manager.get_entry(str(temp_image))
@@ -226,7 +226,7 @@ def test_brisque_cache_validation_none(temp_image: Path, cache_manager: FlatCach
     # Re-evaluate: should recompute (but since file unchanged, score same; but verifies it doesn't return None)
     recomputed_score = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
     assert isinstance(recomputed_score, float)
-    assert 0 <= recomputed_score <= 100
+    assert 0 <= recomputed_score <= 1
     assert abs(recomputed_score - original_score) < 1e-6  # Assuming deterministic
 
     # Verify updated back to non-None
@@ -250,7 +250,7 @@ def test_brisque_cache_invalid_file_change(temp_image: Path, cache_manager: Flat
     # Re-evaluate: should detect invalidation and recompute
     new_score = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
     assert isinstance(new_score, float)
-    assert 0 <= new_score <= 100
+    assert 0 <= new_score <= 1
 
     # Score may differ due to file change, but verify entry updated with new stats
     entry = cache_manager.get_entry(str(temp_image))
@@ -292,7 +292,7 @@ def test_brisque_edge_case_cache_db_error(temp_image: Path, monkeypatch):
     # Evaluate: should log warning but compute and return score
     score = evaluator.evaluate(str(temp_image), flat_cache_manager=cache_manager)
     assert isinstance(score, float)
-    assert 0 <= score <= 100
+    assert 0 <= score <= 1
 
     # Verify compute happened despite cache error
 
@@ -311,10 +311,10 @@ def test_brisque_computation_failure_fallback(temp_image: Path):
         # Evaluate: should use Laplacian fallback
         score = evaluator.evaluate(str(temp_image))
         assert isinstance(score, float)
-        assert 0 <= score <= 100
+        assert 0 <= score <= 1
 
         # Verify fallback used (low variance for uniform black image)
-        assert score < 10  # Adjust threshold if needed for black image variance
+        assert score < 0.1  # Adjust threshold if needed for black image variance
     finally:
         # Restore original
         evaluator.brisque = original_brisque

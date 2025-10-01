@@ -1170,14 +1170,19 @@ def find_similar_whash(
             try:
                 dist = hamming_distance(ref_hash, h_dict['hash'])
                 score = 1.0 - (dist / 64.0)
-                meta = get_image_metadata(h_dict['path'])
+                # For exact duplicates, fetch only file stats without image loading
+                stat = os.stat(h_dict['path'])
+                size = stat.st_size
+                mod_ts = stat.st_mtime
+                mod_date = format_timestamp(mod_ts)
+                resolution = "Unknown"  # No image loading for duplicates
                 quality_score, quality_algorithm = get_image_quality_score(h_dict['path'], quality_evaluator, flat_cache_manager)
                 
                 file_item = FileItem(
                     path=h_dict['path'],
-                    size=meta['size'],
-                    resolution=meta['resolution'],
-                    mod_date=meta['mod_date'],
+                    size=size,
+                    resolution=resolution,
+                    mod_date=mod_date,
                     score=score,
                     file_type="",
                     savings=0,

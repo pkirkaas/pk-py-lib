@@ -97,7 +97,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
     * When a database manager is provided the **Compute Groups** button will query the
       cache database for perceptual hashes and recompute clusters with the selected
       algorithm and threshold.
-    * The Quality column shows normalized score (e.g., 74.5) if BRISQUE selected; '-' otherwise.
+    * The Quality column shows normalized score (0-1 range, e.g., 0.745) if BRISQUE selected; '-' otherwise.
       Scores are computed on-the-fly using the active evaluator from settings profiles.
     """
 
@@ -517,7 +517,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         """Convert core similarity groups into dialog-friendly immutable groups."""
         converted: List[Group] = []
         
-        # Determine the active quality evaluator algorithm name for FileItem creation
+        # Determine the active quality evaluator for FileItem creation (Algorithm column removed, but keep for potential future use)
         evaluator = get_active_image_quality_evaluator()
         quality_algorithm = evaluator.name if evaluator else None
         
@@ -527,7 +527,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 metadata = self._safe_image_metadata(image.path, image.size, image.resolution, image.mod_date)
                 file_type = Path(image.path).suffix.lstrip(".").upper() or ""
                 
-                # Note: quality_score is computed later in _refresh_quality_scores
+                # Note: quality_score is computed later in _refresh_quality_scores with normalized 0-1 values
                 file_items.append(
                     FileItem(
                         path=image.path,
@@ -537,7 +537,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                         score=image.score,
                         file_type=file_type,
                         savings=0,
-                        quality_algorithm=quality_algorithm,
+                        quality_algorithm=quality_algorithm,  # Retained for potential future use, though not displayed
                     )
                 )
 
@@ -656,69 +656,63 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
 
     def _refresh_quality_scores(self) -> None:
         """
-        Refresh the quality scores and algorithm names in the table based on the current evaluator.
-
+        Refresh the normalized quality scores (0-1 range) in the table based on the current evaluator.
+ 
         Iterates over all visible tree items, recomputes quality scores using the active
         evaluator, updates the underlying FileItem data, and refreshes the table display
-        for columns 7 (Score) and 8 (Algorithm).
-
+        for column 7 (Quality). The Algorithm column has been removed; quality scores are
+        now displayed with 3 decimal places (e.g., 0.745) for the normalized 0-1 range.
+ 
         Raises:
             No explicit raises; errors are logged and cells set to "-".
-
+ 
         Notes:
             This method updates both the visual representation (QTreeWidgetItem) and the
             underlying data (FileItem stored in UserRole + 1) to ensure consistency
-            for components like the preview pane.
+            for components like the preview pane. BRISQUE scores are assumed to be pre-normalized
+            to 0-1 by the evaluator.
         """
         if not self._model.groups:
             return
-
+ 
         tree = self._group_view.tree_widget
         evaluator = get_active_image_quality_evaluator()
-        algorithm_name = evaluator.name if evaluator else None
-        algorithm_display = algorithm_name.upper() if algorithm_name else "—"
-
+ 
         for i in range(tree.topLevelItemCount()):
             group_item = tree.topLevelItem(i)
-            # Set group quality/algorithm placeholders
+            # Set group quality placeholder (Algorithm column removed)
             group_item.setText(7, "—")
-            group_item.setText(8, "—")
-
+ 
             for j in range(group_item.childCount()):
                 child = group_item.child(j)
                 path = child.data(0, Qt.UserRole)
                 file_item: Optional[FileItem] = child.data(0, Qt.UserRole + 1)
-
+ 
                 if not isinstance(path, str) or file_item is None:
                     continue
-
+ 
                 score = None
                 score_display = "—"
                 
                 if evaluator is None:
-                    # If no evaluator, set algorithm name from FileItem (which was set during model creation)
-                    # and keep score as None.
-                    new_file_item = replace(file_item, quality_score=None, quality_algorithm=algorithm_name)
-                    algorithm_display_for_item = "—"
+                    # If no evaluator, keep score as None (no algorithm display needed)
+                    new_file_item = replace(file_item, quality_score=None)
                 else:
                     try:
                         score = evaluator.evaluate(path)
-                        score_display = f"{score:.2f}"
-                        LOGGER.info(f"Quality score {score} for {path} using {evaluator.name}")
-                        new_file_item = replace(file_item, quality_score=score, quality_algorithm=algorithm_name)
-                        algorithm_display_for_item = algorithm_display
+                        score_display = f"{score:.3f}"  # 0-1 normalized with 3 decimal places
+                        LOGGER.info(f"Normalized quality score {score} for {path} using {evaluator.name}")
+                        new_file_item = replace(file_item, quality_score=score)
                     except Exception as e:
                         LOGGER.warning(f"Failed to compute quality for {path} using {evaluator.name}: {e}")
-                        # If computation fails, keep algorithm name but set score to None
-                        new_file_item = replace(file_item, quality_score=None, quality_algorithm=algorithm_name)
-                        algorithm_display_for_item = algorithm_display
+                        # If computation fails, set score to None
+                        new_file_item = replace(file_item, quality_score=None)
                 
                 # Update the underlying data model item stored in the tree widget
                 child.setData(0, Qt.UserRole + 1, new_file_item)
                 
-                # Update the visual representation
+                # Update the visual representation (only Quality column)
                 child.setText(7, score_display)
-                child.setText(8, algorithm_display_for_item)
 
 
 # Mapping used for direction combo labels (shared between duplicates/similarity)

@@ -11,7 +11,7 @@ This document defines the architecture for a pluggable image quality evaluation 
 - Expose a registry/factory (`[class ImageQualityEvaluatorRegistry](src/pk_py_lib/core/image/quality/registry.py:1)`) and provider utilities that resolve the active evaluator using settings profiles.
 - Extend `[SETTINGS_PROFILE_SCHEMA](src/pk_py_lib/core/settings_schema.py:28)` to support the key `image_quality_evaluator` with default `'brisque'`, including normalization and validation.
 - Surface errors via a clear taxonomy rooted in `[class ImageQualityError](src/pk_py_lib/core/image/quality/exceptions.py:1)` while also logging diagnostic detail through `[get_logger](src/pk_py_lib/core/logging/logger.py:388)`.
-- Maintain extensibility for future evaluators (e.g., Laplacian variance, SSIM, ML models) without breaking the base contract. All evaluators normalize scores to a higher-better convention (e.g., 0-100 where 100 is perfect quality).
+- Maintain extensibility for future evaluators (e.g., Laplacian variance, SSIM, ML models) without breaking the base contract. All evaluators normalize scores to a higher-better convention (e.g., 0-1 where 1 is perfect quality).
 
 ## Non-Goals
 
@@ -506,19 +506,19 @@ print(f"BRISQUE score: {score:.2f}")
 
 ## Normalization Convention
 
-To ensure consistency across the pluggable system, all evaluators normalize their scores such that higher float values indicate higher image quality, typically on a 0-100 scale where 100 represents perfect quality. This addresses variations in native scales (e.g., BRISQUE's lower-better 0-100).
+To ensure consistency across the pluggable system, all evaluators normalize their scores such that higher float values indicate higher image quality, typically on a 0-1 scale where 1 represents perfect quality. This addresses variations in native scales (e.g., BRISQUE's lower-better 0-100).
 
 ### Implementation in Subclasses
 
 - **Base Interface**: The `[class ImageQualityEvaluator](src/pk_py_lib/core/image/quality/base.py:1)` docstring mandates normalization in the `evaluate` method. Subclasses must transform native scores accordingly.
 
-- **BRISQUE Example**: Native BRISQUE scores are lower-better (0: pristine, 100: distorted). The `[class BRISQUEImageQualityEvaluator](src/pk_py_lib/core/image/quality/brisque.py:1)` inverts this via `normalized_score = 100.0 - raw_score`, clamping to [0.0, 100.0] for edge cases (e.g., raw >100 or <0). Both raw and normalized values are logged for debugging.
+- **BRISQUE Example**: Native BRISQUE scores are lower-better (0: pristine, 100: distorted). The `[class BRISQUEImageQualityEvaluator](src/pk_py_lib/core/image/quality/brisque.py:1)` inverts this via `normalized_score = (100.0 - raw_score) / 100.0`, clamping to [0.0, 1.0] for edge cases (e.g., raw >100 or <0). Both raw and normalized values are logged for debugging.
 
 - **Other Evaluators**: Future lower-better metrics will be normalized identically to BRISQUE: `normalized_score = 100.0 - raw_score`, clamped to [0.0, 100.0].
 
 - **Future Evaluators**:
   - For higher-better natives (e.g., some sharpness metrics), pass through or scale to 0-100.
-  - For lower-better (e.g., NIQE), invert similarly.
+  - For lower-better (e.g., NIQE), invert similarly: `normalized_score = (100.0 - raw_score) / 100.0`, clamped to [0.0, 1.0].
   - Document the transformation in the subclass docstring and log intermediate values.
 
 This convention simplifies downstream usage (e.g., sorting images by quality) and supports extensibility without changing consumer code.
@@ -530,7 +530,7 @@ from pk_py_lib.core.image.quality import get_active_image_quality_evaluator
 
 evaluator = get_active_image_quality_evaluator()
 score = evaluator.evaluate("C:/photos/example.jpg", flat_cache_manager=flat_cache)
-print(f"Normalized quality score: {score:.2f}")  # e.g., 74.7 (higher is better)
+print(f"Normalized quality score: {score:.3f}")  # e.g., 0.747 (higher is better)
 ```
 
 - Higher normalized scores indicate better perceived quality; no inversion needed by consumers.
@@ -572,7 +572,7 @@ print(f"Normalized quality score: {score:.2f}")  # e.g., 74.7 (higher is better)
 The quality evaluation system, particularly the BRISQUE evaluator, integrates with the [`FlatCacheManager`](docs/roo/flat-cache-implementation.md:1) to cache computed scores, avoiding redundant computations for image quality assessments in the library. BRISQUE serves as a primary example of metric caching, storing results in the 'brisque' column for quick retrieval during repeated evaluations.
 
 ### Key Features
-- **Column Usage**: Normalized scores (0-100, higher better) are stored in the 'brisque' column, alongside metadata such as the algorithm ('brisque' or 'laplacian' fallback) and file validation stats (size, mtime, inode, device).
+- **Column Usage**: Normalized scores (0-1, higher better) are stored in the 'brisque' column, alongside metadata such as the algorithm ('brisque' or 'laplacian' fallback) and file validation stats (size, mtime, inode, device).
 - **Integration Point**: The `evaluate` method in `[class ImageQualityEvaluator](src/pk_py_lib/core/image/quality/base.py:1)` accepts an optional `flat_cache_manager: Optional[FlatCacheManager]` parameter, enabling seamless cache interaction.
 
 ### Workflow
@@ -614,7 +614,7 @@ from pk_py_lib.core.flat_cache import FlatCacheManager
 flat_cache_manager = FlatCacheManager(...)  # Resolved via settings
 evaluator = get_active_image_quality_evaluator()
 score = evaluator.evaluate(image_path, flat_cache_manager=flat_cache_manager)
-# Cache checked/stored automatically; score is normalized 0-100
+# Cache checked/stored automatically; score is normalized 0-1
 ```
 
 ## Open Questions

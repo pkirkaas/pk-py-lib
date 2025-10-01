@@ -110,7 +110,7 @@ class FlatCacheEntry:
         is_valid (bool): Validity flag (DEFAULT True).
         xxh3 (Optional[str]): File content hash using xxh3 algorithm.
         phash (Optional[str]): Perceptual hash for image similarity.
-        brisque (Optional[float]): BRISQUE no-reference image quality score, nullable for images not yet evaluated.
+        brisque (Optional[float]): BRISQUE no-reference image quality score (0-1 normalized, higher-better), nullable for images not yet evaluated.
         created_at (float): Unix timestamp when entry was created.
         updated_at (float): Unix timestamp of last update.
     """
@@ -759,11 +759,14 @@ class FlatCacheManager:
         """
         Queries the cache for an entry and validates it against current file stats.
         
+        Additionally, for BRISQUE scores, detects legacy 0-100 scale (scores >1.0) and
+        normalizes them in-place to 0-1 scale by dividing by 100.0, then persists the update.
+        
         Parameters:
             file_path (str): The path to the file.
         
         Returns:
-            Optional[FlatCacheEntry]: The valid entry, or None if not found or invalid.
+            Optional[FlatCacheEntry]: The valid entry (with normalized brisque if migrated), or None if not found or invalid.
         """
         normalized_path = self._normalize_path(file_path)
 
@@ -783,6 +786,16 @@ class FlatCacheManager:
 
                 # Validate the retrieved entry against the current file system state
                 self._validate_entry(entry)
+
+                # Migrate legacy BRISQUE scores (0-100) to new 0-1 scale if detected
+                if entry.brisque is not None and entry.brisque > 1.0:
+                    self.logger.info(f"Detected legacy BRISQUE score >1.0 for {normalized_path}: {entry.brisque}. Normalizing to 0-1 scale.")
+                    entry.brisque = min(1.0, entry.brisque / 100.0)
+                    # Persist the normalized value
+                    if self.set_entry(entry):
+                        self.logger.debug(f"Updated cache with normalized BRISQUE score for {normalized_path}: {entry.brisque}")
+                    else:
+                        self.logger.warning(f"Failed to persist normalized BRISQUE score for {normalized_path}")
 
                 return entry
 

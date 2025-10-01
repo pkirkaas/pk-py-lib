@@ -208,24 +208,24 @@ def _ensure_asset(directory: str, filename: str, url: str, logger) -> str:
 
 class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
     """
-    BRISQUE-based image quality evaluator.
-
-    Loads bundled SVM model for QualityBRISQUE. If model missing/load fails,
-    falls back to Laplacian variance (sharpness; higher variance = better quality).
-
-    Normalizes scores to higher-better scale (0-100).
-
-    Args:
-        None (uses bundled model or fallback).
-
-    Attributes:
-        brisque: The OpenCV QualityBRISQUE instance (or None if fallback).
-        logger: Project logger.
-
-    Example:
-        evaluator = BRISQUEImageQualityEvaluator()
-        score = evaluator.evaluate('/path/to/img.jpg')  # e.g., 74.7 (BRISQUE) or 65.2 (Laplacian)
-    """
+        BRISQUE-based image quality evaluator.
+    
+        Loads bundled SVM model for QualityBRISQUE. If model missing/load fails,
+        falls back to Laplacian variance (sharpness; higher variance = better quality).
+    
+        Normalizes scores to higher-better scale (0-1).
+    
+        Args:
+            None (uses bundled model or fallback).
+    
+        Attributes:
+            brisque: The OpenCV QualityBRISQUE instance (or None if fallback).
+            logger: Project logger.
+    
+        Example:
+            evaluator = BRISQUEImageQualityEvaluator()
+            score = evaluator.evaluate('/path/to/img.jpg')  # e.g., 0.747 (BRISQUE) or 0.652 (Laplacian)
+        """
 
     _instance = None
 
@@ -287,39 +287,39 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
     def evaluate(self, path: str, flat_cache_manager: Optional[FlatCacheManager] = None) -> float:
         """
         Evaluate the quality of the image at the given path using BRISQUE or fallback.
+Supports caching via FlatCacheManager: before computing the BRISQUE (or fallback Laplacian)
+score, checks the cache for an existing valid entry with a non-None 'brisque' value.
+The entry is validated against current file stats (size, mtime) by get_entry().
+If valid cached score exists, returns it immediately without recomputing.
+After successful computation, stores the normalized score in the 'brisque' field
+of the cache entry and persists it.
 
-        Supports caching via FlatCacheManager: before computing the BRISQUE (or fallback Laplacian)
-        score, checks the cache for an existing valid entry with a non-None 'brisque' value.
-        The entry is validated against current file stats (size, mtime) by get_entry().
-        If valid cached score exists, returns it immediately without recomputing.
-        After successful computation, stores the normalized score in the 'brisque' field
-        of the cache entry and persists it.
+If BRISQUE loaded successfully:
+    - Loads image with OpenCV, computes raw BRISQUE score (0-100, lower = better quality).
+    - Normalizes to higher-better scale: (100 - raw_score) / 100, clamped to [0, 1].
 
-        If BRISQUE loaded successfully:
-            - Loads image with OpenCV, computes raw BRISQUE score (0-100, lower = better quality).
-            - Normalizes to higher-better scale: 100 - raw_score, clamped to [0, 100].
+Fallback (if BRISQUE model load/compute fails):
+    - Converts to grayscale, computes Laplacian variance (higher = sharper/better).
+    - Normalizes empirically: min(1, (variance / 100) / 100) for typical image variance range.
 
-        Fallback (if BRISQUE model load/compute fails):
-            - Converts to grayscale, computes Laplacian variance (higher = sharper/better).
-            - Normalizes empirically: min(100, variance / 100) for typical image variance range.
-            - The fallback score is also cached under 'brisque' as it represents this evaluator's output.
+- The fallback score is also cached under 'brisque' as it represents this evaluator's output.
 
-        Args:
-            path (str): Absolute or relative path to the image file.
-            flat_cache_manager (Optional[FlatCacheManager]): Optional instance for caching.
-                If provided, enables read/write of 'brisque' scores. Defaults to None (no caching).
+Args:
+    path (str): Absolute or relative path to the image file.
+    flat_cache_manager (Optional[FlatCacheManager]): Optional instance for caching.
+        If provided, enables read/write of 'brisque' scores. Defaults to None (no caching).
 
-        Returns:
-            float: Normalized quality score in [0, 100], where higher values indicate better perceived quality.
+Returns:
+    float: Normalized quality score in [0, 1], where higher values indicate better perceived quality.
 
-        Raises:
-            ImageQualityFileError: If the file does not exist, is not a valid file, or cannot be loaded as an image.
-            ImageQualityComputationError: If both BRISQUE and fallback computations fail.
+Raises:
+    ImageQualityFileError: If the file does not exist, is not a valid file, or cannot be loaded as an image.
+    ImageQualityComputationError: If both BRISQUE and fallback computations fail.
 
-        Examples:
-            >>> evaluator = BRISQUEImageQualityEvaluator()
-            >>> score = evaluator.evaluate('/path/to/high_quality.jpg')  # e.g., 85.3 (BRISQUE, cached on second call)
-            >>> score_no_cache = evaluator.evaluate('/path/to/low_quality.jpg', flat_cache_manager=None)  # Computes fresh, no cache
+Examples:
+    >>> evaluator = BRISQUEImageQualityEvaluator()
+    >>> score = evaluator.evaluate('/path/to/high_quality.jpg')  # e.g., 0.853 (BRISQUE, cached on second call)
+    >>> score_no_cache = evaluator.evaluate('/path/to/low_quality.jpg', flat_cache_manager=None)  # Computes fresh, no cache
         """
         # --- 1. Check Flat Cache First (Avoid Unnecessary Computation) ---
         # Retrieve and validate cache entry; if 'brisque' is set, it's considered valid for this evaluator
@@ -365,9 +365,9 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
                 
                 # Ensure final score is a float
                 raw_score = float(raw_score)
-                # Normalize BRISQUE: raw is 0-100 lower-better; convert to 0-100 higher-better
-                normalized_score = max(0.0, min(100.0, 100.0 - raw_score))
-                self.logger.debug(f"BRISQUE raw: {raw_score:.2f}, normalized: {normalized_score:.2f} for {path}")
+                # Normalize BRISQUE: raw is 0-100 lower-better; convert to 0-1 higher-better
+                normalized_score = max(0.0, min(1.0, (100.0 - raw_score) / 100.0))
+                self.logger.debug(f"BRISQUE raw: {raw_score:.2f}, normalized: {normalized_score:.3f} for {path}")
             except Exception as e:
                 self.logger.warning(f"BRISQUE compute failed for {path}: {str(e)}. Falling back to Laplacian variance.")
         
@@ -376,8 +376,8 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
             try:
                 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
                 lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-                normalized_score = min(100.0, lap_var / 100.0)  # Scale typical var to 0-100
-                self.logger.debug(f"Laplacian fallback: var={lap_var:.2f}, normalized={normalized_score:.2f} for {path}")
+                normalized_score = min(1.0, (lap_var / 100.0) / 100.0)  # Scale typical var to 0-1
+                self.logger.debug(f"Laplacian fallback: var={lap_var:.2f}, normalized={normalized_score:.3f} for {path}")
             except Exception as e:
                 raise ImageQualityComputationError(
                     f"Laplacian fallback failed for {path}: {str(e)}", path=path, original_error=e
