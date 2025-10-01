@@ -1930,6 +1930,32 @@ Acceptance summary (this section)
 
 ## Image Similarity Detection
 
+### Supported Perceptual Hash Types
+The similarity detection subsystem supports multiple perceptual hashing algorithms for identifying visually similar images, configurable via the profile's `similarity.enabled_algorithms` array (default: `["phash"]`) and thresholds in `similarity.phash_threshold` (default: 10) or `similarity.whash_threshold` (default: 12). Supported types include:
+
+- **phash** (default): DCT-based perceptual hash using frequency domain analysis. Computes an 8x8 (64-bit) grayscale hash, robust to minor color shifts and compression artifacts. Hamming distance threshold: 0 (exact) to 64 (maximum difference). Benefits: Fast computation, good for overall perceptual similarity. Configuration example in profile:
+  ```json
+  "similarity": {
+    "enabled_algorithms": ["phash"],
+    "phash_threshold": 10  // ~84% similarity; stricter with lower values
+  }
+  ```
+  Usage: Invoked via `find_similar_phash` in `core/image/similarity.py`; groups form transitively where all pairs have distance ≤ threshold.
+
+- **whash**: Wavelet-based hash using Haar wavelet transform (default db1 wavelet, 8x8 resize). Expands perceptual hashing to detect structural similarities like cropping, rotation, or scaling, where phash may fail. Hamming distance threshold: 0-64. Benefits: More robust to geometric transformations vs. phash's frequency focus, but slightly slower due to wavelet decomposition. Falls back to phash if whash computation fails (e.g., unsupported image format or library error). Configuration example:
+  ```json
+  "similarity": {
+    "enabled_algorithms": ["phash", "whash"],
+    "phash_threshold": 10,
+    "whash_threshold": 12  // ~81% similarity; adjust for wavelet sensitivity
+  }
+  ```
+  Usage: Via `find_similar_whash`; integrates with the same grouping logic. Multi-algorithm support computes both and unions results (e.g., for comprehensive similarity reports).
+
+- **xxh3**: Non-perceptual, used for exact duplicate detection in duplicates mode (not perceptual similarity). Fast, non-cryptographic hash for file identity. Not configurable in `enabled_algorithms` (fixed for duplicates via `criteria.algorithm: "xxh3"`). Defaults and fallbacks: N/A for similarity; phash serves as fallback for whash failures.
+
+Defaults: Single-algorithm mode uses phash; enable whash for enhanced structural detection. Fallbacks ensure robustness—e.g., if whash fails on a batch, phash proceeds without halting. Examples: For large collections with edits (crops/resizes), prefer `["whash"]`; for general similarity, `["phash", "whash"]`. Thresholds tune precision: lower for stricter matches, higher for broader groups. See `core/image/similarity.py` for computation details and integration with `FlatCacheManager` for persistent storage.
+
 ### Usage
 The image similarity detection feature allows users to identify visually similar images within scanned collections using perceptual hashing (pHash for DCT-based or wHash for wavelet-based similarity). It supports interactive exploration in the GUI and can be invoked during file traversal for on-the-fly computation. Key usage patterns include:
 

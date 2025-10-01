@@ -70,10 +70,11 @@ This document defines the architecture for a pluggable image quality evaluation 
   - Provides `[def register](src/pk_py_lib/core/image/quality/registry.py:40)` and `[def create](src/pk_py_lib/core/image/quality/registry.py:58)` APIs.
   - Supplies caching hooks to reuse singleton evaluators when appropriate.
 
-- `[def get_active_image_quality_evaluator](src/pk_py_lib/core/image/quality/provider.py:25)`  
+- `[def get_active_image_quality_evaluator](src/pk_py_lib/core/image/quality/provider.py:25)`
   - Reads active profile via `[SettingsProfilesManager.get_active_profile](src/pk_py_lib/core/settings_profiles.py:461)`.
   - Extracts `image_quality_evaluator` (default `'brisque'`) from normalized profile data.
   - Delegates to registry and handles errors with fallback logging.
+  - **Import Fix Note**: Recent correction ensures proper import from `provider.py` in dependent modules like `flat_cache.py`, resolving metadata extraction errors during cache population. Usage for metadata extraction: Call this function to retrieve the evaluator instance, then invoke `evaluator.evaluate(image_path)` to compute and store quality scores (e.g., BRISQUE) in the flat cache alongside hashes. Example: In cache workflows, `score = get_active_image_quality_evaluator().evaluate(path)` integrates seamlessly with `FlatCacheManager` for persistent storage, enabling quality-based filtering in similarity/duplicate reports. Defaults to BRISQUE if enabled; falls back to 'none' on errors.
 
 ### Mermaid Class Diagram
 

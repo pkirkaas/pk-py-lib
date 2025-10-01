@@ -44,8 +44,20 @@ SETTINGS_PROFILE_SCHEMA = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "phash_threshold": {"type": "integer", "minimum": 0, "maximum": 64, "default": 10},
-                "whash_threshold": {"type": "integer", "minimum": 0, "maximum": 64, "default": 12},
+                "phash_threshold": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 64,
+                    "default": 10,
+                    "description": "Hamming distance threshold for pHash similarity (0=exact match, 64=maximum difference for 8x8 hash). Lower values are stricter. Default 10 (~84% similarity for 8x8 hash). Used in find_similar_phash; groups form transitively where all pairs ≤ threshold."
+                },
+                "whash_threshold": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 64,
+                    "default": 12,
+                    "description": "Hamming distance threshold for wHash similarity (0=exact, 64=maximum for 8x8). wHash uses wavelet transform (db1 default), robust to structural changes (e.g., cropping, rotation) vs. pHash's DCT focus on frequency. Default 12 (~81% similarity). Falls back to pHash if wHash fails (e.g., unsupported format). Example: Use 8 for stricter wavelet matching."
+                },
                 "lsh_num_perm": {
                     "type": "integer",
                     "minimum": 64,
@@ -63,7 +75,8 @@ SETTINGS_PROFILE_SCHEMA = {
                 "enabled_algorithms": {
                     "type": "array",
                     "items": {"type": "string", "enum": ["phash", "whash"]},
-                    "default": ["phash"]
+                    "default": ["phash"],
+                    "description": "List of enabled perceptual hashing algorithms for similarity detection. Supports 'phash' (DCT-based, default) and 'whash' (wavelet-based via imagehash.whash with 8x8 resize and db1 wavelet). 'whash' is robust to structural changes like cropping or rotation but may be slower; falls back to 'phash' if computation fails. Defaults to ['phash']. Example: ['phash', 'whash'] for multi-algorithm support."
                 },
                 "max_distance": {"type": "integer", "minimum": 0, "maximum": 64, "default": 15}
             }

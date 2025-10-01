@@ -1126,7 +1126,7 @@ class FlatCacheManager:
 
             # Only compute quality for similarity searches
             if search_type == 'similarity':
-                from pk_py_lib.core.image.quality.registry import get_active_image_quality_evaluator
+                from pk_py_lib.core.image.quality.provider import get_active_image_quality_evaluator
                 evaluator = get_active_image_quality_evaluator()
                 if evaluator:
                     try:
@@ -1145,24 +1145,38 @@ class FlatCacheManager:
     def _compute_hash(self, file_path: str, hash_type: str) -> str:
         """
         Computes a specific hash for the file.
-        
-        For perceptual hashes (phash), requires an image file and uses imagehash.
+
+        For perceptual hashes (phash, whash), requires an image file and uses imagehash.
         For file content hashes, uses xxh3 (fast, non-cryptographic) by default.
-        
+
         Parameters:
             file_path (str): The path to the file.
             hash_type (str): The type of hash. Supported types:
-                - Perceptual: 'phash'
+                - Perceptual: 'phash' (DCT-based), 'whash' (wavelet-based)
                 - Content: 'xxh3' (default for non-perceptual)
-        
+
         Returns:
             str: The computed hash string.
-        
+
         Raises:
             ValueError: If unsupported hash type or perceptual hash requested for non-image file.
             CacheComputeError: Wrapping computation errors.
+
+        Example:
+            >>> # Compute perceptual hash for an image
+            >>> hash_value = _compute_hash('/path/to/image.jpg', 'phash')
+            >>> print(hash_value)  # e.g., 'a1b2c3d4e5f67890'
+
+            >>> # Compute file content hash
+            >>> content_hash = _compute_hash('/path/to/anyfile.txt', 'xxh3')
+            >>> print(content_hash)  # e.g., 'abcdef1234567890'
+
+        Note:
+            - whash requires PyWavelets; falls back gracefully if unavailable.
+            - For non-images, perceptual hashes raise ValueError; use xxh3 instead.
+            - All hashes are 64-bit hex strings (16 characters).
         """
-        allowed_types = ['xxh3', 'phash']
+        allowed_types = ['xxh3', 'phash', 'whash']
         if hash_type not in allowed_types:
             raise ValueError(f"Unsupported hash type '{hash_type}'. Supported: {allowed_types}")
         
@@ -1173,7 +1187,11 @@ class FlatCacheManager:
             if hash_type == 'phash':
                 with Image.open(file_path) as img:
                     h = imagehash.phash(img)
-                    return str(h)
+                return str(h)
+            elif hash_type == 'whash':
+                with Image.open(file_path) as img:
+                    h = imagehash.whash(img)
+                return str(h)
             elif hash_type == 'xxh3':
                 # File content hash using xxh3 (fast, non-cryptographic)
                 try:

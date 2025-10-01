@@ -682,6 +682,7 @@ def compute_xxh3_hash(path: Path) -> str:
 
 def scan_directory(
     roots: Union[Path, List[Path]],
+    profile_name: Optional[str] = None,
     patterns: Optional[List[str]] = None,
     compute_hashes: bool = False,
     exact_grouping: bool = False,
@@ -808,7 +809,7 @@ def scan_directory(
     all_paths = []
     for root_path in roots:
         # Filter out invalid kwargs for walk_files
-        filtered_kwargs = {k: v for k, v in walk_kwargs.items() if k != 'db_manager'}
+        filtered_kwargs = {k: v for k, v in walk_kwargs.items() if k not in ['db_manager', 'profile_name']}
         paths = list(DirectoryTraversal.walk_files(root_path, patterns=patterns, **filtered_kwargs))
         all_paths.extend(paths)
     # Deduplicate paths (handles overlapping roots)
