@@ -4,7 +4,7 @@ Implements the FlatCacheManager for fast, file-based metadata caching using SQLi
 
 This cache stores computed hashes and other values for individual files,
 validating entries against current file system statistics (size, modification date)
-to ensure cache freshness. Hashes are stored in a flexible 'hash_data' dictionary.
+to ensure cache freshness. Hashes are stored in individual columns of the entries table
 """
 
 from __future__ import annotations
