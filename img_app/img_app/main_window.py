@@ -188,9 +188,12 @@ class ScanWorker(QThread):
         self.profile = profile_json or {}
         self.algorithm = (algorithm or "xxh3").lower().strip()
         self.mode = mode
-        self.search_type = search_type or mode
+        if mode == 'duplicates':
+            self.mode = 'duplicate'
+            self.search_type = 'duplicate'  # Fixed duplicate mode bug: Ensure search_type is 'duplicate'
+        self.search_type = search_type or self.mode
         self.compute_hashes = compute_hashes
-        self.exact_grouping = (mode == 'duplicate')
+        self.exact_grouping = (self.mode == 'duplicate')
         # Capture the profile name used for this run (best effort)
         try:
             self.profile_name = str(profile_name or (self.profile.get("name") if isinstance(self.profile, dict) else "") or "")
@@ -301,11 +304,8 @@ class ScanWorker(QThread):
 
         # Debug: summary of valid roots
         try:
-            print(f"[ScanWorker] Mode: {self.mode} — gathered {len(roots)} valid directory roots (post-validation, normalization, and dedup)")
-            for r in roots[:3]:  # Show first few for verification
-                print(f"[ScanWorker]   root: {r}")
-            if len(roots) > 3:
-                print(f"[ScanWorker]   ... and {len(roots)-3} more roots")
+            # Fixed duplicate mode bug: Removed temporary [TRACE] logging prints
+            pass
         except Exception:
             pass
 
@@ -371,6 +371,7 @@ class ScanWorker(QThread):
             # For duplicate mode: patterns=None (all files for xxh3 hashing), algorithms=['xxh3'], search_type='duplicate' (skips image metadata/phash/whash)
             # For similarity mode: patterns=image extensions, algorithms=perceptual (phash/whash) from profile, extracts metadata (width/height/phash/whash)
             from pk_py_lib.core.filesystem.traversal import scan_directory
+            # Fixed duplicate mode bug: Removed temporary [TRACE] logging prints
             scan_result = scan_directory(
                 roots=roots,
                 profile_name=self.profile_name,
@@ -554,7 +555,7 @@ class ComparisonWorker(QThread):
         raw_duplicate_groups = self.main_window._get_duplicate_groups_single_pool()
         
         # Convert raw dicts to immutable Group objects and extract pool map
-        dialog_groups, pool_map = self.main_window._convert_raw_groups_to_dialog_groups(raw_duplicate_groups)
+        dialog_groups, pool_map = self.main_window._convert_raw_groups_to_dialog_groups(raw_duplicate_groups, search_type='duplicate')
         
         results['groups'] = dialog_groups
         results['pool_map'] = pool_map
@@ -588,7 +589,7 @@ class ComparisonWorker(QThread):
             return
 
         # 2. Compute similarity groups using MainWindow's method
-        dialog_groups = self.main_window._compute_similarity_groups(profile_payload, run_paths, db_mgr)
+        dialog_groups = self.main_window._compute_similarity_groups(profile_payload, run_paths, db_mgr, search_type='similarity')
         
         # 3. Extract pool map
         pool_map = self.main_window._extract_pool_map_from_groups(dialog_groups)
@@ -874,7 +875,7 @@ class MainWindow(QMainWindow):
             return prepared
         return getattr(self, '_last_groups_data_fallback', [])
 
-    def _convert_raw_groups_to_dialog_groups(self, raw_groups: List[Dict[str, Any]]) -> Tuple[List[Group], Dict[str, str]]:
+    def _convert_raw_groups_to_dialog_groups(self, raw_groups: List[Dict[str, Any]], search_type: str = None) -> Tuple[List[Group], Dict[str, str]]:
         """
         Converts raw group dictionaries (from scan/comparison) into immutable Group objects
         and extracts the path->pool map.
@@ -883,6 +884,8 @@ class MainWindow(QMainWindow):
         ----------
         raw_groups : List[Dict[str, Any]]
             List of raw group dictionaries.
+        search_type : str
+            'duplicate' to ensure 'Unknown' resolution without image ops.
             
         Returns
         -------
@@ -913,10 +916,13 @@ class MainWindow(QMainWindow):
                 
                 pool = str(raw_file.get("pool", "A") or "A")
                 
+                resolution = "Unknown" if search_type == 'duplicate' else "—"
+                # Skip image ops in duplicate mode
+                
                 file_item = FileItem(
                     path=path,
                     size=size,
-                    resolution="—", # Not available in raw data
+                    resolution=resolution,
                     mod_date=format_timestamp(modified),
                     score=raw_file.get("score", 1.0), # Default to 1.0 for exact duplicates
                     file_type=Path(path).suffix.lstrip(".").upper() or "",
@@ -947,7 +953,7 @@ class MainWindow(QMainWindow):
                 
         return dialog_groups, pool_map
 
-    def _compute_similarity_groups(self, profile_payload: Dict[str, Any], run_paths: List[str], db_manager: Any) -> List[Group]:
+    def _compute_similarity_groups(self, profile_payload: Dict[str, Any], run_paths: List[str], db_manager: Any, search_type: str = 'similarity') -> List[Group]:
         """
         Fetches perceptual hashes from the cache DB for the run paths and computes similarity clusters.
         
@@ -962,6 +968,8 @@ class MainWindow(QMainWindow):
             List of file paths included in the current scan run.
         db_manager : Any
             The DatabaseManager instance.
+        search_type : str
+            'similarity' to ensure full computations.
             
         Returns
         -------
@@ -1019,6 +1027,7 @@ class MainWindow(QMainWindow):
             algorithm=algorithm,
             threshold=threshold_int, # Pass Hamming distance (int)
             settings=profile_payload,
+            search_type=search_type,
         )
                 
         return dialog_groups
@@ -1864,7 +1873,7 @@ class MainWindow(QMainWindow):
 
         # Basic completion UI update (for logging/status bar)
         try:
-            print(f"[DEBUG _on_scan_finished_with_comparison_start] START: profile_name={profile_name}", file=sys.stderr)
+            # Fixed duplicate mode bug: Removed temporary [TRACE] logging prints
             LOGGER.info("Scan finished handler started", variables={
                 "profile_name": profile_name,
                 "summary_keys": list(summary.keys()) if summary else [],
@@ -2007,6 +2016,7 @@ class MainWindow(QMainWindow):
                         else:
                             two_pool = two_pool_by_paths
                             is_single_pool = not two_pool
+                            # Fixed duplicate mode bug: Removed temporary [TRACE] logging prints
 
                         # Direction mapping
                         try:
@@ -2032,6 +2042,7 @@ class MainWindow(QMainWindow):
 
         # Pools debug
         try:
+            # Fixed duplicate mode bug: Removed temporary [TRACE] logging prints
             pools_obj = payload_for_mode.get('pools', {}) if isinstance(payload_for_mode, dict) else {}
             paths_a = [str(p) for p in (pools_obj.get("A") or {}).get("paths", [])]
             paths_b = [str(p) for p in (pools_obj.get("B") or {}).get("paths", [])]
@@ -2040,8 +2051,6 @@ class MainWindow(QMainWindow):
             paths_a = []
             paths_b = []
 
-        print(f"[DEBUG _on_scan_finished] FINAL MODE: single_pool={is_single_pool}, two_pool={two_pool}, direction={direction}", file=sys.stderr)
-        print(f"[DEBUG _on_scan_finished] Pools: A={len(paths_a)} paths, B={len(paths_b)} paths", file=sys.stderr)
         LOGGER.info("Final mode detection", variables={
             "is_single_pool": is_single_pool,
             "two_pool": two_pool,
@@ -2049,6 +2058,7 @@ class MainWindow(QMainWindow):
             "profile_name": profile_name,
             "found_files": found
         })
+        # Fixed duplicate mode bug: Removed temporary [TRACE] logging prints
 
         # Summary text
         text = (
@@ -2263,9 +2273,6 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # Final debug on groups
-        print(f"[DEBUG _on_scan_finished] groups={groups}, total_dups={total_dups}, non_matches={non_matches}", file=sys.stderr)
-        print(f"[DEBUG _on_scan_finished] prepared_groups={len(groups_data_prepared)}, fallback_groups={len(groups_data_fallback)}", file=sys.stderr)
         LOGGER.info("Final groups data state", variables={
             "is_single_pool": is_single_pool,
             "two_pool": two_pool,
@@ -2273,6 +2280,7 @@ class MainWindow(QMainWindow):
             "profile_name": profile_name,
             "found_files": found
         })
+        # Fixed duplicate mode bug: Removed temporary [TRACE] logging prints
 
         # Build header and final report text
         from datetime import datetime as _dt

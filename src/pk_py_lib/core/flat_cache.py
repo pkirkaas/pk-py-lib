@@ -26,6 +26,9 @@ import imagehash
 
 from .utils import get_data_dir  # Import the unified path function
 
+# Image file extensions for filtering without loading
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.heif', '.heic'}
+
 # --- Configuration and Constants ---
 
 # Default location for the flat cache database file
@@ -848,9 +851,11 @@ class FlatCacheManager:
             return False
         
         if search_type == 'duplicate':
-            # Limited UPDATE for core fields only; skip image columns to preserve prior metadata
-            core_fields = ['path', 'size', 'mtime', 'xxh3', 'updated_at', 'is_valid']
-            set_clause = ', '.join([f"{field} = ?" for field in core_fields])
+            # Limited UPDATE for core fields; explicitly clear image-specific fields to ensure clean cache in duplicate mode
+            # This prevents retention of perceptual/image data from prior similarity scans
+            core_fields = ['size', 'mtime', 'xxh3', 'updated_at', 'is_valid']
+            image_clear_fields = ['width', 'height', 'phash', 'whash', 'brisque']
+            set_clause = ', '.join([f"{field} = ?" for field in core_fields] + [f"{field} = NULL" for field in image_clear_fields])
             values = [getattr(entry, field) if field != 'is_valid' else int(entry.is_valid) for field in core_fields]
             values.append(entry.path)  # WHERE path = ?
             
@@ -860,7 +865,7 @@ class FlatCacheManager:
             WHERE path = ?
             """
             
-            self.logger.debug(f"Limited UPDATE for duplicate mode (core fields only): {entry.path}")
+            self.logger.debug(f"Limited UPDATE for duplicate mode (core fields + image clear): {entry.path}")
         else:
             # Full INSERT OR REPLACE for all fields
             data = entry.to_dict()
@@ -881,18 +886,26 @@ class FlatCacheManager:
                     cursor = conn.execute(sql, values)
                     affected = cursor.rowcount
                     if affected == 0:
-                        # Entry didn't exist; insert full with core fields (image fields NULL)
-                        core_data = {k: v for k, v in entry.to_dict().items() if k in core_fields}
-                        core_data['width'] = None
-                        core_data['height'] = None
-                        core_data['phash'] = None
-                        core_data['whash'] = None
-                        core_data['brisque'] = None
+                        # Entry didn't exist; insert with all required fields for duplicate mode, image fields NULL
+                        core_data = {
+                            'path': entry.path,
+                            'size': entry.size,
+                            'mtime': entry.mtime,
+                            'xxh3': entry.xxh3,
+                            'is_valid': int(entry.is_valid),
+                            'created_at': entry.created_at,
+                            'updated_at': entry.updated_at,
+                            'width': None,
+                            'height': None,
+                            'phash': None,
+                            'whash': None,
+                            'brisque': None,
+                        }
                         core_columns = ', '.join(core_data.keys())
                         core_placeholders = ', '.join(['?'] * len(core_data))
                         core_values = tuple(core_data.values())
                         conn.execute(f"INSERT INTO {self.table_name} ({core_columns}) VALUES ({core_placeholders})", core_values)
-                        self.logger.debug(f"Inserted new entry for non-existent path in duplicate mode: {entry.path}")
+                        self.logger.debug(f"Inserted new entry for non-existent path in duplicate mode (image fields NULL): {entry.path}")
                 else:
                     conn.execute(sql, values)
             
@@ -1096,7 +1109,7 @@ class FlatCacheManager:
     def _extract_image_metadata(self, file_path: str, search_type: Optional[str] = None) -> Dict[str, Any]:
         """
         Extracts image-specific metadata (dimensions) using PIL.
-        
+
         Always extracts width and height for valid images. For search_type='similarity',
         also computes BRISQUE quality score if an evaluator is active. This method is
         only called for non-duplicate searches to avoid unnecessary image loading
@@ -1107,15 +1120,16 @@ class FlatCacheManager:
             search_type (Optional[str]): If 'similarity', compute quality score. For 'duplicate',
                 extraction is skipped entirely to prevent image loading for non-image files
                 or unnecessary operations on images during exact hash scans.
-        
+
         Returns:
             Dict[str, Any]: Metadata dict with 'width', 'height', and optionally 'brisque'.
             Returns empty dict {} if search_type='duplicate' (no extraction performed).
-        
+            # Fixed duplicate mode skips
+
         Raises:
             Exception: If image cannot be opened or metadata extraction fails (only for non-duplicate modes).
                 Caller should handle and set dimensions to None.
-        
+
         Example:
             >>> metadata = manager._extract_image_metadata("/path/to/img.jpg", search_type='similarity')
             >>> # Returns {'width': 1920, 'height': 1080, 'brisque': 45.2} or similar
@@ -1123,12 +1137,8 @@ class FlatCacheManager:
             >>> # Returns {} (skipped)
         """
         if search_type == 'duplicate':
-            # Skip all image loading and metadata extraction during duplicate scans.
-            # This avoids PIL.Image.open() exceptions on non-image files (e.g., PDFs, videos)
-            # and unnecessary processing for exact duplicate detection, which only requires
-            # file hashes (xxh3). Image metadata is preserved from prior similarity scans
-            # via conditional INSERT in set_entry().
-            self.logger.debug(f"Skipped image metadata extraction for duplicate mode: {file_path}")
+            # Safeguard: Log warning if unexpectedly called in duplicate mode (should not happen due to caller checks)
+            self.logger.warning(f"UNEXPECTED call to _extract_image_metadata in duplicate mode for {file_path} - aborting extraction (no PIL.open or evaluators called)")
             return {}
 
         metadata = {}
@@ -1155,7 +1165,7 @@ class FlatCacheManager:
             self.logger.warning(f"Failed to extract image metadata for {file_path}: {e}")
             raise
 
-    def _compute_hash(self, file_path: str, hash_type: str) -> str:
+    def _compute_hash(self, file_path: str, hash_type: str, search_type: str = 'similarity') -> Optional[str]:
         """
         Computes a specific hash for the file.
 
@@ -1167,9 +1177,11 @@ class FlatCacheManager:
             hash_type (str): The type of hash. Supported types:
                 - Perceptual: 'phash' (DCT-based), 'whash' (wavelet-based)
                 - Content: 'xxh3' (default for non-perceptual)
+            search_type (str): 'duplicate' to skip perceptual hashes, return None without computation.
 
         Returns:
-            str: The computed hash string.
+            Optional[str]: The computed hash string, or None if skipped (e.g., perceptual in duplicate mode).
+                # Fixed duplicate mode skips
 
         Raises:
             ValueError: If unsupported hash type or perceptual hash requested for non-image file.
@@ -1177,25 +1189,30 @@ class FlatCacheManager:
 
         Example:
             >>> # Compute perceptual hash for an image
-            >>> hash_value = _compute_hash('/path/to/image.jpg', 'phash')
+            >>> hash_value = _compute_hash('/path/to/image.jpg', 'phash', search_type='similarity')
             >>> print(hash_value)  # e.g., 'a1b2c3d4e5f67890'
 
             >>> # Compute file content hash
-            >>> content_hash = _compute_hash('/path/to/anyfile.txt', 'xxh3')
+            >>> content_hash = _compute_hash('/path/to/anyfile.txt', 'xxh3', search_type='duplicate')
             >>> print(content_hash)  # e.g., 'abcdef1234567890'
 
         Note:
             - whash requires PyWavelets; falls back gracefully if unavailable.
             - For non-images, perceptual hashes raise ValueError; use xxh3 instead.
             - All hashes are 64-bit hex strings (16 characters).
+            - In 'duplicate' mode, perceptual hashes (phash, whash) are skipped entirely to avoid image loading.
         """
         allowed_types = ['xxh3', 'phash', 'whash']
         if hash_type not in allowed_types:
             raise ValueError(f"Unsupported hash type '{hash_type}'. Supported: {allowed_types}")
-        
+
+        if hash_type in ['phash', 'whash'] and search_type == 'duplicate':
+            self.logger.warning(f"Skipping perceptual hash '{hash_type}' in duplicate mode for {file_path} - no image loading")
+            return None  # Fixed duplicate mode skips
+
         if hash_type == 'phash' and not self._is_image_file(file_path):
             raise ValueError(f"Perceptual hash '{hash_type}' requested for non-image file: {file_path}")
-        
+
         try:
             if hash_type == 'phash':
                 with Image.open(file_path) as img:
@@ -1221,29 +1238,56 @@ class FlatCacheManager:
         except Exception as e:
             raise CacheComputeError(file_path, hash_type, e)
 
-    def _process_single_file(self, file_path: str, hash_types: List[str], search_type: Optional[str] = None) -> Dict[str, str]:
+    def _process_single_file(self, file_path: str, hash_types: List[str], search_type: Optional[str] = None) -> Dict[str, Optional[str]]:
         """
         Processes a single file: checks cache, validates, computes missing hashes and image metadata, stores.
-        
+
         For search_type='duplicate', skips image metadata extraction (width/height) to avoid unnecessary
         image loading, especially for non-image files. Only computes file content hash (xxh3).
         For 'similarity', extracts dimensions and optionally quality scores.
-        
+
         Parameters:
             file_path (str): The path to the file.
             hash_types (List[str]): List of hash types to ensure are computed.
             search_type (Optional[str]): Type of search ('duplicate' or 'similarity') to control metadata extraction.
-        
+
         Returns:
-            Dict[str, str]: Dictionary mapping hash type to hash value for the requested types.
+            Dict[str, Optional[str]]: Dictionary mapping hash type to hash value for the requested types.
             For unsupported types in duplicate mode, returns None.
-        
+            # Fixed duplicate mode skips
+
         Raises:
             FileNotFoundError: If file does not exist.
             PermissionError: If cannot access file.
             CacheComputeError: If hash computation fails.
         """
         normalized_path = self._normalize_path(file_path)
+
+        # Global check for non-images: minimal entry with file stats only, no image attempts
+        if Path(file_path).suffix.lower() not in IMAGE_EXTENSIONS:
+            self.logger.debug(f"Non-image file {file_path}: Creating minimal entry (no image metadata or perceptual hashes)")
+            stat = os.stat(file_path)
+            entry = FlatCacheEntry(
+                path=normalized_path,
+                size=stat.st_size,
+                mtime=stat.st_mtime,
+                width=None,
+                height=None,
+                phash=None,
+                whash=None,
+                brisque=None,
+                is_valid=True
+            )
+            # Only compute xxh3 if requested; no perceptual
+            if 'xxh3' in hash_types:
+                try:
+                    entry.xxh3 = self._compute_hash(file_path, 'xxh3', search_type=search_type)
+                except Exception as e:
+                    self.logger.warning(f"Failed to compute xxh3 for non-image {file_path}: {e}")
+                    entry.xxh3 = None
+            if self.set_entry(entry, search_type=search_type):
+                self.logger.debug(f"Set minimal entry for non-image {normalized_path}")
+            return {ht: (entry.xxh3 if ht == 'xxh3' else None) for ht in hash_types}
 
         # Check if file exists
         if not os.path.exists(file_path):
@@ -1263,7 +1307,7 @@ class FlatCacheManager:
             # Extract image metadata only for non-duplicate searches (e.g., similarity)
             # This avoids loading images during duplicate scans, preventing errors on non-images
             # and unnecessary processing for all files.
-            if search_type != 'duplicate' and self._is_image_file(file_path):
+            if search_type != 'duplicate':
                 try:
                     img_meta = self._extract_image_metadata(file_path, search_type)
                     entry.width = img_meta.get('width')
@@ -1277,6 +1321,14 @@ class FlatCacheManager:
                     entry.height = None
                     if search_type == 'similarity':
                         entry.brisque = None
+            else:
+                # Explicitly ensure image fields are None in duplicate mode
+                entry.width = None
+                entry.height = None
+                entry.phash = None
+                entry.whash = None
+                entry.brisque = None
+                # Fixed duplicate mode skips
             self.logger.debug(f"Creating new cache entry for {normalized_path} (search_type={search_type})")
         else:
             self.logger.debug(f"Retrieved valid cache entry for {normalized_path}")
@@ -1291,7 +1343,7 @@ class FlatCacheManager:
             if ht == 'xxh3':
                 if entry.xxh3 is None:
                     try:
-                        hash_value = self._compute_hash(file_path, 'xxh3')
+                        hash_value = self._compute_hash(file_path, 'xxh3', search_type=search_type)
                         entry.xxh3 = hash_value
                         self.logger.info(f"Computed xxh3 for {normalized_path}")
                     except Exception as e:
@@ -1301,14 +1353,14 @@ class FlatCacheManager:
             elif ht == 'phash':
                 if entry.phash is None:
                     try:
-                        hash_value = self._compute_hash(file_path, 'phash')
+                        hash_value = self._compute_hash(file_path, 'phash', search_type=search_type)
                         entry.phash = hash_value
                         self.logger.info(f"Computed phash for {normalized_path}")
                     except ValueError as ve:
                         # For non-image perceptual, compute file hash as fallback
                         self.logger.warning(str(ve))
                         try:
-                            fallback_hash = self._compute_hash(file_path, 'xxh3')
+                            fallback_hash = self._compute_hash(file_path, 'xxh3', search_type=search_type)
                             entry.phash = f"xxh3:{fallback_hash}"
                         except Exception as fe:
                             self.logger.warning(f"Fallback hash failed for phash on {file_path}: {fe}")
@@ -1320,7 +1372,7 @@ class FlatCacheManager:
             elif ht == 'whash':
                 if entry.whash is None:
                     try:
-                        hash_value = self._compute_hash(file_path, 'whash')
+                        hash_value = self._compute_hash(file_path, 'whash', search_type=search_type)
                         entry.whash = hash_value
                         self.logger.info(f"Computed whash for {normalized_path}")
                     except ValueError as ve:
@@ -1353,6 +1405,11 @@ class FlatCacheManager:
         hashes in 'duplicate' mode), logs progress and errors. In 'duplicate' mode, only ensures xxh3
         is available without touching image metadata or perceptual hashes.
 
+        This method always performs file stat validation on cached entries to ensure freshness.
+        Specify hash_types to retrieve only required hashes, avoiding unnecessary computations.
+        Use search_type to control scope: 'duplicate' for file-only hashing (e.g., xxh3, no image loading);
+        'similarity' for perceptual hashes (phash, whash) and quality metrics (brisque) on images.
+
         Parameters:
             file_paths (List[str]): List of file paths to process.
             hash_types (List[str]): List of hash types to retrieve/compute. Defaults to ['phash'].
@@ -1375,14 +1432,18 @@ class FlatCacheManager:
         if not file_paths:
             return {}
 
+        # For duplicate mode, strictly limit to file-based hashing (xxh3 only); skip all perceptual/image ops
+        if search_type == 'duplicate':
+            hash_types = ['xxh3']
+            self.logger.debug(f"Duplicate mode: Forced hash_types to ['xxh3']; perceptual/image ops skipped entirely")
+
         # For similarity, ensure all types including xxh3
         if search_type == 'similarity':
             full_types = list(set(hash_types + ['xxh3', 'phash', 'whash']))
             hash_types = full_types
-        elif search_type == 'duplicate':
-            # Ensure only xxh3 is processed; other types will be None without computation
-            hash_types = list(set(hash_types))  # Dedup, but xxh3 will be included if requested
-            self.logger.debug(f"Duplicate mode: Limiting hash_types to {hash_types} (perceptual skipped)")
+        else:
+            # Default: dedup provided types
+            hash_types = list(set(hash_types))
 
         results = {}
         total = len(file_paths)
@@ -1594,13 +1655,18 @@ class FlatCacheManager:
         Connects to the database, fetches metadata (path, entry count, version),
         and all entries ordered by path. Returns structured data for UI display.
 
+        This method performs file stat validation on each entry and filters out stale/invalid entries,
+        ensuring only current, validated data is returned for view-only purposes (e.g., in dialogs).
+        Use this for read-only inspection; for operational data retrieval with automatic invalidation,
+        prefer get_entry, get_hashes, or get_entries.
+
         Args:
             None
 
         Returns:
             Tuple[Dict[str, Any], List[Dict[str, Any]]]:
                 - metadata_dict: {'path': str, 'entry_count': int, 'cache_version': int, 'db_size': int, 'db_size_formatted': str}
-                - list_of_dicts: List of row dicts with column names as keys, ordered by path.
+                - list_of_dicts: List of row dicts with column names as keys, ordered by path (only valid entries).
 
         Raises:
             FlatCacheDBError: If database connection or query fails.
@@ -1632,8 +1698,21 @@ class FlatCacheManager:
                 columns = [desc[0] for desc in cursor.description]
                 rows = [dict(row) for row in cursor.fetchall()]
 
+                # Validate and filter out stale entries to ensure only current data is displayed in the view dialog
+                valid_rows = []
+                for row_dict in rows:
+                    try:
+                        entry = FlatCacheEntry.from_dict(row_dict)
+                        self._validate_entry(entry)
+                        valid_rows.append(row_dict)
+                    except FlatCacheValidationError:
+                        self.logger.debug(f"Filtered out invalid entry during cache view: {row_dict.get('path', 'unknown')}")
+
+                rows = valid_rows
+                entry_count = len(rows)
+
                 self.logger.info(
-                    f"Cache view data fetched: {entry_count} entries, version {cache_version}"
+                    f"Cache view data fetched: {entry_count} valid entries, version {cache_version}"
                 )
 
                 # Get database file size

@@ -23,6 +23,8 @@ from pk_py_lib.core.logging.logger import get_logger
 from pk_py_lib.gui.dialog_models import FileItem, Group, GroupStats
 from pk_py_lib.core.image.quality.provider import get_active_image_quality_evaluator
 from pk_py_lib.core.image.quality.base import ImageQualityEvaluator
+from pathlib import Path
+from pathlib import Path
 
 # LSH removed; always use brute-force
 
@@ -82,24 +84,44 @@ def format_timestamp(ts: float) -> str:
         return "Unknown"
 
 
-def get_resolution(path: str) -> str:
+def is_image_extension(path: str) -> bool:
+    """
+    Check if the file has an image extension.
+    
+    Args:
+        path (str): File path to check.
+    
+    Returns:
+        bool: True if the extension is a known image format.
+    """
+    return Path(path).suffix.lower() in {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.heif', '.heic'}
+
+
+def get_resolution(path: str, search_type: str = 'similarity') -> str:
     """
     Get image resolution (width x height) using PIL.
-
+    
     Args:
         path (str): Path to the image file.
-
+        search_type (str): 'duplicate' to skip image loading and return "Unknown".
+    
     Returns:
-        str: Resolution string (e.g., "1920x1080") or "Unknown" on failure.
-
+        str: Resolution string (e.g., "1920x1080") or "Unknown" on failure or skip.
+    
     Raises:
-        InvalidImageError: If image cannot be loaded.
-
+        InvalidImageError: If image cannot be loaded (non-duplicate mode).
+    
     Example:
         >>> res = get_resolution("/path/to/img.jpg")
         >>> print(res)
         1920x1080
     """
+    # Fixed duplicate mode skips
+    if search_type == 'duplicate':
+        return "Unknown"
+    # Skip for non-images
+    if not is_image_extension(path):
+        return "Unknown"
     try:
         with Image.open(path) as img:
             w, h = img.size
@@ -109,31 +131,40 @@ def get_resolution(path: str) -> str:
         return "Unknown"
 
 
-def get_image_metadata(path: str) -> Dict[str, any]:
+def get_image_metadata(path: str, search_type: str = 'similarity') -> Dict[str, any]:
     """
     Fetch basic metadata for an image: size, resolution, modification date.
-
+    
     Args:
         path (str): Path to the image file.
-
+        search_type (str): 'duplicate' to skip image loading, return "Unknown" for resolution.
+    
     Returns:
         Dict[str, any]: {'size': int, 'resolution': str, 'mod_date': str}
-
+    
     Raises:
         IOError: For file access errors.
         InvalidImageError: For image loading issues.
-
+    
     Example:
         >>> meta = get_image_metadata("/path/to/img.jpg")
         >>> print(meta['size'])
         524288
     """
+    # Fixed duplicate mode skips
     try:
         stat = os.stat(path)
         size = stat.st_size
         mod_ts = stat.st_mtime
         mod_date = format_timestamp(mod_ts)
-        resolution = get_resolution(path)
+        
+        # Skip image operations for non-images regardless of search_type
+        if not is_image_extension(path):
+            return {'size': size, 'resolution': 'Unknown', 'mod_date': mod_date}
+        
+        if search_type == 'duplicate':
+            return {'size': size, 'resolution': "Unknown", 'mod_date': mod_date}
+        resolution = get_resolution(path, search_type)
         return {'size': size, 'resolution': resolution, 'mod_date': mod_date}
     except IOError as e:
         raise IOError(f"Failed to access file {path}: {e}")
@@ -143,26 +174,28 @@ def get_image_metadata(path: str) -> Dict[str, any]:
 def get_image_quality_score(
     path: str,
     evaluator: Optional[ImageQualityEvaluator],
-    flat_cache_manager: Optional[FlatCacheManager] = None
+    flat_cache_manager: Optional[FlatCacheManager] = None,
+    search_type: str = 'similarity'
 ) -> tuple[Optional[float], Optional[str]]:
     """
     Compute the image quality score using the provided evaluator, preferring cached value if available.
-
+    
     If the evaluator is None (quality evaluation disabled), returns (None, None).
     If flat_cache_manager is provided, checks for cached brisque score first.
     If evaluation fails, logs an error and returns (None, evaluator.name).
-
+    
     Args:
         path (str): Path to the image file.
         evaluator (Optional[ImageQualityEvaluator]): Instantiated quality evaluator or None.
         flat_cache_manager (Optional[FlatCacheManager]): Optional FlatCacheManager instance
             to check for cached score and store new computation.
-
+        search_type (str): 'duplicate' to skip computation, return (None, None); else pass to evaluator.
+    
     Returns:
         tuple[Optional[float], Optional[str]]: (quality_score, algorithm_name)
             quality_score is normalized (higher is better).
             algorithm_name is the evaluator's name (e.g., 'brisque').
-
+    
     Example:
         >>> evaluator = get_active_image_quality_evaluator()
         >>> flat_cache = FlatCacheManager()
@@ -170,9 +203,12 @@ def get_image_quality_score(
         >>> print(f"Score: {score}, Algorithm: {name}")
         Score: 75.5, Algorithm: brisque
     """
+    # Fixed duplicate mode skips
+    if search_type == 'duplicate':
+        return None, None
     if evaluator is None:
         return None, None
-
+    
     # Prefer cached value if available
     if flat_cache_manager:
         try:
@@ -182,7 +218,7 @@ def get_image_quality_score(
                 return entry.brisque, evaluator.name
         except Exception as e:
             logger.warning(f"Failed to retrieve cached brisque for {path}: {e}")
-
+    
     try:
         score = evaluator.evaluate(path, flat_cache_manager=flat_cache_manager)
         # Store in cache if manager provided and computation succeeded
@@ -481,6 +517,7 @@ def find_similar_phash(
     flat_cache_manager: Optional[FlatCacheManager] = None,
     search_type: str = 'similarity'
 ) -> List[Group]:
+    # Fixed duplicate mode skips
     """
     Find groups of visually similar images using pHash Hamming distances.
 
@@ -618,8 +655,9 @@ def find_similar_phash(
             try:
                 dist = hamming_distance(ref_hash, h_dict['hash'])
                 score = 1.0 - (dist / 64.0)
-                meta = get_image_metadata(h_dict['path'])
-                quality_score, quality_algorithm = get_image_quality_score(h_dict['path'], quality_evaluator, flat_cache_manager)
+                # Fixed duplicate mode skips
+                meta = get_image_metadata(h_dict['path'], search_type=search_type)
+                quality_score, quality_algorithm = get_image_quality_score(h_dict['path'], quality_evaluator, flat_cache_manager, search_type=search_type)
                 
                 file_item = FileItem(
                     path=h_dict['path'],
@@ -921,6 +959,7 @@ def find_similar_whash(
     flat_cache_manager: Optional[FlatCacheManager] = None,
     search_type: str = 'similarity'
 ) -> List[Group]:
+    # Fixed duplicate mode skips
     """
     Find groups of visually similar images using wHash Hamming distances.
 
@@ -1058,13 +1097,14 @@ def find_similar_whash(
             try:
                 dist = hamming_distance(ref_hash, h_dict['hash'])
                 score = 1.0 - (dist / 64.0)
+                # Fixed duplicate mode skips
                 # For exact duplicates, fetch only file stats without image loading
                 stat = os.stat(h_dict['path'])
                 size = stat.st_size
                 mod_ts = stat.st_mtime
                 mod_date = format_timestamp(mod_ts)
                 resolution = "Unknown"  # No image loading for duplicates
-                quality_score, quality_algorithm = get_image_quality_score(h_dict['path'], quality_evaluator, flat_cache_manager)
+                quality_score, quality_algorithm = get_image_quality_score(h_dict['path'], quality_evaluator, flat_cache_manager, search_type=search_type)
                 
                 file_item = FileItem(
                     path=h_dict['path'],
@@ -1104,11 +1144,13 @@ def compute_whash_batch(
     mode: str = 'constant',
     wavelet: str = 'db1',
     settings: Optional[Dict] = None,
-    flat_cache_manager: Optional[FlatCacheManager] = None
+    flat_cache_manager: Optional[FlatCacheManager] = None,
+    search_type: str = 'similarity'
 ) -> Dict[str, Optional[str]]:
     """
     Batch compute wHashes for a list of image paths, with progress logging.
     Uses flat_cache.get_hashes for efficiency.
+    # Fixed duplicate mode skips
 
     Processes paths sequentially (PoC; no parallelism). Skips failures but logs warnings.
     Results include None for failed paths. Cache is used/updated if provided and update_cache=True.
@@ -1122,6 +1164,7 @@ def compute_whash_batch(
         cache_manager (Optional[CacheManager]): Legacy Cache instance.
         flat_cache_manager (Optional[FlatCacheManager]): FlatCache instance.
         update_cache (bool): If True, update cache on misses (applies to legacy cache only; flat cache handles its own updates internally).
+        search_type (str): 'duplicate' to skip computation, return {} without image loading.
 
     Returns:
         Dict[str, Optional[str]]: {path: hash_str or None if failed}.
@@ -1139,7 +1182,12 @@ def compute_whash_batch(
     Note:
         - Logs progress via logger.info (e.g., "Batch progress: 1/10 - /path/to/img.jpg").
         - For large batches, consider future parallelization with ThreadPoolExecutor.
+        - In 'duplicate' mode, skips perceptual hash computation to avoid image loading.
     """
+    if search_type == 'duplicate':
+        logger.warning(f"Skipping batch wHash computation in duplicate mode for {len(paths)} paths - no image loading")
+        return {p: None for p in paths}
+
     if not paths:
         raise ValueError("paths list cannot be empty")
 
@@ -1153,7 +1201,7 @@ def compute_whash_batch(
 
     # Use get_hashes for batch efficiency (note: get_hashes doesn't support mode/wavelet params yet; assume default or extend if needed)
     # For now, since _compute_hash in flat_cache uses default for whash, call batch
-    batch_results = flat_cache_manager.get_hashes(paths, ['whash'])
+    batch_results = flat_cache_manager.get_hashes(paths, ['whash'], search_type=search_type)
 
     for path in paths:
         hash_val = batch_results.get(path, {}).get('whash')
@@ -1170,8 +1218,9 @@ def compute_whash_batch(
 def find_exact_duplicates(
     hashes: List[Dict[str, str]],
     flat_cache_manager: Optional[FlatCacheManager] = None,
-    search_type: Optional[str] = None
+    search_type: str = 'similarity'
 ) -> List[Group]:
+    # Fixed duplicate mode skips
     """
     Find groups of exact duplicate images based on content hash equality.
 
@@ -1229,13 +1278,14 @@ def find_exact_duplicates(
         images: List[FileItem] = []
         for path in paths:
             try:
-                meta = get_image_metadata(path)
+                # Fixed duplicate mode skips
+                meta = get_image_metadata(path, search_type=search_type)
                 score = 1.0
                 if search_type == 'duplicate':
                     quality_score = 1.0
                     quality_algorithm = None
                 else:
-                    quality_score, quality_algorithm = get_image_quality_score(path, quality_evaluator, flat_cache_manager)
+                    quality_score, quality_algorithm = get_image_quality_score(path, quality_evaluator, flat_cache_manager, search_type=search_type)
                 
                 file_item = FileItem(
                     path=path,
@@ -1252,16 +1302,16 @@ def find_exact_duplicates(
             except Exception as e:
                 logger.error(f"Failed to process duplicate {path}: {e}")
                 continue
- 
+
         if len(images) < 2:
             continue
- 
+
         stats = compute_group_stats(images)
         # Override scores for exact
         stats.min_score = 1.0
         stats.max_score = 1.0
         stats.avg_score = 1.0
- 
+
         group = Group(
             id=group_id,
             items=images,
@@ -1280,8 +1330,10 @@ def find_similar_images(
     algorithm: str = "phash",
     threshold: Optional[int] = None,
     settings: Optional[Dict] = None,
-    flat_cache_manager: Optional[FlatCacheManager] = None
+    flat_cache_manager: Optional[FlatCacheManager] = None,
+    search_type: str = 'similarity'
 ) -> List[Group]:
+    # Fixed duplicate mode skips
     """
     Dispatcher for finding similar or exact duplicate image groups.
 
@@ -1296,6 +1348,7 @@ def find_similar_images(
         settings (Optional[Dict]): For perceptual threshold override.
         flat_cache_manager (Optional[FlatCacheManager]): Optional FlatCacheManager instance
             to pass to underlying grouping functions for quality caching.
+        search_type (str): 'duplicate' to skip perceptual computations, use exact duplicates.
 
     Returns:
         List[Group]: List of groups.
@@ -1309,11 +1362,11 @@ def find_similar_images(
         1
     """
     if algorithm == "exact":
-        return find_exact_duplicates(hashes, flat_cache_manager)
+        return find_exact_duplicates(hashes, flat_cache_manager, search_type=search_type)
     elif algorithm == "phash":
-        return find_similar_phash(hashes, threshold, settings, flat_cache_manager)
+        return find_similar_phash(hashes, threshold, settings, flat_cache_manager, search_type=search_type)
     elif algorithm == "whash":
-        return find_similar_whash(hashes, threshold, settings, flat_cache_manager)
+        return find_similar_whash(hashes, threshold, settings, flat_cache_manager, search_type=search_type)
     else:
         raise ValueError(f"Unsupported algorithm: {algorithm}")
 

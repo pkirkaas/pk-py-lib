@@ -26,7 +26,6 @@ The Flat Cache is an optional feature controlled by the application settings pro
 The Flat Cache is now **enabled by default** for all new profiles, providing persistent, file-stat validated storage for computed metadata.
 
 **Schema Definition (from [`settings_schema.py`](src/pk_py_lib/core/settings_schema.py:134)):**
-
 ```json
 "use_flat_cache": {
     "type": "boolean",
@@ -178,12 +177,104 @@ for group in similar_groups:
 
 These examples demonstrate how `search_type` ensures efficient, targeted caching across workflows.
 
+## Best Practices for Usage
+
+Based on recent deep evaluation of FlatCache usage, the following best practices ensure reliability, efficiency, and correctness. These guidelines incorporate findings from validation checks, selective data analyses, and the recent fix to [`get_cache_view_data`](src/pk_py_lib/core/flat_cache.py:1590) which now filters stale entries for view-only operations.
+
+### Validation Best Practices
+
+Always use validating methods to ensure cache freshness and avoid operating on stale data. Direct raw DB queries (e.g., via SQL) for operational data should be avoided, as they bypass built-in file stat checks (size, mtime, inode, device) and can lead to incorrect results or missed invalidations.
+
+- **Invoke Validating Methods**: Use [`get_entry`](src/pk_py_lib/core/flat_cache.py:758), [`get_hashes`](src/pk_py_lib/core/flat_cache.py:1348), or [`get_entries`](src/pk_py_lib/core/flat_cache.py:1409) for any retrieval. These methods automatically:
+  - Query the cache.
+  - Perform file stat validation via [`_validate_entry`](src/pk_py_lib/core/flat_cache.py:712).
+  - Raise [`FlatCacheValidationError`](src/pk_py_lib/core/flat_cache.py:69) on mismatch, treating the entry as stale and returning `None` or triggering recomputation.
+  
+  **Example**:
+  ```python
+  entry = cache_mgr.get_entry('/path/to/file.jpg')
+  if entry is None:
+      # Stale or missing: compute and cache anew
+      entry = compute_and_set_entry('/path/to/file.jpg')
+  else:
+      # Valid: use cached data
+      use_entry_data(entry)
+  ```
+
+- **Note on View-Only Use**: For read-only inspection (e.g., in dialogs), use [`get_cache_view_data`](src/pk_py_lib/core/flat_cache.py:1590). This method now includes validation and filters out stale entries, ensuring the view reflects current data without side effects like automatic recomputation. It is suitable for UI display but not for operational logic.
+
+- **Avoid Raw DB Queries**: Never query the SQLite DB directly for operational data (e.g., via `conn.execute("SELECT * FROM flat_cache_entries")`). This skips validation, risking use of outdated hashes or metrics. Reserve raw queries for administrative tasks like backups, with manual validation if needed.
+
+- **Invalidation**: After file modifications (e.g., edits, moves), explicitly call [`invalidate_entry`](src/pk_py_lib/core/flat_cache.py:905) or rely on validation in getters. For batch ops, use [`get_uncached_files`](src/pk_py_lib/core/flat_cache.py:997) to identify and recompute only changed files.
+
+### Selective Data Retrieval
+
+Leverage `search_type` and `hash_types` parameters to retrieve only necessary data, minimizing computations and I/O. This is crucial for efficiency in large scans.
+
+- **Use `search_type`**: Specify `'duplicate'` for file-only operations (e.g., XXH3 hashing, no image loading) or `'similarity'` for perceptual analysis (pHash, wHash, BRISQUE on images). This controls what is computed/stored:
+  - `'duplicate'`: Computes only XXH3 for all files; skips image decoding, perceptual hashes, and quality scores. Ideal for exact duplicate detection.
+  - `'similarity'`: Computes full perceptual hashes and quality for images; falls back to XXH3 for non-images.
+
+  **Example**:
+  ```python
+  # Duplicate scan: fast, no image ops
+  hashes = cache_mgr.get_hashes(['/path/to/files'], hash_types=['xxh3'], search_type='duplicate')
+  # {'/path/to/file1.jpg': {'xxh3': 'a1b2c3...'}}
+
+  # Similarity scan: full for images
+  hashes = cache_mgr.get_hashes(['/path/to/images'], hash_types=['phash', 'whash'], search_type='similarity')
+  # {'/path/to/img.jpg': {'phash': 'd4e5f6...', 'whash': 'g7h8i9...', 'xxh3': 'a1b2c3...'} (xxh3 auto-included)}
+  ```
+
+- **Specify `hash_types`**: Limit to required hashes to avoid unnecessary computations. For example, in duplicate mode, request only `['xxh3']` to skip perceptual attempts. In similarity, request `['phash', 'whash']` without quality if not needed.
+
+  **Efficiency Tip**: In `'duplicate'` mode, specifying perceptual types (e.g., `['phash']`) returns `None` without computation, preventing image loading errors on non-images.
+
+- **Handling Partial Data**: Entries may have partial `hash_data` from prior scans (e.g., XXH3 from duplicate, full from similarity). Validating methods check for required keys; if missing, they trigger selective recomputation without overwriting unrelated fields.
+
+### Common Patterns
+
+- **Duplicate Scans**: Use `search_type='duplicate'` in traversal and hashing. Group files by XXH3 for exact matches. Example: Integrate with `scan_directory` to build hash groups without image analysis.
+  
+  **Warning**: Partial retrieval (e.g., missing perceptual data) is low-risk here, as duplicates don't require it. If switching to similarity later, validation will recompute as needed.
+
+- **Similarity Scans**: Use `search_type='similarity'` for image pools. Compute perceptual distances (e.g., Hamming on pHash) and filter by BRISQUE if enabled. Example: Pass results to `find_similar_images` for grouping.
+
+  **Pattern**:
+  ```python
+  # Traverse with similarity focus
+  files_data = scan_directory(root_path, search_type='similarity', flat_cache_manager=cache_mgr)
+  # Compute similarities
+  groups = find_similar_images(files_data, threshold=8, use_phash=True)
+  ```
+
+- **Mixed Workflows**: Run duplicate first (populates XXH3), then similarity (adds perceptual without recomputing XXH3). Use `get_uncached_files` before scans to target only changed files.
+
+- **Batch Operations**: For large sets, use `batch_set` after computing. Always validate inputs with `get_uncached_files` to avoid redundant work.
+
+**Low-Risk Warning on Partial Retrieval**: Due to conditional storage, an entry might lack full data (e.g., no BRISQUE after duplicate scan). Getters handle this by recomputing selectively, but always specify `search_type` to ensure completeness for the workflow.
+
+### High-Risk Areas
+
+- **View Dialogs**: Previously, [`get_cache_view_data`](src/pk_py_lib/core/flat_cache.py:1590) returned unvalidated entries, risking display of stale data in UI (e.g., [`view_cache_dialog.py`](src/pk_py_lib/gui/dialogs/view_cache_dialog.py)). Now fixed: It validates and filters stale entries, ensuring views show only current data. For interactive views, pair with `invalidate_entry` on user actions (e.g., file deletion).
+
+- **Large Batch Operations**: In scans with 10k+ files, validation can be I/O-intensive. Mitigate by:
+  - Using `get_uncached_files` first to parallelize recomputes.
+  - Batching via `batch_set` (transactional, efficient).
+  - Monitoring via logging; handle `PermissionError` gracefully (treat as uncached).
+  - For very large ops, consider `cleanup_old_entries` post-scan to prune unused data.
+
+- **Concurrency**: On Windows, avoid parallel writes (e.g., multiple scans). WAL mode allows reads during writes, but heavy batches should be sequential.
+
+- **Error-Prone Scenarios**: File moves (path changes) auto-invalidate via key mismatch. Cross-device moves invalidate via device ID. Always log validation failures for debugging.
+
+Adhering to these practices ensures robust, efficient FlatCache usage, reflecting evaluation outcomes like strong overall validation and optimized selective retrieval.
+
 ## Database Schema
 
 The cache uses a single table, `flat_cache_entries`, indexed by the normalized file path. The schema version is now 5.0.0, reflecting the removal of non-core metadata columns to focus on essential file stats, dimensions, and computed hashes/quality data. The contents of computed fields (e.g., `hash_data`, `width`, `height`) are conditional on the `search_type` used during entry creation—minimal for `'duplicate'` (XXH3 only) and comprehensive for `'similarity'` (perceptual hashes, dimensions, quality for images).
 
 **Table Definition (from [`flat_cache.py`](src/pk_py_lib/core/flat_cache.py:212)):**
-
 ```sql
 CREATE TABLE IF NOT EXISTS flat_cache_entries (
     path TEXT PRIMARY KEY NOT NULL,
@@ -231,7 +322,6 @@ CREATE INDEX IF NOT EXISTS idx_is_valid ON flat_cache_entries (is_valid);
 | `updated_at` | `REAL` | Unix timestamp of last update. |
 
 **FlatCacheEntry Dataclass (from [`flat_cache.py`](src/pk_py_lib/core/flat_cache.py:64)):**
-
 The `FlatCacheEntry` dataclass has been updated to reflect the streamlined schema in version 5.0.0. It now includes only the retained fields for core validation and computed data. Optional fields like `width`/`height` are populated based on `search_type`.
 
 ```python
@@ -317,7 +407,6 @@ Inserts or replaces a cache entry (UPSERT). Automatically normalizes the path, u
 **Returns**: `bool`. `True` if the operation succeeded, `False` otherwise (e.g., file inaccessible).
 
 **Example Usage (from [`similarity.py`](src/pk_py_lib/core/image/similarity.py:429), updated for search_type):**
-
 ```python
 # Get current entry or create a new one with file stats
 search_type = 'similarity'  # Or 'duplicate'
