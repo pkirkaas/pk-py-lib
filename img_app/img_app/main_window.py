@@ -392,7 +392,7 @@ class ScanWorker(QThread):
                 # Scan was cancelled by stop_event. Set cancellation flag and proceed to emit finished signal.
                 stats["processed"] = 0
                 stats["cancelled"] = True
-                logger.info("ScanWorker run cancelled by user request.")
+                logger.debug("ScanWorker run cancelled by user request.")
                 # We rely on the last progress callback to have emitted the final status
                 # (e.g., "Scan cancelled.)
                 
@@ -446,7 +446,8 @@ class ScanWorker(QThread):
             stats["errors"] = len(stats["error_details"])
         
         # Emit summary at the end (even on partial stop)
-        print(f"[ScanWorker] Emitting finished signal with profile_name={self.profile_name}, stats={stats}", file=sys.stderr)
+        errors = stats.get('errors', 0)
+        # Scan completion reported via finished signal; no terminal print
         stats['mode'] = self.mode
         stats['compute_hashes'] = self.compute_hashes
         self.finished.emit(self.profile_name, stats)
@@ -519,7 +520,7 @@ class ComparisonWorker(QThread):
         try:
             if self._stop:
                 results['cancelled'] = True
-                self.logger.info("ComparisonWorker cancelled before start.")
+                self.logger.debug("ComparisonWorker cancelled before start.")
                 return
             
             if self.comparison_type == 'duplicate':
@@ -547,7 +548,7 @@ class ComparisonWorker(QThread):
         time.sleep(0.1)
         if self._stop:
             results['cancelled'] = True
-            self.logger.info("Duplicate comparison cancelled.")
+            self.logger.debug("Duplicate comparison cancelled.")
             self.progress.emit(100, 100, "Duplicate comparison cancelled.")
             return
 
@@ -561,7 +562,7 @@ class ComparisonWorker(QThread):
         results['pool_map'] = pool_map
         
         self.progress.emit(100, 100, f"Duplicate detection finished. Found {len(dialog_groups)} groups.")
-        self.logger.info(f"Duplicate comparison finished. Found {len(dialog_groups)} groups.")
+        self.logger.debug(f"Duplicate comparison finished. Found {len(dialog_groups)} groups.")
 
     def _run_similarity_comparison(self, results: dict) -> None:
         """
@@ -584,7 +585,7 @@ class ComparisonWorker(QThread):
         time.sleep(0.1)
         if self._stop:
             results['cancelled'] = True
-            self.logger.info("Similarity comparison cancelled.")
+            self.logger.debug("Similarity comparison cancelled.")
             self.progress.emit(100, 100, "Similarity comparison cancelled.")
             return
 
@@ -598,7 +599,7 @@ class ComparisonWorker(QThread):
         results['pool_map'] = pool_map
         
         self.progress.emit(100, 100, f"Similarity grouping finished. Found {len(dialog_groups)} groups.")
-        self.logger.info(f"Similarity comparison finished. Found {len(dialog_groups)} groups.")
+        self.logger.debug(f"Similarity comparison finished. Found {len(dialog_groups)} groups.")
 
 class MainWindow(QMainWindow):
     """
@@ -1874,7 +1875,7 @@ class MainWindow(QMainWindow):
         # Basic completion UI update (for logging/status bar)
         try:
             # Fixed duplicate mode bug: Removed temporary [TRACE] logging prints
-            LOGGER.info("Scan finished handler started", variables={
+            LOGGER.debug("Scan finished handler started", variables={
                 "profile_name": profile_name,
                 "summary_keys": list(summary.keys()) if summary else [],
                 "found_count": int((summary or {}).get("found", 0) or 0),
@@ -2051,7 +2052,7 @@ class MainWindow(QMainWindow):
             paths_a = []
             paths_b = []
 
-        LOGGER.info("Final mode detection", variables={
+        LOGGER.debug("Final mode detection", variables={
             "is_single_pool": is_single_pool,
             "two_pool": two_pool,
             "direction": direction,
@@ -2273,7 +2274,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        LOGGER.info("Final groups data state", variables={
+        LOGGER.debug("Final groups data state", variables={
             "is_single_pool": is_single_pool,
             "two_pool": two_pool,
             "direction": direction,
@@ -2524,7 +2525,7 @@ class MainWindow(QMainWindow):
             # Execute dialog
             ret = dialog.exec()
             total_items = sum(group.stats.file_count for group in dialog_groups)
-            self.logger.info(
+            self.logger.debug(
                 "file_management.dialog.completed",
                 variables={
                     "dialog_type": type(dialog).__name__,

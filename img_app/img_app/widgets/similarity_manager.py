@@ -281,7 +281,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         self._profile_payload = profile_payload or {}
         is_valid, errors = validate_settings_schema(self._profile_payload)
         self._validator_errors = errors or []
-        LOGGER.info(
+        LOGGER.debug(
             "Settings profile validation for SimilarityManagerDialog",
             variables={"is_valid": is_valid, "error_count": len(self._validator_errors)},
         )
@@ -299,16 +299,6 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             )
             return
 
-        info_lines = [
-            "Settings Profile Validation",
-            "---------------------------",
-            "Status: VALID",
-        ]
-        threshold = self._extract_similarity_threshold()
-        if threshold is not None:
-            info_lines.append(
-                f"Normalized threshold: {threshold * 100:.1f}% (UI {internal_to_ui_percent(threshold)})."
-            )
         # Success message box removed per user request. Validation status is logged.
         pass
 

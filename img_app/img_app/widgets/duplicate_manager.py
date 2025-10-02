@@ -203,7 +203,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         self._profile_payload = profile_payload or {}
         is_valid, errors = validate_settings_schema(self._profile_payload)
         self._validator_errors = errors or []
-        LOGGER.info(
+        LOGGER.debug(
             "Settings profile validation for DuplicateManagerDialog",
             variables={"is_valid": is_valid, "error_count": len(self._validator_errors)},
         )
