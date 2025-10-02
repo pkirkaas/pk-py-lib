@@ -684,17 +684,87 @@ class MainWindow(QMainWindow):
         """
         Handles the 'Clear Cache' menu action.
         
-        Currently a placeholder that shows an info message.
+        Calls self.flat_cache_manager.clear_cache() and shows success/error message.
         """
-        show_selectable_info(self, "Cache Operation", "Clear Cache functionality is not yet implemented.")
+        if not hasattr(self, 'flat_cache_manager') or self.flat_cache_manager is None:
+            show_selectable_error(self, "Cache Error", "FlatCacheManager is not available.")
+            return
+
+        try:
+            self.flat_cache_manager.clear_cache()
+            show_selectable_info(self, "Cache Cleared", "Cache database cleared and recreated successfully.")
+            self.status_label.setText("Cache cleared.")
+        except Exception as e:
+            show_selectable_error(self, "Clear Cache Failed", f"Failed to clear cache: {str(e)}")
+            self.status_label.setText("Cache clear failed.")
 
     def _on_clean_cache(self) -> None:
         """
         Handles the 'Clean Cache' menu action.
         
-        Currently a placeholder that shows an info message.
+        Calls self.flat_cache_manager.clean_cache() in a background thread with progress dialog.
         """
-        show_selectable_info(self, "Cache Operation", "Clean Cache functionality is not yet implemented.")
+        if not hasattr(self, 'flat_cache_manager') or self.flat_cache_manager is None:
+            show_selectable_error(self, "Cache Error", "FlatCacheManager is not available.")
+            return
+
+        from PySide6.QtCore import QThread, Signal
+        from PySide6.QtWidgets import QProgressDialog
+
+        class CleanCacheWorker(QThread):
+            progress = Signal(int)
+            finished = Signal(int)
+            error = Signal(str)
+
+            def __init__(self, manager):
+                super().__init__()
+                self.manager = manager
+
+            def run(self):
+                try:
+                    # Get total entries for progress
+                    with self.manager._get_connection() as conn:
+                        cursor = conn.execute(f"SELECT COUNT(*) FROM {self.manager.table_name}")
+                        total = cursor.fetchone()[0]
+
+                    if total == 0:
+                        self.finished.emit(0)
+                        return
+
+                    deleted = self.manager.clean_cache()
+                    self.finished.emit(deleted)
+                except Exception as e:
+                    self.error.emit(str(e))
+
+        worker = CleanCacheWorker(self.flat_cache_manager)
+        progress_dialog = QProgressDialog("Cleaning cache...", "Cancel", 0, 100, self)
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+
+        def on_progress(value):
+            progress_dialog.setValue(value)
+
+        def on_finished(deleted):
+            progress_dialog.close()
+            if deleted > 0:
+                show_selectable_info(self, "Cache Cleaned", f"Cleaned {deleted} invalid entries from cache.")
+                self.status_label.setText(f"Cache cleaned: {deleted} entries removed.")
+            else:
+                show_selectable_info(self, "Cache Cleaned", "No invalid entries found in cache.")
+                self.status_label.setText("Cache clean completed: No changes.")
+
+        def on_error(msg):
+            progress_dialog.close()
+            show_selectable_error(self, "Clean Cache Failed", f"Failed to clean cache: {msg}")
+            self.status_label.setText("Cache clean failed.")
+
+        worker.progress.connect(on_progress)
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_error)
+        progress_dialog.canceled.connect(worker.quit)
+
+        worker.start()
+        progress_dialog.exec()
 
     def _show_about(self) -> None:
         """

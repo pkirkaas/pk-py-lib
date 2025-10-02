@@ -1451,6 +1451,140 @@ class FlatCacheManager:
             self.logger.error(f"DB error in get_entries: {e}")
             return {p: None for p in normalized_paths}
 
+    def clear_cache(self) -> None:
+        """
+        Clears the entire cache by deleting the database file and recreating the schema.
+
+        This method removes all cached entries, deletes the database file and its companion files
+        (e.g., .db-wal, .db-shm), and reinitializes the database with the current schema.
+
+        Logs:
+            - Deletion and recreation actions.
+            - Success or failure of the operation.
+
+        Raises:
+            FlatCacheDBError: If the database files cannot be deleted or the database cannot be recreated.
+
+        Example:
+            >>> manager = FlatCacheManager()
+            >>> manager.clear_cache()  # Deletes and recreates flat_cache.db
+        """
+        try:
+            if self.db_path.exists():
+                self.logger.info(f"Clearing cache: Deleting database files at {self.db_path}")
+                self._delete_database_files()
+            else:
+                self.logger.info(f"No existing database to clear at {self.db_path}")
+
+            self.logger.info("Recreating cache database with current schema")
+            self._initialize_db()
+            self.logger.info("Cache cleared and reinitialized successfully.")
+
+        except FlatCacheDBError as e:
+            self.logger.error(f"Failed to clear cache: {e}")
+            raise FlatCacheDBError(
+                f"Cache clear operation failed. Original error: {e}. "
+                f"Ensure no other processes are using the database and try again.",
+                original_error=e
+            )
+        except Exception as e:
+            self.logger.error(f"Unexpected error during cache clear: {e}", exc_info=True)
+            raise FlatCacheDBError(
+                f"Unexpected error clearing cache: {e}",
+                original_error=e
+            )
+
+    def clean_cache(self) -> int:
+        """
+        Cleans the cache by validating and removing invalid entries.
+
+        This method connects to the database, queries all entries, and for each:
+        - Checks if the file exists using os.path.exists().
+        - If exists, compares os.path.getsize() and os.path.getmtime() against cached values.
+        - Deletes rows where the file is missing or metadata mismatches (size or mtime).
+
+        After processing, executes VACUUM to compact the database and optimize performance.
+
+        Logs:
+            - Progress: Number of entries processed and deleted.
+            - Individual deletions for non-existent or mismatched files.
+            - Any filesystem access errors (warnings, skips deletion).
+            - Final summary of deletions.
+
+        Returns:
+            int: The total number of entries deleted.
+
+        Raises:
+            FlatCacheDBError: If database connection, query, or deletion operations fail.
+
+        Example:
+            >>> manager = FlatCacheManager()
+            >>> deleted_count = manager.clean_cache()
+            >>> print(f"Cleaned {deleted_count} invalid cache entries.")
+        """
+        deleted = 0
+        processed = 0
+
+        try:
+            with self._get_connection() as conn:
+                # Query all entries
+                cursor = conn.execute(f"SELECT path, size, mtime FROM {self.table_name}")
+                rows = cursor.fetchall()
+
+                self.logger.info(f"Starting cache clean: Validating {len(rows)} entries")
+
+                for row in rows:
+                    processed += 1
+                    path = row['path']
+                    cached_size = row['size']
+                    cached_mtime = row['mtime']
+
+                    try:
+                        if not os.path.exists(path):
+                            self.logger.debug(f"Deleting non-existent entry: {path}")
+                            conn.execute(f"DELETE FROM {self.table_name} WHERE path = ?", (path,))
+                            deleted += 1
+                            continue
+
+                        current_size = os.path.getsize(path)
+                        current_mtime = os.path.getmtime(path)
+
+                        if current_size != cached_size or abs(current_mtime - cached_mtime) > 1e-6:
+                            mismatch_info = f"size: {cached_size} vs {current_size}, mtime: {cached_mtime} vs {current_mtime}"
+                            self.logger.debug(f"Deleting mismatched entry {path}: {mismatch_info}")
+                            conn.execute(f"DELETE FROM {self.table_name} WHERE path = ?", (path,))
+                            deleted += 1
+
+                    except OSError as e:
+                        if e.errno == 2:  # ENOENT
+                            self.logger.debug(f"File access error (likely non-existent): {path} - {e}")
+                            conn.execute(f"DELETE FROM {self.table_name} WHERE path = ?", (path,))
+                            deleted += 1
+                        else:
+                            self.logger.warning(f"Filesystem error validating {path}: {e} (skipping)")
+                    except PermissionError as e:
+                        self.logger.warning(f"Permission denied for {path}: {e} (skipping)")
+                    except Exception as e:
+                        self.logger.warning(f"Unexpected error validating {path}: {e} (skipping)")
+
+                # Commit deletions
+                conn.commit()
+
+                # Vacuum to compact the database
+                self.logger.info("Executing VACUUM to optimize database")
+                conn.execute("VACUUM")
+                conn.commit()
+
+                self.logger.info(f"Cache clean completed: Processed {processed} entries, deleted {deleted} invalid ones")
+
+                return deleted
+
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error during clean_cache: {e}", exc_info=True)
+            raise FlatCacheDBError(f"Database operation failed during cache clean: {e}", original_error=e)
+        except Exception as e:
+            self.logger.error(f"Unexpected error during clean_cache: {e}", exc_info=True)
+            raise FlatCacheDBError(f"Unexpected error cleaning cache: {e}", original_error=e)
 # Example Usage (for documentation/testing purposes)
 if __name__ == '__main__':
     # Setup basic logging for standalone test
