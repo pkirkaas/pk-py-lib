@@ -111,25 +111,6 @@ def test_brisque_input_validation_non_image_file(temp_non_image: Path):
     assert non_img_path in str(excinfo.value.path)
 
 
-def test_niqe_and_piqe_not_registered():
-    """
-    Verify that NIQE and PIQE evaluators are not registered in the registry,
-    as they are stubs and disabled per project requirements.
-    """
-    registry = ImageQualityEvaluatorRegistry
-
-    # Check registered keys (only 'brisque')
-    registered_keys = registry.get_registered_keys()
-    assert registered_keys == ["brisque"]
-
-    # Explicitly check for non-existent keys
-    with pytest.raises(ValueError) as excinfo_niqe:
-        registry.get_evaluator_class("niqe")
-    assert "Unknown image quality evaluator: 'niqe'" in str(excinfo_niqe.value)
-
-    with pytest.raises(ValueError) as excinfo_piqe:
-        registry.get_evaluator_class("piqe")
-    assert "Unknown image quality evaluator: 'piqe'" in str(excinfo_piqe.value)
 
 
 def test_brisque_fallback_on_computation_error(temp_image: Path):

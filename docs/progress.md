@@ -10,6 +10,11 @@ Quick Status (auto-generated summary - recompute as needed)
 - Blocked: 0
 - Deferred: 0
 
+Active Features
+- Image similarity detection using pHash and wHash with brute-force pairwise comparison (Hamming distance)
+- Image quality assessment using BRISQUE only (no NIQE/PIQE)
+- GUI components: file selectors, settings manager, duplicate/similarity results dialogs, progress dialogs
+
 Current Focus
 - M0 app shell — see [`docs/add-app-plan.md`](docs/add-app-plan.md:67)
 
@@ -74,7 +79,7 @@ How Roo updates this file
     - Unit tests validate identical and modified images
   risk: medium
   last_updated: 2025-08-14
-  notes: Use imagehash or OpenCV implementation
+  notes: Use imagehash or OpenCV implementation; now uses brute-force for similarity grouping
 
 - id: DB-001
   title: Meta/schema_version table

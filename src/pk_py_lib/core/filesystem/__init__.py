@@ -10,8 +10,6 @@ from .operations import FileOperations, SafeFileOperations
 from .traversal import DirectoryTraversal
 from .organization import FileOrganizer
 
-# Import monitoring submodule
-from . import monitoring
 
 __all__ = [
     "PathOperations",
@@ -19,7 +17,6 @@ __all__ = [
     "SafeFileOperations",
     "DirectoryTraversal",
     "FileOrganizer",
-    "monitoring"
 ]
 
 # Convenience functions for common operations

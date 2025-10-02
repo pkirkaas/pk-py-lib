@@ -24,11 +24,7 @@ from pk_py_lib.gui.dialog_models import FileItem, Group, GroupStats
 from pk_py_lib.core.image.quality.provider import get_active_image_quality_evaluator
 from pk_py_lib.core.image.quality.base import ImageQualityEvaluator
 
-try:
-    from datasketch import MinHash, MinHashLSH
-    LSH_AVAILABLE = True
-except ImportError:
-    LSH_AVAILABLE = False
+# LSH removed; always use brute-force
 
 
 class InvalidImageError(Exception):
@@ -537,10 +533,9 @@ def find_similar_phash(
         >>> print(f"Groups: {len(groups_large)}")
 
     Note:
-        - Brute-force O(n^2); LSH approximates for scale (PoC; tune num_perm later via settings).
-        - Logs LSH usage, candidate counts, fallbacks via logger.info/warning.
+        - Brute-force O(n^2) for all sizes; for large n (>1000), consider external indexing in future.
+        - Logs warning for large inputs.
         - Threshold tuning: Test empirically (0=exact, 10~similar, 20~loose).
-        - Requires datasketch for LSH; falls back gracefully.
     """
     if not hashes:
         raise ValueError("hashes list cannot be empty")
@@ -585,73 +580,20 @@ def find_similar_phash(
         if pp1 != pp2:
             parent[pp1] = pp2
 
-    use_lsh = n > 1000 and LSH_AVAILABLE
-    if use_lsh:
-        try:
-            logger.info(f"Using LSH for n={n}")
-            similarity_settings = settings.get('similarity', {}) if settings else {}
-            num_perm = similarity_settings.get('lsh_num_perm', 128)
-            lsh_threshold = similarity_settings.get('lsh_threshold')
-            if lsh_threshold is None:
-                lsh_threshold = 1 - threshold / 64.0
-            logger.debug(f"LSH params: num_perm={num_perm}, threshold={lsh_threshold}")
-            lsh = MinHashLSH(threshold=lsh_threshold, num_perm=num_perm)
-            minhases = {}
-            for h in hashes:
-                hash_int = int(h['hash'], 16)
-                m = MinHash(num_perm=num_perm)
-                for i in range(64):
-                    if hash_int & (1 << i):
-                        m.update(str(i).encode('utf-8'))  # Fixed datasketch MinHash.update (bytes) and insert order.
-                minhases[h['path']] = m
-                lsh.insert(h['path'], m)  # Fixed datasketch MinHash.update (bytes) and insert order.
+    if n > 1000:
+        logger.warning(f"Large input ({n} images) for brute-force grouping; consider external indexing for scale in production")
 
-            from collections import defaultdict
-            candidates = defaultdict(set)
-            for path, m in minhases.items():
-                neighbors = lsh.query(m)
-                for neigh in neighbors:
-                    if neigh != path:
-                        candidates[path].add(neigh)
-                        candidates[neigh].add(path)  # Symmetric
-
-            pairs = set()
-            for p1 in candidates:
-                for p2 in candidates[p1]:
-                    if p1 < p2:
-                        pairs.add((p1, p2))
-
-            logger.info(f"Found {len(pairs)} candidate pairs")
-
-            # Union on exact distances for candidates
-            for p1, p2 in pairs:
-                i = path_to_index[p1]
-                j = path_to_index[p2]
-                try:
-                    dist = hamming_distance(hashes[i]['hash'], hashes[j]['hash'])
-                    if dist <= threshold:
-                        union(i, j)
-                except ValueError as e:
-                    logger.warning(f"Skipping invalid candidate pair ({p1}, {p2}): {e}")
-                    continue
-
-        except Exception as e:
-            logger.warning(f"LSH failed: {e}, using brute-force")
-            use_lsh = False
-
-    if not use_lsh:
-        if n > 1000:
-            logger.warning(f"Large input ({n} images) for brute-force grouping; consider indexing for scale")
-        # Compute pairwise distances (brute-force)
-        for i in range(n):
-            for j in range(i + 1, n):
-                try:
-                    dist = hamming_distance(hashes[i]['hash'], hashes[j]['hash'])
-                    if dist <= threshold:
-                        union(i, j)
-                except ValueError as e:
-                    logger.warning(f"Skipping invalid pair ({i}, {j}): {e}")
-                    continue
+    # Always use brute-force pairwise comparison
+    # Compute pairwise distances (brute-force)
+    for i in range(n):
+        for j in range(i + 1, n):
+            try:
+                dist = hamming_distance(hashes[i]['hash'], hashes[j]['hash'])
+                if dist <= threshold:
+                    union(i, j)
+            except ValueError as e:
+                logger.warning(f"Skipping invalid pair ({i}, {j}): {e}")
+                continue
 
     # Build groups using indices to preserve hashes
     from collections import defaultdict
@@ -1031,10 +973,9 @@ def find_similar_whash(
         >>> print(f"Groups: {len(groups_large)}")
 
     Note:
-        - Brute-force O(n^2); LSH approximates for scale (PoC; tune num_perm later via settings).
-        - Logs LSH usage, candidate counts, fallbacks via logger.info/warning.
+        - Brute-force O(n^2) for all sizes; for large n (>1000), consider external indexing in future.
+        - Logs warning for large inputs.
         - Threshold tuning: Test empirically (0=exact, 12~similar, 20~loose for wHash).
-        - Requires datasketch for LSH; falls back gracefully.
     """
     if not hashes:
         raise ValueError("hashes list cannot be empty")
@@ -1079,73 +1020,20 @@ def find_similar_whash(
         if pp1 != pp2:
             parent[pp1] = pp2
 
-    use_lsh = n > 1000 and LSH_AVAILABLE
-    if use_lsh:
-        try:
-            logger.info(f"Using LSH for n={n}")
-            similarity_settings = settings.get('similarity', {}) if settings else {}
-            num_perm = similarity_settings.get('lsh_num_perm', 128)
-            lsh_threshold = similarity_settings.get('lsh_threshold')
-            if lsh_threshold is None:
-                lsh_threshold = 1 - threshold / 64.0
-            logger.debug(f"LSH params: num_perm={num_perm}, threshold={lsh_threshold}")
-            lsh = MinHashLSH(threshold=lsh_threshold, num_perm=num_perm)
-            minhases = {}
-            for h in hashes:
-                hash_int = int(h['hash'], 16)
-                m = MinHash(num_perm=num_perm)
-                for i in range(64):
-                    if hash_int & (1 << i):
-                        m.update(str(i).encode('utf-8'))  # Fixed datasketch MinHash.update (bytes) and insert order.
-                minhases[h['path']] = m
-                lsh.insert(h['path'], m)  # Fixed datasketch MinHash.update (bytes) and insert order.
+    if n > 1000:
+        logger.warning(f"Large input ({n} images) for brute-force grouping; consider external indexing for scale in production")
 
-            from collections import defaultdict
-            candidates = defaultdict(set)
-            for path, m in minhases.items():
-                neighbors = lsh.query(m)
-                for neigh in neighbors:
-                    if neigh != path:
-                        candidates[path].add(neigh)
-                        candidates[neigh].add(path)  # Symmetric
-
-            pairs = set()
-            for p1 in candidates:
-                for p2 in candidates[p1]:
-                    if p1 < p2:
-                        pairs.add((p1, p2))
-
-            logger.info(f"Found {len(pairs)} candidate pairs")
-
-            # Union on exact distances for candidates
-            for p1, p2 in pairs:
-                i = path_to_index[p1]
-                j = path_to_index[p2]
-                try:
-                    dist = hamming_distance(hashes[i]['hash'], hashes[j]['hash'])
-                    if dist <= threshold:
-                        union(i, j)
-                except ValueError as e:
-                    logger.warning(f"Skipping invalid candidate pair ({p1}, {p2}): {e}")
-                    continue
-
-        except Exception as e:
-            logger.warning(f"LSH failed: {e}, using brute-force")
-            use_lsh = False
-
-    if not use_lsh:
-        if n > 1000:
-            logger.warning(f"Large input ({n} images) for brute-force grouping; consider indexing for scale")
-        # Compute pairwise distances (brute-force)
-        for i in range(n):
-            for j in range(i + 1, n):
-                try:
-                    dist = hamming_distance(hashes[i]['hash'], hashes[j]['hash'])
-                    if dist <= threshold:
-                        union(i, j)
-                except ValueError as e:
-                    logger.warning(f"Skipping invalid pair ({i}, {j}): {e}")
-                    continue
+    # Always use brute-force pairwise comparison
+    # Compute pairwise distances (brute-force)
+    for i in range(n):
+        for j in range(i + 1, n):
+            try:
+                dist = hamming_distance(hashes[i]['hash'], hashes[j]['hash'])
+                if dist <= threshold:
+                    union(i, j)
+            except ValueError as e:
+                logger.warning(f"Skipping invalid pair ({i}, {j}): {e}")
+                continue
 
     # Build groups using indices to preserve hashes
     from collections import defaultdict

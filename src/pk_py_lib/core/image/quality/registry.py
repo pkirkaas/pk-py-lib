@@ -222,7 +222,7 @@ class ImageQualityEvaluatorRegistry:
 
 
 # Auto-register default evaluators on module import
-# Inline comment: Ensures 'brisque' and 'niqe' are always available if their dependencies are met.
+# Inline comment: Ensures 'brisque' is always available.
 ImageQualityEvaluatorRegistry.register_evaluator("brisque", BRISQUEImageQualityEvaluator)
 
 
