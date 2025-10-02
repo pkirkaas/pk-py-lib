@@ -24,11 +24,12 @@ class FileOutput(LogOutput):
     - Thread-safe writing
     """
     
-    def __init__(self, 
+    def __init__(self,
                  file_path: Union[str, Path],
                  max_size_mb: Optional[int] = None,
                  backup_count: int = 5,
-                 json_format: bool = False):
+                 json_format: bool = False,
+                 rotate_existing: bool = True):
         """
         Initialize file output handler.
         
@@ -37,11 +38,20 @@ class FileOutput(LogOutput):
             max_size_mb: Maximum file size in MB before rotation (None to disable)
             backup_count: Number of backup files to keep
             json_format: Whether to output in JSON format
+            rotate_existing: Whether to rotate (rename) existing log file on init (default: True)
+        
+        Example:
+            >>> # Standard usage with rotation
+            >>> output = FileOutput("app.log")
+            
+            >>> # Skip rotation (e.g., for pre-rotated files like cache logs)
+            >>> output = FileOutput("cache_process.log", rotate_existing=False)
         """
         self.file_path = Path(file_path)
         self.max_size_mb = max_size_mb
         self.backup_count = backup_count
         self.json_format = json_format
+        self.rotate_existing = rotate_existing
         
         # Create directory if it doesn't exist
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,12 +95,15 @@ class FileOutput(LogOutput):
     def _prepare_log_file(self) -> None:
         """
         Implements project logging rules:
-        1. Renames existing log file by adding a timestamp to the basename.
+        1. Renames existing log file by adding a timestamp to the basename (if rotate_existing=True).
         2. Creates a new log file.
         3. Writes the full terminal invocation command as the first line.
         4. Writes a formatted date & time stamp as the second line, followed by a blank newline.
+        
+        For cache logs or pre-rotated files, set rotate_existing=False to skip renaming
+        and only write the header to an existing empty file.
         """
-        if self.file_path.exists():
+        if self.rotate_existing and self.file_path.exists():
             # 1. Rename existing log file
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             base_name = self.file_path.stem
@@ -124,7 +137,11 @@ class FileOutput(LogOutput):
         
         try:
             # Write header to the new file, overwriting if rename failed or file was missing
-            with open(self.file_path, 'w', encoding='utf-8') as f:
+            # For non-rotated empty files (e.g., cache logs), this appends the header safely
+            mode = 'w' if not self.file_path.exists() else 'a'
+            with open(self.file_path, mode, encoding='utf-8') as f:
+                if mode == 'a' and f.tell() > 0:
+                    f.write('\n')  # Ensure newline before header if file not empty
                 f.write('\n'.join(header) + '\n')
                 f.flush()
         except Exception as e:

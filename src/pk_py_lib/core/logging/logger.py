@@ -6,6 +6,7 @@ and rich context management for debugging and monitoring.
 """
 
 from typing import Any, Dict, List, Optional, Union, Callable
+from .. import get_data_dir
 from dataclasses import dataclass, field
 from enum import Enum
 import inspect
@@ -472,6 +473,140 @@ def configure_logging(
     
     # Apply to all existing loggers
     for logger in _loggers.values():
-        logger.set_level(level)
-        for output in _global_outputs:
-            logger.add_output(output)
+            logger.set_level(level)
+            for output in _global_outputs:
+                logger.add_output(output)
+
+
+def get_cache_logger(name: str = "cache") -> PKLogger:
+    """
+    Get or create the dedicated cache logger instance.
+    
+    This function creates a specialized logger for cache-related operations,
+    configured to output exclusively to the project's logs/cache_process.log file.
+    The logger is set to DEBUG level to capture detailed cache events such as
+    gets, sets, misses, validations, etc.
+    
+    Configuration details:
+    - Logger name: "cache" (or provided name)
+    - Log level: DEBUG (captures all cache operations)
+    - Output: Single FileOutput to logs/cache_process.log
+      - rotate_existing: False (rotation handled externally in app.py)
+      - max_size_mb: None (no size-based rotation for cache logs)
+      - json_format: False (uses detailed text format)
+    - Format: Uses the detailed text format from FileOutput, which includes:
+        - Timestamp: YYYY-MM-DD HH:MM:SS.mmm
+        - Level: DEBUG (right-aligned)
+        - Message: Structured by caller, e.g., "Cache get for /path/to/file.jpg field=hash: found=True, size_valid=True, date_valid=False"
+        - Source: Module.function (e.g., flat_cache.get_cache_entry)
+        - Line number: If available
+        - Thread ID: If not MainThread
+        - Variables/Context: If provided via log.watch() or context()
+        - Exceptions: Full traceback for errors
+    
+    The rotation and header writing for cache_process.log is handled separately
+    in img_app/img_app/app.py before calling this function, ensuring a fresh
+    log file per application session without interference from this logger's init.
+    
+    Usage example:
+        >>> from src.pk_py_lib.core.logging.logger import get_cache_logger
+        >>> cache_log = get_cache_logger()
+        >>>
+        >>> # Log a cache get operation
+        >>> cache_log.debug(
+        ...     "Cache get for /images/photo.jpg field=hash: found=True, size_valid=True, date_valid=False"
+        ... )
+        >>>
+        >>> # With variables for more details
+        >>> cache_log.watch(
+        ...     filepath="/images/photo.jpg",
+        ...     field="hash",
+        ...     action="get",
+        ...     found=True,
+        ...     size_bytes=2048,
+        ...     cache_age_days=1.5
+        ... )
+        >>>
+        >>> # In context for session tracking
+        >>> with cache_log.context(session_id="scan_123", cache_type="flat"):
+        ...     cache_log.info("Cache miss for /images/missing.jpg field=dimensions")
+    
+    Args:
+        name: Logger name (defaults to "cache" for consistency)
+    
+    Returns:
+        PKLogger: The configured cache logger instance
+    
+    Raises:
+        RuntimeError: If the logs directory cannot be created or accessed
+        OSError: If file operations fail during output initialization
+        ValueError: If get_data_dir() returns an invalid path
+    
+    Note:
+        This logger does not add global outputs or console output to avoid
+        polluting the main application logs with cache details. It is dedicated
+        solely to cache_process.log for focused debugging and analysis of
+        cache performance, hits/misses, validation failures, etc.
+        
+        Callers should structure messages to include key details:
+        - filepath: Full path to the cached file
+        - field: Cache field name (e.g., 'hash', 'dimensions', 'quality_score')
+        - action: Operation type (e.g., 'get', 'set', 'miss', 'hit', 'validate', 'evict')
+        - result_details: Key-value pairs like 'found: True, size_valid: True, date_valid: False'
+        
+        This enables easy parsing and analysis of cache behavior.
+    """
+    global _loggers
+    
+    if name not in _loggers:
+        # Get the unified data directory for log path
+        data_dir = get_data_dir()
+        if not isinstance(data_dir, Path) or not data_dir.exists():
+            raise ValueError(
+                f"Invalid data directory from get_data_dir(): {data_dir}. "
+                f"Expected a valid Path object pointing to an existing directory."
+            )
+        
+        # Construct cache log path
+        logs_dir = data_dir / "logs"
+        cache_log_path = logs_dir / "cache_process.log"
+        
+        # Ensure logs directory exists (creates parents if needed)
+        try:
+            logs_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise RuntimeError(
+                f"Failed to create logs directory '{logs_dir}': {e}\n"
+                f"Details: {e.strerror if hasattr(e, 'strerror') else 'Unknown OSError details'}\n"
+                f"Error number: {e.errno if hasattr(e, 'errno') else 'Unknown'}\n"
+                f"This may be due to insufficient permissions, disk space, or path issues. "
+                f"Please check directory access rights and available storage."
+            ) from e
+        
+        # Create the dedicated cache logger
+        logger = PKLogger(name)
+        logger.set_level(LogLevel.DEBUG)
+        
+        # Add dedicated file output (no rotation here, handled in app.py)
+        # Use detailed text format for readability
+        try:
+            from .outputs.file import FileOutput
+            cache_output = FileOutput(
+                file_path=cache_log_path,
+                max_size_mb=None,  # No size rotation for cache logs (focus on session)
+                backup_count=0,    # No backups; rotation is timestamp-based externally
+                json_format=False, # Use human-readable text format
+                rotate_existing=False  # Rotation already handled in app.py
+            )
+            logger.add_output(cache_output)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to configure cache file output for '{cache_log_path}': {e}\n"
+                f"Details: Cache logger initialization failed. This prevents cache "
+                f"debugging logs from being written. Check file permissions and disk space."
+            ) from e
+        
+        # Cache the logger instance
+        _loggers[name] = logger
+    
+    return _loggers[name]

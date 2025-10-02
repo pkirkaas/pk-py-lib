@@ -25,6 +25,7 @@ from PIL import Image
 import imagehash
 
 from .utils import get_data_dir  # Import the unified path function
+from .logging.logger import get_cache_logger  # Import cache-specific logger
 
 # Image file extensions for filtering without loading
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.heif', '.heic'}
@@ -229,7 +230,7 @@ class FlatCacheManager:
 
         self.db_path = db_path.resolve()
         self.data_dir = self.db_path.parent  # For migration access
-        self.logger = logger if logger else logging.getLogger("pk_py_lib.core.flat_cache")
+        self.logger = logger or get_cache_logger()  # Use dedicated cache logger
         self.table_name = TABLE_NAME
 
         self._migrate_from_legacy_cache_if_needed()
@@ -726,11 +727,13 @@ class FlatCacheManager:
             FlatCacheValidationError: If validation fails, providing mismatch details.
         """
         file_path = entry.path
+        self.logger.debug(f"Cache validate for {file_path}, action: start")  # Log validation start
 
         try:
             current_size, current_mtime = self._get_file_stats(file_path)
+            self.logger.debug(f"Cache validate_size for {file_path}, cached_size: {entry.size}, current_size: {current_size}")  # Log size check
         except FileNotFoundError:
-            self.logger.debug(f"Validation failed: File not found: {file_path}")
+            self.logger.debug(f"Cache validate for {file_path}, result: existence=False")  # Log existence check
             raise FlatCacheValidationError(file_path, {"existence": "File not found"})
         except PermissionError as e:
             self.logger.warning(f"Validation skipped due to permission error: {file_path}. Error: {e}")
@@ -740,21 +743,32 @@ class FlatCacheManager:
 
         # Size check
         if current_size != entry.size:
+            self.logger.debug(f"Cache validate_size for {file_path}, result: valid=False")  # Log size invalid
             mismatches["size"] = f"Cached: {entry.size}, Current: {current_size}"
+        else:
+            self.logger.debug(f"Cache validate_size for {file_path}, result: valid=True")  # Log size valid
 
         # Modification time check (with float tolerance for precision issues)
+        self.logger.debug(f"Cache validate_date for {file_path}, cached_mtime: {entry.mtime}, current_mtime: {current_mtime}")  # Log date check
         if abs(current_mtime - entry.mtime) > 1e-6:
+            self.logger.debug(f"Cache validate_date for {file_path}, result: valid=False")  # Log date invalid
             mismatches["mtime"] = f"Cached: {entry.mtime}, Current: {current_mtime}"
+        else:
+            self.logger.debug(f"Cache validate_date for {file_path}, result: valid=True")  # Log date valid
 
         # Validity flag
+        self.logger.debug(f"Cache validate_flag for {file_path}, is_valid: {entry.is_valid}")  # Log flag check
         if not entry.is_valid:
+            self.logger.debug(f"Cache validate_flag for {file_path}, result: valid=False")  # Log flag invalid
             mismatches["is_valid"] = "Entry marked invalid"
+        else:
+            self.logger.debug(f"Cache validate_flag for {file_path}, result: valid=True")  # Log flag valid
 
         if mismatches:
-            self.logger.warning(f"Cache miss (validation failed) for {file_path}. Mismatches: {mismatches}")
+            self.logger.debug(f"Cache validate for {file_path}, result: overall_valid=False, mismatches: {len(mismatches)}")  # Log overall invalid
             raise FlatCacheValidationError(file_path, mismatches)
 
-        self.logger.debug(f"Cache hit (validation successful) for {file_path}")
+        self.logger.debug(f"Cache validate for {file_path}, result: overall_valid=True")  # Log overall valid
         return True
 
     @log_errors()
@@ -772,6 +786,7 @@ class FlatCacheManager:
             Optional[FlatCacheEntry]: The valid entry (with normalized brisque if migrated), or None if not found or invalid.
         """
         normalized_path = self._normalize_path(file_path)
+        self.logger.debug(f"Cache get for {normalized_path}, field: entry, action: query")  # Log get start
 
         try:
             with self._get_connection() as conn:
@@ -782,33 +797,39 @@ class FlatCacheManager:
                 row = cursor.fetchone()
 
                 if row is None:
-                    self.logger.debug(f"Cache miss (not found) for {normalized_path}")
+                    self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: found=False")  # Log miss
                     return None
 
                 entry = FlatCacheEntry.from_row(row)
+                self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: found=True")  # Log found
 
                 # Validate the retrieved entry against the current file system state
                 self._validate_entry(entry)
 
                 # Migrate legacy BRISQUE scores (0-100) to new 0-1 scale if detected
                 if entry.brisque is not None and entry.brisque > 1.0:
-                    self.logger.info(f"Detected legacy BRISQUE score >1.0 for {normalized_path}: {entry.brisque}. Normalizing to 0-1 scale.")
+                    old_value = entry.brisque
                     entry.brisque = min(1.0, entry.brisque / 100.0)
+                    self.logger.debug(f"Cache normalize for {normalized_path}, field: brisque, old_value: {old_value}, new_value: {entry.brisque}")  # Log normalization
                     # Persist the normalized value
                     if self.set_entry(entry):
-                        self.logger.debug(f"Updated cache with normalized BRISQUE score for {normalized_path}: {entry.brisque}")
+                        self.logger.debug(f"Cache set for {normalized_path}, field: brisque, action: normalize_update, result: success=True")
                     else:
                         self.logger.warning(f"Failed to persist normalized BRISQUE score for {normalized_path}")
 
+                self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: valid=True")  # Log successful get
                 return entry
 
         except FlatCacheValidationError:
+            self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: valid=False")  # Log validation fail
             # Validation failed (file changed or missing). Logged inside _validate_entry.
             return None
         except FlatCacheDBError as e:
+            self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: db_error")  # Log DB error
             self.logger.error(f"DB error retrieving entry for {normalized_path}: {e}")
             return None
         except Exception as e:
+            self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: unexpected_error")  # Log unexpected error
             self.logger.error(f"Unexpected error in get_entry for {normalized_path}: {e}", exc_info=True)
             return None
 
@@ -838,14 +859,17 @@ class FlatCacheManager:
         """
         # Ensure path is normalized and update dynamic fields
         entry.path = self._normalize_path(entry.path)
+        self.logger.debug(f"Cache set for {entry.path}, action: normalize_path")  # Log path normalization
         now = time.time()
         if entry.created_at == 0.0:
             entry.created_at = now
         entry.updated_at = now
+        self.logger.debug(f"Cache set for {entry.path}, action: update_timestamps, created_at: {entry.created_at}, updated_at: {entry.updated_at}")
         
         # Update file stats just before saving to ensure consistency
         try:
             entry.size, entry.mtime = self._get_file_stats(entry.path)
+            self.logger.debug(f"Cache set for {entry.path}, action: update_stats, size: {entry.size}, mtime: {entry.mtime}")
         except (FileNotFoundError, PermissionError) as e:
             self.logger.warning(f"Cannot set entry for non-existent or inaccessible file {entry.path}: {e}")
             return False
@@ -865,6 +889,7 @@ class FlatCacheManager:
             WHERE path = ?
             """
             
+            self.logger.debug(f"Cache set for {entry.path}, field: core, action: prepare_update, mode: duplicate")  # Log SQL prep
             self.logger.debug(f"Limited UPDATE for duplicate mode (core fields + image clear): {entry.path}")
         else:
             # Full INSERT OR REPLACE for all fields
@@ -878,6 +903,7 @@ class FlatCacheManager:
             VALUES ({placeholders})
             """
             
+            self.logger.debug(f"Cache set for {entry.path}, field: all, action: prepare_insert, mode: full")  # Log SQL prep
             self.logger.debug(f"Full INSERT/REPLACE for {entry.path} (search_type={search_type or 'default'})")
         
         try:
@@ -885,6 +911,7 @@ class FlatCacheManager:
                 if search_type == 'duplicate':
                     cursor = conn.execute(sql, values)
                     affected = cursor.rowcount
+                    self.logger.debug(f"Cache set for {entry.path}, action: execute_update, affected: {affected}, mode: duplicate")  # Log execution
                     if affected == 0:
                         # Entry didn't exist; insert with all required fields for duplicate mode, image fields NULL
                         core_data = {
@@ -905,13 +932,15 @@ class FlatCacheManager:
                         core_placeholders = ', '.join(['?'] * len(core_data))
                         core_values = tuple(core_data.values())
                         conn.execute(f"INSERT INTO {self.table_name} ({core_columns}) VALUES ({core_placeholders})", core_values)
-                        self.logger.debug(f"Inserted new entry for non-existent path in duplicate mode (image fields NULL): {entry.path}")
+                        self.logger.debug(f"Cache set for {entry.path}, action: insert_new, mode: duplicate")  # Log new insert
                 else:
                     conn.execute(sql, values)
+                    self.logger.debug(f"Cache set for {entry.path}, action: execute_insert, mode: full")  # Log execution
             
-            self.logger.info(f"Cache entry set/updated for {entry.path} (mode: {'limited' if search_type == 'duplicate' else 'full'})")
+            self.logger.debug(f"Cache set for {entry.path}, result: success=True, mode: {'duplicate' if search_type == 'duplicate' else 'full'}")  # Log success
             return True
         except FlatCacheDBError as e:
+            self.logger.debug(f"Cache set for {entry.path}, result: success=False, error: db")  # Log failure
             self.logger.error(f"DB error setting entry for {entry.path}: {e}")
             return False
 
@@ -926,20 +955,24 @@ class FlatCacheManager:
             bool: True if the operation succeeded (entry deleted or not found), False on DB error.
         """
         normalized_path = self._normalize_path(file_path)
+        self.logger.debug(f"Cache invalidate for {normalized_path}, action: start")  # Log invalidate start
+
         sql = f"DELETE FROM {self.table_name} WHERE path = ?"
 
         try:
             with self._get_connection() as conn:
                 cursor = conn.execute(sql, (normalized_path,))
                 deleted_count = cursor.rowcount
+                self.logger.debug(f"Cache invalidate for {normalized_path}, action: execute, affected: {deleted_count}")  # Log execution
 
             if deleted_count > 0:
-                self.logger.info(f"Cache entry invalidated for {normalized_path}")
+                self.logger.debug(f"Cache invalidate for {normalized_path}, result: success=True, deleted=1")  # Log success
             else:
-                self.logger.debug(f"Cache entry not found for invalidation: {normalized_path}")
+                self.logger.debug(f"Cache invalidate for {normalized_path}, result: not_found=True")  # Log not found
 
             return True
         except FlatCacheDBError as e:
+            self.logger.debug(f"Cache invalidate for {normalized_path}, result: success=False, error: db")  # Log failure
             self.logger.error(f"DB error invalidating entry for {normalized_path}: {e}")
             return False
 
@@ -957,29 +990,36 @@ class FlatCacheManager:
             int: The number of entries successfully inserted/updated.
         """
         if not entries:
+            self.logger.debug("Cache batch_set for 0 entries, action: skip")  # Log empty batch
             return 0
 
+        self.logger.debug(f"Cache batch_set start, total_entries: {len(entries)}")  # Log batch start
         data_to_insert = []
         now = time.time()
+        skipped = 0
 
         # Prepare data: normalize path, update times, fetch stats
-        for entry in entries:
+        for i, entry in enumerate(entries):
             entry.path = self._normalize_path(entry.path)
+            self.logger.debug(f"Cache batch_set for {entry.path}, action: normalize_path, index: {i}")  # Log per entry prep
             if entry.created_at == 0.0:
                 entry.created_at = now
             entry.updated_at = now
 
             try:
                 entry.size, entry.mtime = self._get_file_stats(entry.path)
+                self.logger.debug(f"Cache batch_set for {entry.path}, action: update_stats, size: {entry.size}, mtime: {entry.mtime}")  # Log stats
 
                 data_dict = entry.to_dict()
                 data_to_insert.append(tuple(data_dict.values()))
             except (FileNotFoundError, PermissionError) as e:
+                self.logger.debug(f"Cache batch_set for {entry.path}, result: skip, reason: inaccessible")  # Log skip
                 self.logger.warning(f"Skipping batch set for {entry.path}: File inaccessible or missing. Error: {e}")
+                skipped += 1
                 continue
 
         if not data_to_insert:
-            self.logger.info("Batch set completed: 0 entries successfully prepared for insertion.")
+            self.logger.debug(f"Cache batch_set completed, prepared: 0, skipped: {skipped}")  # Log empty prepared
             return 0
 
         # Use keys from first prepared entry for columns
@@ -996,14 +1036,17 @@ class FlatCacheManager:
         INSERT OR REPLACE INTO {self.table_name} ({columns})
         VALUES ({placeholders})
         """
+        self.logger.debug(f"Cache batch_set prepare_sql, columns_count: {len(sample_data)}, entries_to_insert: {len(data_to_insert)}")  # Log SQL prep
 
         try:
             with self._get_connection() as conn:
                 conn.executemany(sql, data_to_insert)
+                self.logger.debug(f"Cache batch_set execute, inserted/updated: {len(data_to_insert)}")  # Log execution
 
-            self.logger.info(f"Batch set completed: {len(data_to_insert)} entries inserted/updated.")
+            self.logger.debug(f"Cache batch_set result: success=True, inserted/updated: {len(data_to_insert)}, skipped: {skipped}")  # Log success
             return len(data_to_insert)
         except FlatCacheDBError as e:
+            self.logger.debug(f"Cache batch_set result: success=False, error: db, attempted: {len(data_to_insert)}")  # Log failure
             self.logger.error(f"DB error during batch set: {e}")
             return 0
 
@@ -1019,14 +1062,17 @@ class FlatCacheManager:
             List[str]: A list of normalized file paths that need recomputation.
         """
         if not paths:
+            self.logger.debug("Cache get_uncached for 0 paths, return empty")  # Log empty
             return []
 
+        self.logger.debug(f"Cache get_uncached start, total_paths: {len(paths)}")  # Log start
         normalized_paths = [self._normalize_path(p) for p in paths]
         uncached_paths = []
 
         # Query all existing entries for the given paths
         placeholders = ', '.join(['?'] * len(normalized_paths))
         sql = f"SELECT path, size, mtime, width, height, is_valid, xxh3, phash, brisque, created_at, updated_at FROM {self.table_name} WHERE path IN ({placeholders})"
+        self.logger.debug(f"Cache get_uncached query, paths_count: {len(normalized_paths)}")  # Log query
 
         cached_entries: Dict[str, FlatCacheEntry] = {}
         try:
@@ -1035,7 +1081,9 @@ class FlatCacheManager:
                 for row in cursor.fetchall():
                     entry = FlatCacheEntry.from_row(row)
                     cached_entries[entry.path] = entry
+            self.logger.debug(f"Cache get_uncached query result, found_entries: {len(cached_entries)}")  # Log query result
         except FlatCacheDBError as e:
+            self.logger.debug(f"Cache get_uncached result: db_error, assume_all_uncached: {len(normalized_paths)}")  # Log DB error
             self.logger.error(f"DB error during get_uncached_files query: {e}")
             # If DB fails, assume all files need recomputation
             return normalized_paths
@@ -1044,20 +1092,22 @@ class FlatCacheManager:
         for path in normalized_paths:
             if path not in cached_entries:
                 uncached_paths.append(path)
-                self.logger.debug(f"Uncached: File not found in DB: {path}")
+                self.logger.debug(f"Cache get_uncached for {path}, result: miss, reason: not_found")  # Log miss
 
         # Validate existing entries
         for path, entry in cached_entries.items():
             try:
                 self._validate_entry(entry)
+                self.logger.debug(f"Cache get_uncached for {path}, result: cached_valid")  # Log valid
             except FlatCacheValidationError:
-                # Validation failed (logged inside _validate_entry)
                 uncached_paths.append(path)
+                self.logger.debug(f"Cache get_uncached for {path}, result: miss, reason: validation_failed")  # Log invalid
             except Exception as e:
+                self.logger.debug(f"Cache get_uncached for {path}, result: miss, reason: unexpected_error")  # Log unexpected
                 self.logger.error(f"Unexpected error during validation of {path}: {e}", exc_info=True)
                 uncached_paths.append(path)  # Treat unexpected errors as cache miss
 
-        self.logger.info(f"Found {len(uncached_paths)} files requiring recomputation out of {len(paths)} checked.")
+        self.logger.debug(f"Cache get_uncached result: uncached_count: {len(uncached_paths)}, total_checked: {len(paths)}")  # Log summary
         return uncached_paths
 
     def cleanup_old_entries(self, days: int = 30) -> int:
@@ -1262,10 +1312,11 @@ class FlatCacheManager:
             CacheComputeError: If hash computation fails.
         """
         normalized_path = self._normalize_path(file_path)
+        self.logger.debug(f"Cache process_single for {normalized_path}, hash_types: {hash_types}, search_type: {search_type}")  # Log process start
 
         # Global check for non-images: minimal entry with file stats only, no image attempts
         if Path(file_path).suffix.lower() not in IMAGE_EXTENSIONS:
-            self.logger.debug(f"Non-image file {file_path}: Creating minimal entry (no image metadata or perceptual hashes)")
+            self.logger.debug(f"Cache process_single for {normalized_path}, type: non_image, action: minimal_entry")  # Log non-image
             stat = os.stat(file_path)
             entry = FlatCacheEntry(
                 path=normalized_path,
@@ -1280,22 +1331,26 @@ class FlatCacheManager:
             )
             # Only compute xxh3 if requested; no perceptual
             if 'xxh3' in hash_types:
+                self.logger.debug(f"Cache compute for {normalized_path}, field: xxh3, action: non_image")  # Log compute
                 try:
                     entry.xxh3 = self._compute_hash(file_path, 'xxh3', search_type=search_type)
+                    self.logger.debug(f"Cache set for {normalized_path}, field: xxh3, value: {entry.xxh3[:8]}...")  # Log value (truncated)
                 except Exception as e:
                     self.logger.warning(f"Failed to compute xxh3 for non-image {file_path}: {e}")
                     entry.xxh3 = None
             if self.set_entry(entry, search_type=search_type):
-                self.logger.debug(f"Set minimal entry for non-image {normalized_path}")
+                self.logger.debug(f"Cache set minimal for {normalized_path}, fields: core")  # Log set
             return {ht: (entry.xxh3 if ht == 'xxh3' else None) for ht in hash_types}
 
         # Check if file exists
         if not os.path.exists(file_path):
+            self.logger.debug(f"Cache process_single for {normalized_path}, result: file_not_found")  # Log not found
             raise FileNotFoundError(f"File not found: {file_path}")
 
         # Get or create entry
         entry = self.get_entry(file_path)
         if entry is None:
+            self.logger.debug(f"Cache process_single for {normalized_path}, entry: miss, action: create")  # Log miss
             # Create new with basic info
             stat = os.stat(file_path)
             entry = FlatCacheEntry(
@@ -1314,6 +1369,7 @@ class FlatCacheManager:
                     entry.height = img_meta.get('height')
                     if search_type == 'similarity' and 'brisque' in img_meta:
                         entry.brisque = img_meta['brisque']
+                    self.logger.debug(f"Cache set for {normalized_path}, fields: width={entry.width}, height={entry.height}, brisque={entry.brisque}")  # Log metadata
                 except Exception as e:
                     self.logger.warning(f"Failed to extract image metadata for {file_path}: {e}")
                     # For non-duplicate, set to None on failure to avoid partial data
@@ -1329,58 +1385,71 @@ class FlatCacheManager:
                 entry.whash = None
                 entry.brisque = None
                 # Fixed duplicate mode skips
+                self.logger.debug(f"Cache process_single for {normalized_path}, mode: duplicate, image_fields: None")  # Log duplicate mode
             self.logger.debug(f"Creating new cache entry for {normalized_path} (search_type={search_type})")
         else:
-            self.logger.debug(f"Retrieved valid cache entry for {normalized_path}")
+            self.logger.debug(f"Cache process_single for {normalized_path}, entry: hit")  # Log hit
 
         # Check and compute missing hashes (support xxh3, phash, whash)
         # For duplicate searches, only compute xxh3; skip perceptual hashes to avoid image loading
         result = {}
         for ht in hash_types:
             if search_type == 'duplicate' and ht != 'xxh3':
+                self.logger.debug(f"Cache process_single for {normalized_path}, field: {ht}, result: skipped_duplicate")  # Log skip
                 result[ht] = None
                 continue
             if ht == 'xxh3':
                 if entry.xxh3 is None:
+                    self.logger.debug(f"Cache get for {normalized_path}, field: xxh3, result: miss")  # Log miss
                     try:
                         hash_value = self._compute_hash(file_path, 'xxh3', search_type=search_type)
                         entry.xxh3 = hash_value
-                        self.logger.info(f"Computed xxh3 for {normalized_path}")
+                        self.logger.debug(f"Cache set for {normalized_path}, field: xxh3, value: {hash_value[:8]}...")  # Log compute success
                     except Exception as e:
                         self.logger.warning(f"Failed to compute xxh3 for {file_path}: {e}")
                         entry.xxh3 = None
+                else:
+                    self.logger.debug(f"Cache get for {normalized_path}, field: xxh3, result: hit")  # Log hit
                 result['xxh3'] = entry.xxh3
             elif ht == 'phash':
                 if entry.phash is None:
+                    self.logger.debug(f"Cache get for {normalized_path}, field: phash, result: miss")  # Log miss
                     try:
                         hash_value = self._compute_hash(file_path, 'phash', search_type=search_type)
                         entry.phash = hash_value
-                        self.logger.info(f"Computed phash for {normalized_path}")
+                        self.logger.debug(f"Cache set for {normalized_path}, field: phash, value: {hash_value[:8]}...")  # Log success
                     except ValueError as ve:
                         # For non-image perceptual, compute file hash as fallback
                         self.logger.warning(str(ve))
+                        self.logger.debug(f"Cache compute for {normalized_path}, field: phash, action: fallback")  # Log fallback
                         try:
                             fallback_hash = self._compute_hash(file_path, 'xxh3', search_type=search_type)
                             entry.phash = f"xxh3:{fallback_hash}"
+                            self.logger.debug(f"Cache set for {normalized_path}, field: phash, value: xxh3:{fallback_hash[:8]}...")
                         except Exception as fe:
                             self.logger.warning(f"Fallback hash failed for phash on {file_path}: {fe}")
                             entry.phash = None
                     except Exception as e:
                         self.logger.warning(f"Failed to compute phash for {file_path}: {e}")
                         entry.phash = None
+                else:
+                    self.logger.debug(f"Cache get for {normalized_path}, field: phash, result: hit")  # Log hit
                 result['phash'] = entry.phash
             elif ht == 'whash':
                 if entry.whash is None:
+                    self.logger.debug(f"Cache get for {normalized_path}, field: whash, result: miss")  # Log miss
                     try:
                         hash_value = self._compute_hash(file_path, 'whash', search_type=search_type)
                         entry.whash = hash_value
-                        self.logger.info(f"Computed whash for {normalized_path}")
+                        self.logger.debug(f"Cache set for {normalized_path}, field: whash, value: {hash_value[:8]}...")  # Log success
                     except ValueError as ve:
                         self.logger.warning(str(ve))
                         entry.whash = None
                     except Exception as e:
                         self.logger.warning(f"Failed to compute whash for {file_path}: {e}")
                         entry.whash = None
+                else:
+                    self.logger.debug(f"Cache get for {normalized_path}, field: whash, result: hit")  # Log hit
                 result['whash'] = entry.whash
             else:
                 # Unsupported hash type
@@ -1390,11 +1459,11 @@ class FlatCacheManager:
         # No explicit clearing needed; conditional INSERT in set_entry skips image columns for duplicate mode,
         # preserving prior values while updating only core fields + xxh3.
         if self.set_entry(entry, search_type=search_type):
-            self.logger.debug(f"Updated cache entry with new hashes/metadata for {normalized_path} (search_type={search_type})")
+            self.logger.debug(f"Cache process_single for {normalized_path}, action: set_updated, fields: {list(result.keys())}")  # Log set
         else:
             self.logger.error(f"Failed to update cache entry for {normalized_path}")
 
-        self.logger.debug(f"Returning hashes for {normalized_path}: {result}")
+        self.logger.debug(f"Cache process_single for {normalized_path}, result: { {k: v[:8]+'...' if v else None for k,v in result.items()} }")  # Log return (truncated)
         return result
 
     def get_hashes(self, file_paths: List[str], hash_types: List[str] = ['phash'], search_type: Optional[str] = None) -> Dict[str, Dict[str, str]]:
@@ -1430,41 +1499,50 @@ class FlatCacheManager:
             >>> # {'/file.txt': {'phash': None}} (skipped)
         """
         if not file_paths:
+            self.logger.debug("Cache get_hashes for 0 paths, return empty")  # Log empty
             return {}
 
         # For duplicate mode, strictly limit to file-based hashing (xxh3 only); skip all perceptual/image ops
         if search_type == 'duplicate':
             hash_types = ['xxh3']
-            self.logger.debug(f"Duplicate mode: Forced hash_types to ['xxh3']; perceptual/image ops skipped entirely")
+            self.logger.debug(f"Cache get_hashes duplicate_mode: forced_types: {hash_types}")  # Log mode adjust
 
         # For similarity, ensure all types including xxh3
         if search_type == 'similarity':
             full_types = list(set(hash_types + ['xxh3', 'phash', 'whash']))
             hash_types = full_types
+            self.logger.debug(f"Cache get_hashes similarity_mode: expanded_types: {hash_types}")  # Log expand
         else:
             # Default: dedup provided types
             hash_types = list(set(hash_types))
+            self.logger.debug(f"Cache get_hashes default_mode: types: {hash_types}")  # Log default
 
         results = {}
         total = len(file_paths)
-        self.logger.info(f"Processing {total} files for hashes {hash_types} (search_type={search_type})")
+        self.logger.debug(f"Cache get_hashes start, total: {total}, types: {hash_types}, search_type: {search_type}")  # Log start
 
+        successful = 0
         for i, path in enumerate(file_paths, 1):
             try:
                 hashes = self._process_single_file(path, hash_types, search_type=search_type)
                 results[path] = hashes
-                self.logger.debug(f"[{i}/{total}] Successfully processed {path}")
+                if any(hashes.values()):  # If any hash computed
+                    successful += 1
+                self.logger.debug(f"Cache get_hashes [{i}/{total}] for {path}, result: success")  # Log per file success
             except (FileNotFoundError, PermissionError) as e:
+                self.logger.debug(f"Cache get_hashes [{i}/{total}] for {path}, result: skip, reason: {type(e).__name__}")  # Log skip
                 self.logger.warning(f"[{i}/{total}] Skipped {path}: {e}")
                 results[path] = {ht: None for ht in hash_types}
             except CacheComputeError as e:
+                self.logger.debug(f"Cache get_hashes [{i}/{total}] for {path}, result: error_compute")  # Log compute error
                 self.logger.error(f"[{i}/{total}] Failed to compute hashes for {path}: {e}")
                 results[path] = {ht: None for ht in hash_types}
             except Exception as e:
+                self.logger.debug(f"Cache get_hashes [{i}/{total}] for {path}, result: unexpected_error")  # Log unexpected
                 self.logger.error(f"[{i}/{total}] Unexpected error for {path}: {e}", exc_info=True)
                 results[path] = {ht: None for ht in hash_types}
 
-        self.logger.info(f"Completed processing {total} files. Successful: {sum(1 for v in results.values() if any(v.values()))}")
+        self.logger.debug(f"Cache get_hashes completed, total: {total}, successful: {successful}")  # Log summary
         return results
 
     def get_entries(self, paths: List[str], include_invalid: bool = False) -> Dict[str, Optional[FlatCacheEntry]]:

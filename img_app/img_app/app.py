@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -139,6 +140,48 @@ Examples:
     # --- Logging Configuration (Must happen early) ---
     # Use the unified data directory for logs
     DATA_DIR = get_data_dir()
+    
+    # Handle cache_process.log file rotation and creation at application startup,
+    # following project logging guidelines similar to terminal log handling in core/logging/outputs/file.py.
+    # This ensures each application launch starts with a fresh cache process log file,
+    # renaming any existing one with a timestamp (YYYYMMDD_HHMMSS) for archival purposes.
+    # Performed before any other logging configuration to avoid interference.
+    cache_log_path = DATA_DIR / "logs" / "cache_process.log"
+    
+    # Ensure the logs directory exists (creates parents if needed)
+    cache_log_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    if cache_log_path.exists():
+        # Rename existing cache log file by appending timestamp to basename
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        new_name = cache_log_path.with_name(f"cache_process_{ts}.log")
+        
+        try:
+            cache_log_path.rename(new_name)
+        except OSError as e:
+            # Raise informative exception with full details for debugging
+            # Includes original path, target path, error details, and potential causes
+            error_msg = (
+                f"Failed to rename existing cache process log file "
+                f"'{cache_log_path}' to '{new_name}': {e}\n"
+                f"Error details: {e.strerror if hasattr(e, 'strerror') else 'Unknown OSError details'}\n"
+                f"Error number: {e.errno if hasattr(e, 'errno') else 'Unknown'}\n"
+                f"This may be due to file permissions, file locks by another process, "
+                f"or insufficient disk space. Please verify file access rights, "
+                f"close any processes using the file, and ensure sufficient storage."
+            )
+            raise RuntimeError(error_msg) from e
+    
+    # Create a new empty cache process log file for this application session
+    # touch(exist_ok=True) creates the file if it doesn't exist, or does nothing if it does
+    # Since we renamed any existing one, this will always create a new empty file
+    cache_log_path.touch(exist_ok=True)
+    
+    # Initialize the dedicated cache logger after rotation
+    # This ensures the cache logger is ready for use, writing its header to the fresh file
+    from src.pk_py_lib.core.logging.logger import get_cache_logger
+    get_cache_logger()  # Creates the logger and configures FileOutput with header
+    
     LOG_FILE_PATH = DATA_DIR / "logs" / "img_app-terminal.log"
     
     try:

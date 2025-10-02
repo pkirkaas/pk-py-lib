@@ -457,6 +457,105 @@ Deletes cache entries older than the specified number of days based on the `upda
 
 **Returns**: `int`. The number of entries deleted.
 
+## Cache Logging
+
+The Flat Cache implementation includes dedicated logging to track cache operations, validations, and errors for debugging and performance monitoring. This logging is isolated to a specific log file to avoid cluttering general application logs.
+
+### Log File Management
+
+- **File Location**: Logs are written to `logs/cache_process.log` in the project root directory. The `logs/` directory is automatically created if it does not exist, and it is excluded from version control via `.gitignore`.
+- **Rotation on App Startup**: Upon application initialization (e.g., in `img_app/app.py` or when instantiating `FlatCacheManager`), the existing `cache_process.log` (if present) is renamed by appending a timestamp in the format `cache_process_YYYYMMDD_HHMMSS.log`. A new empty `cache_process.log` is then created for the current session.
+  - **Example Renamed File**: `logs/cache_process_20251002_223629.log`
+  - **Rationale**: This ensures each application run has a clean log file, preventing logs from multiple sessions from mixing and aiding in troubleshooting specific runs.
+- **Log Structure**: Each log entry includes a timestamp, the file path involved, the specific field or operation (e.g., 'hash', 'get_entry'), the action taken (e.g., 'retrieve', 'validate'), and the result (e.g., 'hit', 'miss', 'stale').
+
+### Dedicated Cache Logger
+
+The cache uses a specialized logger obtained via `get_cache_logger()` in [`core/logging/logger.py`](src/pk_py_lib/core/logging/logger.py). This function returns a logger instance configured specifically for cache operations:
+
+- **Level**: Set to `DEBUG` by default, capturing detailed operations. Higher levels (e.g., `INFO` for hits/misses, `WARNING` for validations) can be adjusted via application settings.
+- **Output**: Exclusively to `cache_process.log` using a file handler from [`core/logging/outputs/file.py`](src/pk_py_lib/core/logging/outputs/file.py).
+- **Format**: Custom format including:
+  - Timestamp: ISO 8601 format (e.g., `2025-10-02T22:36:29.202Z`).
+  - Filepath: Normalized absolute path of the file.
+  - Field: Specific data field (e.g., 'phash', 'xxh3', 'brisque_score').
+  - Action: Operation type (e.g., 'get', 'set', 'invalidate', 'validate').
+  - Result: Outcome (e.g., 'found=True', 'stale=size_mismatch', 'error=PermissionDenied').
+
+**Example Logger Configuration (from `logger.py`):**
+```python
+def get_cache_logger(name: str = 'flat_cache') -> logging.Logger:
+    """
+    Retrieve or create a dedicated logger for Flat Cache operations.
+    
+    Args:
+        name (str): Logger name (default: 'flat_cache').
+    
+    Returns:
+        logging.Logger: Configured logger outputting to cache_process.log at DEBUG level.
+    
+    Usage:
+        logger = get_cache_logger()
+        logger.debug("Cache operation details...")
+    """
+    logger = logging.getLogger(name)
+    if not logger.handlers:
+        handler = FileHandler('logs/cache_process.log')
+        formatter = logging.Formatter(
+            '%(asctime)s | %(levelname)s | File: %(filepath)s | Field: %(field)s | Action: %(action)s | Result: %(result)s'
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+    return logger
+```
+
+### Integration in flat_cache.py
+
+Logging is integrated throughout the `FlatCacheManager` class in [`flat_cache.py`](src/pk_py_lib/core/flat_cache.py) using the cache logger. Key operations are logged at appropriate levels:
+
+- **get_entry**: Logs retrieval attempts, validation results, and hits/misses.
+  - Example: `logger.debug(f"Cache get for /path/to/image.jpg, field: all, action: retrieve, result: found=True")`
+  - On validation failure: `logger.warning(f"Cache validation failed for /path/to/image.jpg, action: validate, result: stale=mtime_mismatch")`
+
+- **set_entry**: Logs insertions/updates, including computed fields.
+  - Example: `logger.info(f"Cache set for /path/to/image.jpg, field: phash, action: update, result: success, value=abc123def456")`
+
+- **invalidate_entry**: Logs explicit invalidations.
+  - Example: `logger.info(f"Cache invalidate for /path/to/image.jpg, action: invalidate, result: success")`
+
+- **Validations (size/date/inode/device)**: Detailed logs for each check in `_validate_entry`.
+  - Example on size mismatch: `logger.debug(f"Validation check failed: size, expected={entry.size}, actual={current_size}, action: validate_size, result: mismatch")`
+  - Successful validation: `logger.debug(f"Cache validation passed for /path/to/image.jpg, action: full_validate, result: valid")`
+
+- **Batch Operations (batch_set, get_uncached_files)**: Logs batch summaries (e.g., "Processed 100 entries, 5 invalid").
+  - Example: `logger.info(f"Batch set completed, entries: 50, successes: 48, failures: 2 (PermissionError on /path/denied.jpg)")`
+
+- **Error Handling**: All exceptions (e.g., `FlatCacheValidationError`, `FlatCacheDBError`) are logged with full details, including stack traces via `logger.exception()`.
+
+**Full Example Log Entry (from a similarity scan):**
+```
+2025-10-02T22:36:29.202Z | DEBUG | File: /path/to/image.jpg | Field: phash | Action: get | Result: miss, computing...
+2025-10-02T22:36:30.150Z | INFO | File: /path/to/image.jpg | Field: phash | Action: set | Result: success, value=abc123def456
+2025-10-02T22:36:30.151Z | DEBUG | File: /path/to/image.jpg | Field: all | Action: validate | Result: valid (size=1024, mtime=1727897789.0)
+```
+
+### Enabling and Viewing Logs
+
+- **Default Behavior**: Logs are enabled at DEBUG level when `FlatCacheManager` is instantiated with the default logger.
+- **Adjusting Level**: To reduce verbosity, set the logger level to `INFO` or higher via application settings or directly:
+  ```python
+  cache_logger = get_cache_logger()
+  cache_logger.setLevel(logging.INFO)  # Only hits/misses and errors
+  ```
+- **Viewing Logs**: 
+  - Tail the file in real-time: `tail -f logs/cache_process.log` (in terminal).
+  - For historical analysis, review rotated files (e.g., `grep "stale" logs/cache_process_*.log` to find validation issues).
+  - Integrate with GUI logging panels (via [`core/logging/outputs/gui.py`](src/pk_py_lib/core/logging/outputs/gui.py)) to display cache logs in the application interface if needed.
+- **Troubleshooting Tip**: If no logs appear, ensure the `logs/` directory is writable and check general application logging configuration in `pyproject.toml` or `app.py`.
+
+This logging setup provides comprehensive visibility into cache behavior, aiding in debugging issues like frequent misses or validation failures without impacting general log files.
+
 ## Testing
 
 The Flat Cache implementation is covered by [`tests/test_flat_cache.py`](tests/test_flat_cache.py:1), which includes comprehensive unit tests for:
@@ -470,3 +569,4 @@ The Flat Cache implementation is covered by [`tests/test_flat_cache.py`](tests/t
 - Data retrieval by hash algorithm (`get_all_hashes_by_algorithm`), including conditional checks for `search_type`.
 - Compatibility with the updated `FlatCacheEntry` dataclass and schema.
 - Conditional computation tests: Verify minimal data for 'duplicate' and full data for 'similarity' modes.
+- Logging integration: Tests verify log messages are generated for key operations (e.g., hits, misses, validations) and that rotation occurs on manager initialization.
