@@ -275,6 +275,20 @@ class SettingsProfileEditorWidget(QWidget):
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tbl.setAlternatingRowColors(True)
+        self.tbl.setStyleSheet("""
+            QTableView::item:hover {
+                background: #E3F2FD;
+                color: #333333;
+            }
+            QTableView::item:hover:selected {
+                background: #4a90e2;
+                color: #ffffff;
+            }
+            QTableView::item:selected {
+                background: #4a90e2;
+                color: #ffffff;
+            }
+        """)
         self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl.setWordWrap(False)
         self.tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)

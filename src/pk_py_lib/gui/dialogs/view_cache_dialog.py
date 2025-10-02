@@ -101,6 +101,20 @@ class ViewCacheDialog(QDialog):
                 table.setModel(model)
                 table.resizeColumnsToContents()
                 table.setAlternatingRowColors(True)
+                table.setStyleSheet("""
+                    QTableView::item:hover {
+                        background: #E3F2FD;
+                        color: #333333;
+                    }
+                    QTableView::item:hover:selected {
+                        background: #4a90e2;
+                        color: #ffffff;
+                    }
+                    QTableView::item:selected {
+                        background: #4a90e2;
+                        color: #ffffff;
+                    }
+                """)
                 table.setSelectionBehavior(QAbstractItemView.SelectRows)
                 table.setSortingEnabled(True)  # Allow sorting by columns
 
