@@ -153,7 +153,7 @@ Examples:
     
     if cache_log_path.exists():
         # Rename existing cache log file by appending timestamp to basename
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         new_name = cache_log_path.with_name(f"cache_process_{ts}.log")
         
         try:
