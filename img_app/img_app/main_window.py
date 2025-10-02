@@ -774,6 +774,25 @@ class MainWindow(QMainWindow):
         """
         show_selectable_info(self, "About KDC Image Organizer", "KDC Image Organizer\nVersion: Development Prototype\n\nThis application is currently in the Proof-of-Concept phase.")
 
+    def _on_view_cache(self) -> None:
+        """
+        Handles the 'View Cache' menu action.
+
+        Opens the ViewCacheDialog to display cache metadata and entries.
+        """
+        if not hasattr(self, 'flat_cache_manager') or self.flat_cache_manager is None:
+            show_selectable_error(self, "Cache Error", "FlatCacheManager is not available.")
+            return
+
+        try:
+            from src.pk_py_lib.gui.dialogs.view_cache_dialog import ViewCacheDialog
+            dialog = ViewCacheDialog(self.flat_cache_manager, self)
+            dialog.exec()
+            self.status_label.setText("Cache view closed.")
+        except Exception as e:
+            show_selectable_error(self, "View Cache Failed", f"Failed to view cache: {e}")
+            self.status_label.setText("Cache view failed.")
+
     def _on_rename_profile(self) -> None:
         """Placeholder for renaming the active profile."""
         show_selectable_info(self, "Profile Operation", "Rename Profile functionality is not yet implemented.")
@@ -1263,6 +1282,11 @@ class MainWindow(QMainWindow):
         clean_cache_action.setStatusTip("Validate entries against the filesystem and remove invalid entries")
         clean_cache_action.triggered.connect(self._on_clean_cache)
         cache_menu.addAction(clean_cache_action)
+
+        view_cache_action = QAction("View Cache", self)
+        view_cache_action.setStatusTip("View the contents of the flat cache database")
+        view_cache_action.triggered.connect(self._on_view_cache)
+        cache_menu.addAction(view_cache_action)
         
         # View menu
         view_menu = menubar.addMenu("&View")

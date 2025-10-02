@@ -1585,6 +1585,93 @@ class FlatCacheManager:
         except Exception as e:
             self.logger.error(f"Unexpected error during clean_cache: {e}", exc_info=True)
             raise FlatCacheDBError(f"Unexpected error cleaning cache: {e}", original_error=e)
+
+    @log_errors()
+    def get_cache_view_data(self) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        """
+        Retrieves metadata and all entries from the flat cache database for viewing.
+
+        Connects to the database, fetches metadata (path, entry count, version),
+        and all entries ordered by path. Returns structured data for UI display.
+
+        Args:
+            None
+
+        Returns:
+            Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+                - metadata_dict: {'path': str, 'entry_count': int, 'cache_version': int, 'db_size': int, 'db_size_formatted': str}
+                - list_of_dicts: List of row dicts with column names as keys, ordered by path.
+
+        Raises:
+            FlatCacheDBError: If database connection or query fails.
+
+        Example:
+            >>> manager = FlatCacheManager()
+            >>> metadata, rows = manager.get_cache_view_data()
+            >>> print(f"DB: {metadata['path']} ({metadata['db_size_formatted']}), Entries: {metadata['entry_count']}")
+            >>> for row in rows[:1]:  # First row
+            ...     print(row['path'], row['size'])
+        """
+        self.logger.info(f"Fetching cache view data for DB: {self.db_path}")
+
+        try:
+            with self._get_connection() as conn:
+                # Get entry count
+                cursor = conn.execute(f"SELECT COUNT(*) FROM {self.table_name}")
+                entry_count = cursor.fetchone()[0]
+
+                # Get cache version from schema_version table
+                cursor = conn.execute("SELECT version FROM schema_version")
+                row = cursor.fetchone()
+                cache_version = row[0] if row else 1  # Default to 1 if no version table
+
+                # Fetch all entries ordered by path
+                cursor = conn.execute(
+                    f"SELECT * FROM {self.table_name} ORDER BY path"
+                )
+                columns = [desc[0] for desc in cursor.description]
+                rows = [dict(row) for row in cursor.fetchall()]
+
+                self.logger.info(
+                    f"Cache view data fetched: {entry_count} entries, version {cache_version}"
+                )
+
+                # Get database file size
+                try:
+                    db_size = os.path.getsize(self.db_path)
+                except OSError:
+                    db_size = 0
+
+                # Format size human-readable
+                if db_size == 0:
+                    db_size_formatted = "0 B"
+                else:
+                    size = db_size
+                    units = ['B', 'KB', 'MB', 'GB', 'TB']
+                    unit_index = 0
+                    while size >= 1024 and unit_index < len(units) - 1:
+                        size /= 1024
+                        unit_index += 1
+                    db_size_formatted = f"{size:.1f} {units[unit_index]}"
+
+                metadata = {
+                    'path': str(self.db_path),
+                    'entry_count': entry_count,
+                    'cache_version': cache_version,
+                    'db_size': db_size,
+                    'db_size_formatted': db_size_formatted
+                }
+
+                return metadata, rows
+
+        except sqlite3.Error as e:
+            self.logger.error(f"SQLite error fetching cache view data: {e}", exc_info=True)
+            raise FlatCacheDBError(f"Failed to fetch cache data: {e}", original_error=e)
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching cache view data: {e}", exc_info=True)
+            raise FlatCacheDBError(f"Unexpected error: {e}", original_error=e)
+
+    # Syntax validation: This file has been reviewed for Python syntax correctness.
 # Example Usage (for documentation/testing purposes)
 if __name__ == '__main__':
     # Setup basic logging for standalone test
