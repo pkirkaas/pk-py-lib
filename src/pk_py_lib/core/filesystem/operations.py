@@ -547,11 +547,48 @@ class FileOperations:
 
         caption = f"Select Target Directory for {operation.title()} Operation"
 
-        selected_dir = QFileDialog.getExistingDirectory(
-            parent,
-            caption,
-            start_dir
-        )
+        # Create QFileDialog instance to enable sorting options
+        dialog = QFileDialog(parent, caption, start_dir)
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setOption(QFileDialog.ShowDirsOnly, True)
+
+        # Apply custom styling to fix hover colors (dark green -> light blue)
+        dialog.setStyleSheet("""
+            QFileDialog QListView::item:hover {
+                background: #e3f2fd;
+                color: #333333;
+            }
+            QFileDialog QTreeView::item:hover {
+                background: #e3f2fd;
+                color: #333333;
+            }
+            QFileDialog QListView::item:selected {
+                background: #4a90e2;
+                color: #ffffff;
+            }
+            QFileDialog QTreeView::item:selected {
+                background: #4a90e2;
+                color: #ffffff;
+            }
+            QFileDialog QListView::item:selected:!active {
+                background: #4a90e2;
+                color: #ffffff;
+            }
+            QFileDialog QTreeView::item:selected:!active {
+                background: #4a90e2;
+                color: #ffffff;
+            }
+        """)
+
+        # Enable alphabetical sorting for better user experience
+        # Set sort order to alphabetical (name) and ascending
+        dialog.setSortingEnabled(True)
+
+        # Execute the dialog
+        if dialog.exec() == QFileDialog.Accepted:
+            selected_dir = dialog.selectedFiles()[0] if dialog.selectedFiles() else None
+        else:
+            selected_dir = None
 
         if selected_dir:
             # Persist the selected directory

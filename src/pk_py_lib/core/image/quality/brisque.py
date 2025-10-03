@@ -364,13 +364,31 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
             raise ImageQualityFileError(f"Not a file: {path}", path=path)
 
         # Robust image loading: Try OpenCV first, fallback to PIL for problematic formats
-        # (e.g., palette PNGs with transparency that fail cv2.imread, like 1x400 narrow images)
+        # (e.g., palette PNGs with transparency, GIF files, narrow images that fail cv2.imread)
         image = cv2.imread(path, cv2.IMREAD_COLOR)
-        if image is None or len(image.shape) != 3 or image.shape[0] <= 0 or image.shape[1] <= 0:
+
+        # Check if file extension indicates potentially problematic formats
+        file_ext = Path(path).suffix.lower()
+        problematic_formats = {'.gif', '.png', '.tiff', '.tif', '.bmp'}
+
+        if (image is None or len(image.shape) != 3 or image.shape[0] <= 0 or image.shape[1] <= 0 or
+            file_ext in problematic_formats):
             try:
-                pil_img = Image.open(path).convert('RGB')
+                # Enhanced PIL fallback with format-specific handling
+                pil_img = Image.open(path)
+
+                # Handle GIF animations by taking first frame
+                if file_ext == '.gif' and hasattr(pil_img, 'is_animated') and pil_img.is_animated:
+                    pil_img.seek(0)  # Ensure we're on the first frame
+                    self.logger.debug(f"Processing first frame of animated GIF: {path}")
+
+                # Convert to RGB mode to ensure compatibility
+                if pil_img.mode not in ('RGB', 'RGBA', 'L'):
+                    pil_img = pil_img.convert('RGB')
+
+                # Convert to numpy array and then to BGR for OpenCV
                 image = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-                self.logger.debug(f"Loaded via PIL fallback for {path}, shape={image.shape}")
+                self.logger.debug(f"Loaded via PIL fallback for {path}, shape={image.shape}, original_mode={pil_img.mode}")
             except Exception as pil_exc:
                 raise ImageQualityFileError(f"Failed to load image with OpenCV and PIL fallback: {path}", path=path) from pil_exc
 

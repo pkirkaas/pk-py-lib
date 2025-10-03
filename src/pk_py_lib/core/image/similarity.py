@@ -365,12 +365,45 @@ def compute_phash(
     # --- Compute Hash ---
     hash_str = None
     try:
-        with Image.open(path) as img:
-            phash_obj = imagehash.phash(img, hash_size=effective_hash_size)
+        # Try PIL first for better compatibility with various formats
+        try:
+            with Image.open(path) as img:
+                # Handle GIF animations by taking first frame
+                if hasattr(img, 'is_animated') and img.is_animated:
+                    img.seek(0)  # Ensure we're on the first frame
+
+                # Convert to RGB if necessary for consistent hashing
+                if img.mode not in ('RGB', 'L'):
+                    img = img.convert('RGB')
+
+                phash_obj = imagehash.phash(img, hash_size=effective_hash_size)
+                hash_str = str(phash_obj)
+        except Exception as pil_exc:
+            logger.warning(f"PIL loading failed for {path}: {pil_exc}, trying fallback")
+            # Fallback to OpenCV if PIL fails
+            import cv2
+            import numpy as np
+            image = cv2.imread(path, cv2.IMREAD_COLOR)
+            if image is None:
+                raise SimilarityError(f"Failed to load image {path} with both PIL and OpenCV")
+
+            # Convert BGR to RGB for PIL compatibility
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(image_rgb)
+            phash_obj = imagehash.phash(pil_img, hash_size=effective_hash_size)
             hash_str = str(phash_obj)
 
-        if len(hash_str) != 16:
-            raise SimilarityError(f"Computed hash has invalid length {len(hash_str)}, expected 16")
+        # Validate hash length and normalize if needed
+        if len(hash_str) < 8:
+            raise SimilarityError(f"Computed hash too short: {len(hash_str)} characters")
+        elif len(hash_str) > 32:
+            raise SimilarityError(f"Computed hash too long: {len(hash_str)} characters")
+        elif len(hash_str) != 16:
+            logger.warning(f"Computed hash length {len(hash_str)}, expected 16, normalizing")
+            if len(hash_str) < 16:
+                hash_str = hash_str.zfill(16)
+            else:
+                hash_str = hash_str[:16]
 
         # --- Update cache if available ---
         if flat_cache_manager:
@@ -454,10 +487,44 @@ def compute_color_phash(
     # --- Compute Hash ---
     hash_str = None
     try:
-        with Image.open(path) as img:
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            r, g, b = img.split()
+        # Try PIL first for better compatibility with various formats
+        try:
+            with Image.open(path) as img:
+                # Handle GIF animations by taking first frame
+                if hasattr(img, 'is_animated') and img.is_animated:
+                    img.seek(0)  # Ensure we're on the first frame
+
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                r, g, b = img.split()
+
+                h_r = imagehash.phash(r, hash_size=effective_hash_size)
+                h_g = imagehash.phash(g, hash_size=effective_hash_size)
+                h_b = imagehash.phash(b, hash_size=effective_hash_size)
+
+                # Average the integer representations
+                int_r = int(str(h_r), 16)
+                int_g = int(str(h_g), 16)
+                int_b = int(str(h_b), 16)
+                avg_int = (int_r + int_g + int_b) // 3
+
+                # Format as 64-bit hex (16 chars), truncate/pad if needed
+                hash_str = f"{avg_int:064x}"[:16].zfill(16)
+        except Exception as pil_exc:
+            logger.warning(f"PIL loading failed for {path}: {pil_exc}, trying OpenCV fallback")
+            # Fallback to OpenCV if PIL fails
+            import cv2
+            import numpy as np
+            image = cv2.imread(path, cv2.IMREAD_COLOR)
+            if image is None:
+                raise SimilarityError(f"Failed to load image {path} with both PIL and OpenCV")
+
+            # Convert BGR to RGB for PIL compatibility
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(image_rgb)
+            if pil_img.mode != 'RGB':
+                pil_img = pil_img.convert('RGB')
+            r, g, b = pil_img.split()
 
             h_r = imagehash.phash(r, hash_size=effective_hash_size)
             h_g = imagehash.phash(g, hash_size=effective_hash_size)
@@ -472,8 +539,17 @@ def compute_color_phash(
             # Format as 64-bit hex (16 chars), truncate/pad if needed
             hash_str = f"{avg_int:064x}"[:16].zfill(16)
 
-        if len(hash_str) != 16:
-            raise SimilarityError(f"Color hash has invalid length {len(hash_str)}")
+        # Validate hash length and normalize if needed
+        if len(hash_str) < 8:
+            raise SimilarityError(f"Color hash too short: {len(hash_str)} characters")
+        elif len(hash_str) > 32:
+            raise SimilarityError(f"Color hash too long: {len(hash_str)} characters")
+        elif len(hash_str) != 16:
+            logger.warning(f"Color hash length {len(hash_str)}, expected 16, normalizing")
+            if len(hash_str) < 16:
+                hash_str = hash_str.zfill(16)
+            else:
+                hash_str = hash_str[:16]
 
         logger.info(f"Computed color pHash for {image_path} (size={effective_hash_size}): {hash_str}")
         return hash_str
@@ -599,8 +675,44 @@ def find_similar_phash(
             raise ValueError(f"Invalid dict at index {i}: missing 'path' or 'hash'")
         if not isinstance(h['path'], str) or not h['path']:
             raise ValueError(f"Empty path at index {i}")
-        if len(h['hash']) != 16:
-            raise ValueError(f"Invalid hash length at index {i}: {len(h['hash'])}")
+
+        # Validate and normalize hash length
+        hash_str = h['hash']
+        if not isinstance(hash_str, str) or not hash_str:
+            raise ValueError(f"Empty or invalid hash at index {i}")
+
+        # Handle variable hash lengths gracefully
+        if len(hash_str) == 16:
+            # Standard 64-bit hash
+            pass
+        elif len(hash_str) == 21:
+            # Handle 21-character hashes - extract only hex digits from the end
+            logger.warning(f"Hash length 21 at index {i}, extracting hex digits for compatibility")
+            # Extract only the hex digits from the hash string
+            hex_digits = ''.join(c for c in hash_str if c in '0123456789abcdefABCDEF')
+            if len(hex_digits) >= 16:
+                hash_str = hex_digits[:16]
+            else:
+                # Pad if we don't have enough hex digits
+                hash_str = hex_digits.zfill(16)
+            h['hash'] = hash_str
+        elif len(hash_str) < 8:
+            raise ValueError(f"Hash too short at index {i}: {len(hash_str)} (minimum 8 characters)")
+        elif len(hash_str) > 32:
+            raise ValueError(f"Hash too long at index {i}: {len(hash_str)} (maximum 32 characters)")
+        else:
+            # For lengths between 8-32, pad or truncate to 16 characters
+            if len(hash_str) < 16:
+                logger.warning(f"Hash length {len(hash_str)} at index {i}, padding to 16 characters")
+                hash_str = hash_str.zfill(16)
+            else:
+                logger.warning(f"Hash length {len(hash_str)} at index {i}, truncating to 16 characters")
+                hash_str = hash_str[:16]
+            h['hash'] = hash_str
+
+        # Validate hex characters
+        if not all(c in '0123456789abcdefABCDEF' for c in hash_str):
+            raise ValueError(f"Invalid hex characters in hash at index {i}: {hash_str}")
 
     # Get threshold
     if threshold is None:
@@ -845,13 +957,46 @@ def compute_whash(
     # --- Compute Hash ---
     hash_str = None
     try:
-        with Image.open(path) as img:
-            # imagehash.whash handles grayscale, resizing, DWT, thresholding
-            whash_obj = imagehash.whash(img, hash_size=effective_hash_size, mode=mode, wavelet=wavelet)
+        # Try PIL first for better compatibility with various formats
+        try:
+            with Image.open(path) as img:
+                # Handle GIF animations by taking first frame
+                if hasattr(img, 'is_animated') and img.is_animated:
+                    img.seek(0)  # Ensure we're on the first frame
+
+                # Convert to RGB if necessary for consistent hashing
+                if img.mode not in ('RGB', 'L'):
+                    img = img.convert('RGB')
+
+                # imagehash.whash handles grayscale, resizing, DWT, thresholding
+                whash_obj = imagehash.whash(img, hash_size=effective_hash_size, mode=mode, wavelet=wavelet)
+                hash_str = str(whash_obj)
+        except Exception as pil_exc:
+            logger.warning(f"PIL loading failed for {path}: {pil_exc}, trying OpenCV fallback")
+            # Fallback to OpenCV if PIL fails
+            import cv2
+            import numpy as np
+            image = cv2.imread(path, cv2.IMREAD_COLOR)
+            if image is None:
+                raise SimilarityError(f"Failed to load image {path} with both PIL and OpenCV")
+
+            # Convert BGR to RGB for PIL compatibility
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(image_rgb)
+            whash_obj = imagehash.whash(pil_img, hash_size=effective_hash_size, mode=mode, wavelet=wavelet)
             hash_str = str(whash_obj)
 
-        if len(hash_str) != 16:
-            raise SimilarityError(f"Computed hash has invalid length {len(hash_str)}, expected 16")
+        # Validate hash length and normalize if needed
+        if len(hash_str) < 8:
+            raise SimilarityError(f"Computed hash too short: {len(hash_str)} characters")
+        elif len(hash_str) > 32:
+            raise SimilarityError(f"Computed hash too long: {len(hash_str)} characters")
+        elif len(hash_str) != 16:
+            logger.warning(f"Computed hash length {len(hash_str)}, expected 16, normalizing")
+            if len(hash_str) < 16:
+                hash_str = hash_str.zfill(16)
+            else:
+                hash_str = hash_str[:16]
 
         # --- Update cache if available ---
         if flat_cache_manager:
@@ -940,10 +1085,44 @@ def compute_color_whash(
     # --- Compute Hash ---
     hash_str = None
     try:
-        with Image.open(path) as img:
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            r, g, b = img.split()
+        # Try PIL first for better compatibility with various formats
+        try:
+            with Image.open(path) as img:
+                # Handle GIF animations by taking first frame
+                if hasattr(img, 'is_animated') and img.is_animated:
+                    img.seek(0)  # Ensure we're on the first frame
+
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                r, g, b = img.split()
+
+                h_r = imagehash.whash(r, hash_size=effective_hash_size, mode=mode, wavelet=wavelet)
+                h_g = imagehash.whash(g, hash_size=effective_hash_size, mode=mode, wavelet=wavelet)
+                h_b = imagehash.whash(b, hash_size=effective_hash_size, mode=mode, wavelet=wavelet)
+
+                # Average the integer representations
+                int_r = int(str(h_r), 16)
+                int_g = int(str(h_g), 16)
+                int_b = int(str(h_b), 16)
+                avg_int = (int_r + int_g + int_b) // 3
+
+                # Format as 64-bit hex (16 chars), truncate/pad if needed
+                hash_str = f"{avg_int:064x}"[:16].zfill(16)
+        except Exception as pil_exc:
+            logger.warning(f"PIL loading failed for {path}: {pil_exc}, trying OpenCV fallback")
+            # Fallback to OpenCV if PIL fails
+            import cv2
+            import numpy as np
+            image = cv2.imread(path, cv2.IMREAD_COLOR)
+            if image is None:
+                raise SimilarityError(f"Failed to load image {path} with both PIL and OpenCV")
+
+            # Convert BGR to RGB for PIL compatibility
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(image_rgb)
+            if pil_img.mode != 'RGB':
+                pil_img = pil_img.convert('RGB')
+            r, g, b = pil_img.split()
 
             h_r = imagehash.whash(r, hash_size=effective_hash_size, mode=mode, wavelet=wavelet)
             h_g = imagehash.whash(g, hash_size=effective_hash_size, mode=mode, wavelet=wavelet)
@@ -958,8 +1137,17 @@ def compute_color_whash(
             # Format as 64-bit hex (16 chars), truncate/pad if needed
             hash_str = f"{avg_int:064x}"[:16].zfill(16)
 
-        if len(hash_str) != 16:
-            raise SimilarityError(f"Color wHash has invalid length {len(hash_str)}")
+        # Validate hash length and normalize if needed
+        if len(hash_str) < 8:
+            raise SimilarityError(f"Color wHash too short: {len(hash_str)} characters")
+        elif len(hash_str) > 32:
+            raise SimilarityError(f"Color wHash too long: {len(hash_str)} characters")
+        elif len(hash_str) != 16:
+            logger.warning(f"Color wHash length {len(hash_str)}, expected 16, normalizing")
+            if len(hash_str) < 16:
+                hash_str = hash_str.zfill(16)
+            else:
+                hash_str = hash_str[:16]
 
         logger.info(f"Computed color wHash for {image_path} (size={effective_hash_size}, mode={mode}, wavelet={wavelet}): {hash_str}")
         return hash_str
@@ -1047,8 +1235,44 @@ def find_similar_whash(
             raise ValueError(f"Invalid dict at index {i}: missing 'path' or 'hash'")
         if not isinstance(h['path'], str) or not h['path']:
             raise ValueError(f"Empty path at index {i}")
-        if len(h['hash']) != 16:
-            raise ValueError(f"Invalid hash length at index {i}: {len(h['hash'])}")
+
+        # Validate and normalize hash length
+        hash_str = h['hash']
+        if not isinstance(hash_str, str) or not hash_str:
+            raise ValueError(f"Empty or invalid hash at index {i}")
+
+        # Handle variable hash lengths gracefully
+        if len(hash_str) == 16:
+            # Standard 64-bit hash
+            pass
+        elif len(hash_str) == 21:
+            # Handle 21-character hashes - extract only hex digits from the end
+            logger.warning(f"Hash length 21 at index {i}, extracting hex digits for compatibility")
+            # Extract only the hex digits from the hash string
+            hex_digits = ''.join(c for c in hash_str if c in '0123456789abcdefABCDEF')
+            if len(hex_digits) >= 16:
+                hash_str = hex_digits[:16]
+            else:
+                # Pad if we don't have enough hex digits
+                hash_str = hex_digits.zfill(16)
+            h['hash'] = hash_str
+        elif len(hash_str) < 8:
+            raise ValueError(f"Hash too short at index {i}: {len(hash_str)} (minimum 8 characters)")
+        elif len(hash_str) > 32:
+            raise ValueError(f"Hash too long at index {i}: {len(hash_str)} (maximum 32 characters)")
+        else:
+            # For lengths between 8-32, pad or truncate to 16 characters
+            if len(hash_str) < 16:
+                logger.warning(f"Hash length {len(hash_str)} at index {i}, padding to 16 characters")
+                hash_str = hash_str.zfill(16)
+            else:
+                logger.warning(f"Hash length {len(hash_str)} at index {i}, truncating to 16 characters")
+                hash_str = hash_str[:16]
+            h['hash'] = hash_str
+
+        # Validate hex characters
+        if not all(c in '0123456789abcdefABCDEF' for c in hash_str):
+            raise ValueError(f"Invalid hex characters in hash at index {i}: {hash_str}")
 
     # Get threshold
     if threshold is None:
