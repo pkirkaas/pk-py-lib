@@ -556,6 +556,33 @@ Logging is integrated throughout the `FlatCacheManager` class in [`flat_cache.py
 
 This logging setup provides comprehensive visibility into cache behavior, aiding in debugging issues like frequent misses or validation failures without impacting general log files.
 
+## Performance Considerations - View Cache Dialog
+
+### The GC-Induced Post-Close Freeze Issue
+The View Cache Dialog (implemented in [`view_cache_dialog.py`](src/pk_py_lib/gui/dialogs/view_cache_dialog.py)) populates a large `QStandardItemModel` with ~1000+ rows of cache entry data (paths, stats, hashes) fetched via [`get_cache_view_data`](src/pk_py_lib/core/flat_cache.py:1590). Upon dialog close (`dialog.exec()` returns), Qt destroys the model, but Python's garbage collector (GC) may delay deallocation of the underlying Python objects (strings, dicts in `hash_data`), causing a 5-10s freeze on the main thread. This blocks UI responsiveness post-close, especially with large caches (e.g., 10k+ entries from full scans).
+
+Diagnosis: The freeze occurs during model destruction, as Qt's reference counting interacts poorly with Python's cyclic GC for large, interconnected data structures. Profiling (via `cProfile` or `time.time()` wraps around `exec()`) confirms the delay is in post-`exec()` cleanup, not dialog loading or rendering.
+
+### Implemented Workaround
+To mitigate the freeze in development mode, an explicit `gc.collect()` call is added immediately after `dialog.exec()` in the View Cache action handler (in [`main_window.py`](img_app/img_app/main_window.py:789)). This forces immediate GC of the model and associated data, reducing the post-close delay to <0.5s.
+
+The call is wrapped in a development mode check using the app setting `logging_to_user_dir` (from [`configuration.py`](src/pk_py_lib/core/configuration.py)): if `False` (project root logs), it's development mode and GC is triggered; if `True` (user dir logs), it's production and skipped to avoid potential pauses elsewhere.
+
+### Side Effects Concerns
+- **Development-Only**: Enabled only in dev mode to prevent production impacts. In production, Qt's deferred GC is preferred for smoother UX, though monitoring is recommended.
+- **Potential Pauses**: Explicit `gc.collect()` can cause brief (~100-500ms) pauses if called frequently across dialogs. Limited to View Cache (large model) minimizes risk.
+- **Temporary for PoC**: This is a workaround for the proof-of-concept phase. Long-term, migrate to `QSqlTableModel` for lazy loading (query-only visible rows) to avoid loading the full dataset into memory, eliminating the large model and GC issue entirely.
+- **Monitoring**: Track memory patterns (via `psutil` or Qt's `QWidget::repaint()`) and dialog timings in dev logs. If GC pauses affect other areas, consider Qt's `QTimer::singleShot(0, gc.collect)` for deferred execution.
+
+### Testing
+- **Verification Steps**:
+  - Populate a large cache (1000+ entries) via a full similarity scan (`pdm run imgapp`, select profile, start operation).
+  - Open View Cache dialog from Cache menu; confirm loads without freeze (~1-2s for model population).
+  - Close dialog; measure post-close responsiveness (e.g., click Start button immediately—should respond in <1s in dev mode).
+  - Toggle `logging_to_user_dir=True` (via Settings Manager or direct DB update); retest—confirm no explicit GC (slight delay acceptable in prod).
+- **Pre/Post Timings**: Use `time.time()` logs around `exec()` and GC (already in code). Expect: pre-fix ~5-10s post-close; post-fix <1s in dev.
+- **Edge Cases**: Test with 10k+ entries (simulate via repeated scans); verify no crashes on corrupt entries (handled by `get_cache_view_data`). Run in both modes; confirm dev-only activation.
+
 ## Testing
 
 The Flat Cache implementation is covered by [`tests/test_flat_cache.py`](tests/test_flat_cache.py:1), which includes comprehensive unit tests for:

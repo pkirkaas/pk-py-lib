@@ -12,6 +12,10 @@ from ..logger import LogOutput, LogEntry, LogLevel
 from pk_py_lib.core.utils import get_data_dir # Import unified data directory function
 import sys # For invocation command
 
+# Imports for development mode line ending configuration
+from src.pk_py_lib.core.database import DatabaseManager
+from src.pk_py_lib.core.configuration import ConfigurationManager
+
 
 class FileOutput(LogOutput):
     """
@@ -52,6 +56,14 @@ class FileOutput(LogOutput):
         self.backup_count = backup_count
         self.json_format = json_format
         self.rotate_existing = rotate_existing
+        
+        # Development mode check: Use Unix line endings (\n) for logs when development flag is True
+        # This ensures consistent line endings for cross-platform analysis (git diffs, Linux tools)
+        # even on Windows, without affecting other modes or platforms unnecessarily.
+        # On non-Windows platforms, open() defaults to \n, so this primarily impacts Windows.
+        db_mgr = DatabaseManager()
+        config = ConfigurationManager(db_mgr)
+        self.is_dev_mode = config.get_app_setting("development") or False
         
         # Create directory if it doesn't exist
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -139,7 +151,8 @@ class FileOutput(LogOutput):
             # Write header to the new file, overwriting if rename failed or file was missing
             # For non-rotated empty files (e.g., cache logs), this appends the header safely
             mode = 'w' if not self.file_path.exists() else 'a'
-            with open(self.file_path, mode, encoding='utf-8') as f:
+            newline_param = '\n' if self.is_dev_mode else None
+            with open(self.file_path, mode, encoding='utf-8', newline=newline_param) as f:
                 if mode == 'a' and f.tell() > 0:
                     f.write('\n')  # Ensure newline before header if file not empty
                 f.write('\n'.join(header) + '\n')
@@ -207,7 +220,8 @@ class FileOutput(LogOutput):
         
         # Write to file
         try:
-            with open(self.file_path, 'a', encoding='utf-8') as f:
+            newline_param = '\n' if self.is_dev_mode else None
+            with open(self.file_path, 'a', encoding='utf-8', newline=newline_param) as f:
                 f.write('\n'.join(lines) + '\n')
                 f.flush()
         except Exception as e:
@@ -253,7 +267,8 @@ class FileOutput(LogOutput):
         
         # Write JSON line
         try:
-            with open(self.file_path, 'a', encoding='utf-8') as f:
+            newline_param = '\n' if self.is_dev_mode else None
+            with open(self.file_path, 'a', encoding='utf-8', newline=newline_param) as f:
                 json.dump(entry_dict, f, separators=(',', ':'))
                 f.write('\n')
                 f.flush()

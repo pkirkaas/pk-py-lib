@@ -47,6 +47,8 @@ class AppSettings:
     max_threads: int = 4
     max_memory_mb: int = 2048
     cache_size_mb: int = 5120  # 5120 MB (≈5 GB) default
+    logging_to_user_dir: bool = False  # False: project root logs; True: user data dir logs
+    development: bool = False  # Development mode: enables features like Unix line endings (LF) in log files on Windows
     
     # UI Layout (stored as JSON)
     window_geometry: Optional[Dict[str, Any]] = None
@@ -144,6 +146,28 @@ class ConfigurationManager:
     def _ensure_initialized(self) -> None:
         """Ensure database tables and default data exist."""
         with self.db.get_connection(self.db.settings_db) as conn:
+            # Ensure logging_to_user_dir column exists in app_settings
+            cur = conn.execute("""
+                SELECT COUNT(*) FROM pragma_table_info('app_settings')
+                WHERE name = 'logging_to_user_dir'
+            """)
+            if cur.fetchone()[0] == 0:
+                conn.execute("""
+                    ALTER TABLE app_settings
+                    ADD COLUMN logging_to_user_dir BOOLEAN DEFAULT FALSE
+                """)
+            
+            # Ensure development column exists in app_settings
+            cur = conn.execute("""
+                SELECT COUNT(*) FROM pragma_table_info('app_settings')
+                WHERE name = 'development'
+            """)
+            if cur.fetchone()[0] == 0:
+                conn.execute("""
+                    ALTER TABLE app_settings
+                    ADD COLUMN development BOOLEAN DEFAULT FALSE
+                """)
+            
             # Check if app_settings has a row
             cur = conn.execute("SELECT COUNT(*) FROM app_settings")
             if cur.fetchone()[0] == 0:
@@ -151,9 +175,9 @@ class ConfigurationManager:
                 conn.execute("""
                     INSERT INTO app_settings (
                         theme, language, ui_scale,
-                        max_threads, max_memory_mb, cache_size_mb
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                """, ("light", "en", 1.0, 4, 2048, 5120))
+                        max_threads, max_memory_mb, cache_size_mb, logging_to_user_dir, development
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, ("light", "en", 1.0, 4, 2048, 5120, False, False))
             
             # Check if default profile exists
             cur = conn.execute("SELECT COUNT(*) FROM profiles WHERE is_default = 1")
@@ -196,7 +220,7 @@ class ConfigurationManager:
         with self.db.get_connection(self.db.settings_db) as conn:
             cur = conn.execute("""
                 SELECT theme, language, ui_scale,
-                       max_threads, max_memory_mb, cache_size_mb,
+                       max_threads, max_memory_mb, cache_size_mb, logging_to_user_dir, development,
                        window_geometry, panel_layout, shortcuts,
                        created_at, modified_at
                 FROM app_settings
@@ -212,11 +236,13 @@ class ConfigurationManager:
                     max_threads=row[3],
                     max_memory_mb=row[4],
                     cache_size_mb=row[5],
-                    window_geometry=json.loads(row[6]) if row[6] else None,
-                    panel_layout=json.loads(row[7]) if row[7] else None,
-                    shortcuts=json.loads(row[8]) if row[8] else None,
-                    created_at=datetime.fromisoformat(row[9]) if row[9] else None,
-                    modified_at=datetime.fromisoformat(row[10]) if row[10] else None
+                    logging_to_user_dir=bool(row[6]),
+                    development=bool(row[7]),
+                    window_geometry=json.loads(row[8]) if row[8] else None,
+                    panel_layout=json.loads(row[9]) if row[9] else None,
+                    shortcuts=json.loads(row[10]) if row[10] else None,
+                    created_at=datetime.fromisoformat(row[11]) if row[11] else None,
+                    modified_at=datetime.fromisoformat(row[12]) if row[12] else None
                 )
                 self._app_settings_cache = settings
                 return settings
@@ -248,7 +274,7 @@ class ConfigurationManager:
             conn.execute("""
                 UPDATE app_settings SET
                     theme = ?, language = ?, ui_scale = ?,
-                    max_threads = ?, max_memory_mb = ?, cache_size_mb = ?,
+                    max_threads = ?, max_memory_mb = ?, cache_size_mb = ?, logging_to_user_dir = ?, development = ?,
                     window_geometry = ?, panel_layout = ?, shortcuts = ?,
                     modified_at = CURRENT_TIMESTAMP
                 WHERE id = (SELECT id FROM app_settings LIMIT 1)
@@ -259,6 +285,8 @@ class ConfigurationManager:
                 settings.max_threads,
                 settings.max_memory_mb,
                 settings.cache_size_mb,
+                settings.logging_to_user_dir,
+                settings.development,
                 json.dumps(settings.window_geometry) if settings.window_geometry else None,
                 json.dumps(settings.panel_layout) if settings.panel_layout else None,
                 json.dumps(settings.shortcuts) if settings.shortcuts else None

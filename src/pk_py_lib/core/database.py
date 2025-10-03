@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
     max_threads INTEGER DEFAULT 4,
     max_memory_mb INTEGER DEFAULT 2048,
     cache_size_mb INTEGER DEFAULT 5120,
+    logging_to_user_dir BOOLEAN DEFAULT FALSE,
     window_geometry JSON,
     panel_layout JSON,
     shortcuts JSON,

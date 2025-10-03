@@ -540,7 +540,7 @@ def configure_logging(
                 logger.add_output(output)
 
 
-def get_cache_logger(name: str = "cache") -> PKLogger:
+def get_cache_logger(name: str = "cache", log_dir: Optional[Path] = None) -> PKLogger:
     """
     Get or create the dedicated cache logger instance.
     
@@ -595,6 +595,7 @@ def get_cache_logger(name: str = "cache") -> PKLogger:
     
     Args:
         name: Logger name (defaults to "cache" for consistency)
+        log_dir: Optional directory for logs. If None, uses get_data_dir() / "logs".
     
     Returns:
         PKLogger: The configured cache logger instance
@@ -602,7 +603,7 @@ def get_cache_logger(name: str = "cache") -> PKLogger:
     Raises:
         RuntimeError: If the logs directory cannot be created or accessed
         OSError: If file operations fail during output initialization
-        ValueError: If get_data_dir() returns an invalid path
+        ValueError: If log_dir is invalid or get_data_dir() returns an invalid path
     
     Note:
         This logger does not add global outputs or console output to avoid
@@ -621,16 +622,18 @@ def get_cache_logger(name: str = "cache") -> PKLogger:
     global _loggers
     
     if name not in _loggers:
-        # Get the unified data directory for log path
-        data_dir = get_data_dir()
-        if not isinstance(data_dir, Path) or not data_dir.exists():
-            raise ValueError(
-                f"Invalid data directory from get_data_dir(): {data_dir}. "
-                f"Expected a valid Path object pointing to an existing directory."
-            )
+        # Determine log directory
+        if log_dir is None:
+            data_dir = get_data_dir()
+            if not isinstance(data_dir, Path) or not data_dir.exists():
+                raise ValueError(
+                    f"Invalid data directory from get_data_dir(): {data_dir}. "
+                    f"Expected a valid Path object pointing to an existing directory."
+                )
+            logs_dir = data_dir / "logs"
+        else:
+            logs_dir = log_dir
         
-        # Construct cache log path
-        logs_dir = data_dir / "logs"
         cache_log_path = logs_dir / "cache_process.log"
         
         # Ensure logs directory exists (creates parents if needed)

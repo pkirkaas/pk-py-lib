@@ -788,8 +788,44 @@ class MainWindow(QMainWindow):
 
         try:
             from src.pk_py_lib.gui.dialogs.view_cache_dialog import ViewCacheDialog
+            from src.pk_py_lib.core.configuration import ConfigurationManager
+            import time
+            start_exec = time.time()
+            self.logger.info(f"ViewCacheDialog exec() start at {start_exec}")
             dialog = ViewCacheDialog(self.flat_cache_manager, self)
-            dialog.exec()
+            result = dialog.exec()
+            end_exec = time.time()
+            self.logger.info(f"ViewCacheDialog exec() end at {end_exec}, duration: {end_exec - start_exec:.2f}s, result: {result}")
+
+            # Development mode check: Use the same logic as logging file location
+            # (project root logs indicate development; user dir indicates production)
+            config = ConfigurationManager(self.database_manager)
+            use_user_dir = config.get_app_setting("logging_to_user_dir")
+            is_development_mode = not use_user_dir
+
+            if is_development_mode:
+                """
+                Purpose: Forces immediate garbage collection of the large QStandardItemModel (~1000+ rows)
+                to prevent a 5-10s UI freeze post-dialog close. The model destruction during dialog.close()
+                can block the main thread due to Qt's reference counting and Python's GC cycle.
+
+                Concerns/Side Effects: This is a workaround for development/debugging; in production,
+                it could cause unpredictable pauses elsewhere if triggered frequently. Monitor for impacts
+                on other dialogs or memory patterns. Not ideal long-term—recommend switching to QSqlTableModel
+                for lazy loading. Only enabled in development mode to avoid production risks.
+                """
+                post_exec_start = time.time()
+                self.logger.info(f"Post-exec cleanup start at {post_exec_start}")
+                import gc
+                gc_start = time.time()
+                gc.collect()
+                gc_end = time.time()
+                self.logger.info(f"GC.collect() completed at {gc_end}, duration: {gc_end - gc_start:.2f}s")
+                post_exec_end = time.time()
+                self.logger.info(f"Post-exec full duration: {post_exec_end - post_exec_start:.2f}s")
+            else:
+                self.logger.info("Skipping explicit GC.collect() in production mode")
+
             self.status_label.setText("Cache view closed.")
         except Exception as e:
             show_selectable_error(self, "View Cache Failed", f"Failed to view cache: {e}")

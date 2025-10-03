@@ -1,0 +1,6 @@
+Invocation Command: test_logging_lineendings.py
+Start Time: 2025-10-04 00:48:59 
+
+--- Log Start ---
+[2025-10-04 00:48:59.568] INFO     This is the first test log line. (test_script.py:42)
+[2025-10-04 00:49:00.568] INFO     This is the second test log line. (test_script.py:43)

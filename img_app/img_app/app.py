@@ -137,72 +137,44 @@ Examples:
     )
     args, qt_argv = parser.parse_known_args()
     
-    # --- Logging Configuration (Must happen early) ---
-    # Use the unified data directory for logs
-    DATA_DIR = get_data_dir()
+    # --- Logging Configuration (Dynamic based on app setting) ---
+    # Defer logging setup until after ConfigurationManager is initialized
+    # to respect the logging_to_user_dir setting (project root vs user data dir)
     
-    # Handle cache_process.log file rotation and creation at application startup,
-    # following project logging guidelines similar to terminal log handling in core/logging/outputs/file.py.
-    # This ensures each application launch starts with a fresh cache process log file,
-    # renaming any existing one with a timestamp (YYYYMMDD_HHMMSS) for archival purposes.
-    # Performed before any other logging configuration to avoid interference.
-    cache_log_path = DATA_DIR / "logs" / "cache_process.log"
+    # Default to project root for early errors before config is available
+    PROJECT_ROOT = Path(__file__).parent.parent.parent
+    log_dir = PROJECT_ROOT / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     
-    # Ensure the logs directory exists (creates parents if needed)
-    cache_log_path.parent.mkdir(parents=True, exist_ok=True)
+    # Placeholder paths for early logging if needed
+    early_cache_log_path = log_dir / "cache_process.log"
+    early_log_file_path = log_dir / "img_app-terminal.log"
     
-    if cache_log_path.exists():
-        # Rename existing cache log file by appending timestamp to basename
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        new_name = cache_log_path.with_name(f"cache_process_{ts}.log")
-        
-        try:
-            cache_log_path.rename(new_name)
-        except OSError as e:
-            # Raise informative exception with full details for debugging
-            # Includes original path, target path, error details, and potential causes
-            error_msg = (
-                f"Failed to rename existing cache process log file "
-                f"'{cache_log_path}' to '{new_name}': {e}\n"
-                f"Error details: {e.strerror if hasattr(e, 'strerror') else 'Unknown OSError details'}\n"
-                f"Error number: {e.errno if hasattr(e, 'errno') else 'Unknown'}\n"
-                f"This may be due to file permissions, file locks by another process, "
-                f"or insufficient disk space. Please verify file access rights, "
-                f"close any processes using the file, and ensure sufficient storage."
-            )
-            raise RuntimeError(error_msg) from e
-    
-    # Create a new empty cache process log file for this application session
-    # touch(exist_ok=True) creates the file if it doesn't exist, or does nothing if it does
-    # Since we renamed any existing one, this will always create a new empty file
-    cache_log_path.touch(exist_ok=True)
-    
-    # Initialize the dedicated cache logger after rotation
-    # This ensures the cache logger is ready for use, writing its header to the fresh file
+    # Early cache logger setup (will be reconfigured later if needed)
     from src.pk_py_lib.core.logging.logger import get_cache_logger
-    get_cache_logger()  # Creates the logger and configures FileOutput with header
+    get_cache_logger(log_dir=log_dir)
     
-    LOG_FILE_PATH = DATA_DIR / "logs" / "img_app-terminal.log"
-    
+    # Early main logging (minimal, will be fully configured after settings)
     try:
+        from src.pk_py_lib.core.logging.logger import configure_logging, LogLevel
         configure_logging(
             console=True,
-            file_path=LOG_FILE_PATH,
+            file_path=early_log_file_path,
             level=LogLevel.INFO,
             rich_console=True
         )
     except Exception as exc:
-        # Log configuration failure is critical but should not stop the app if possible
-        print(f"Warning: Failed to configure logging: {exc}", file=sys.stderr)
+        print(f"Warning: Failed to configure early logging: {exc}", file=sys.stderr)
 
     if args.location:
         # CLI mode: initialize managers and print actual paths
         try:
-            # Use the unified DATA_DIR for path reporting
-            data_dir = DATA_DIR.resolve()
+            # Use the unified data directory for path reporting
+            from src.pk_py_lib.core import get_data_dir
+            data_dir = get_data_dir().resolve()
             
-            # Initialize DatabaseManager (uses DATA_DIR internally now)
-            db_mgr = DatabaseManager(data_dir=data_dir)
+            # Initialize DatabaseManager (uses get_data_dir internally now)
+            db_mgr = DatabaseManager()
             db_mgr.initialize()
             
             # Initialize ConfigurationManager to get cache size
@@ -218,8 +190,10 @@ Examples:
             backups_dir = (data_dir / 'backups').resolve()
             sessions_db = (data_dir / 'sessions.db').resolve() # Assuming sessions.db is also in data_dir
             
-            # Log file path
-            app_log = LOG_FILE_PATH.resolve()
+            # Default log file path (project root for --location since config not fully dynamic here)
+            PROJECT_ROOT = Path(__file__).parent.parent.parent
+            log_dir = PROJECT_ROOT / "logs"
+            app_log = (log_dir / "img_app-terminal.log").resolve()
             
             # Flat cache path
             flat_cache_db = (data_dir / 'flat_cache.db').resolve()
@@ -289,13 +263,71 @@ Examples:
                 return 1
 
         # Optional managers (best-effort; failures are non-fatal)
+        config_mgr = None
+        flat_cache_mgr = None
+        
         try:
             config_mgr = ConfigurationManager(db_mgr)
             flat_cache_mgr = FlatCacheManager()
             
+            # Now configure dynamic logging based on app setting
+            logging_to_user_dir = config_mgr.get_app_setting('logging_to_user_dir')  # Defaults to False from schema if not set.
+            
+            if logging_to_user_dir:
+                from src.pk_py_lib.core import get_data_dir
+                log_dir = get_data_dir() / "logs"
+            else:
+                log_dir = PROJECT_ROOT / "logs"
+            
+            log_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Reconfigure main terminal log with dynamic path and rotation
+            LOG_FILE_PATH = log_dir / "img_app-terminal.log"
+            
+            # Rotate existing main log file (similar to cache rotation)
+            if LOG_FILE_PATH.exists():
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                new_name = LOG_FILE_PATH.with_name(f"img_app-terminal_{ts}.log")
+                try:
+                    LOG_FILE_PATH.rename(new_name)
+                except OSError as e:
+                    # Log to console since main logging not fully set up yet
+                    print(f"Warning: Failed to rotate main log file: {e}", file=sys.stderr)
+            
+            # Create new main log file
+            LOG_FILE_PATH.touch(exist_ok=True)
+            
+            # Reconfigure main logging with dynamic path
+            configure_logging(
+                console=True,
+                file_path=LOG_FILE_PATH,
+                level=LogLevel.INFO,
+                rich_console=True
+            )
+            
+            # Reconfigure cache logger with dynamic log_dir
+            cache_log_path = log_dir / "cache_process.log"
+            
+            # Rotate cache log if needed (idempotent)
+            if cache_log_path.exists():
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                new_name = cache_log_path.with_name(f"cache_process_{ts}.log")
+                try:
+                    cache_log_path.rename(new_name)
+                except OSError as e:
+                    # Already logged via main logger or early console
+                    pass
+            
+            # Create new cache log file
+            cache_log_path.touch(exist_ok=True)
+            
+            # Reinitialize cache logger with dynamic log_dir
+            get_cache_logger(log_dir=log_dir)
+            
         except Exception as exc:
             import logging
             logging.getLogger("img_app.app").exception("Optional manager init failed: %s", exc)
+            # If config fails, logging remains in project root (fallback)
 
     except Exception as exc:
         # Any fatal initialization error -> show and exit
