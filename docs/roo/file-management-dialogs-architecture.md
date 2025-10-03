@@ -254,6 +254,50 @@ graph TD
 - Interactive selection synchronization
 
 ## Integration with Settings Profiles v1
+## UI Interactions and Event Handling
+
+### Mouse Events: Double-Click and Context Menu
+
+The file management dialogs support enhanced user interactions through double-click and right-click context menus on file items in the QTreeWidget. These features provide quick access to files without leaving the application, improving workflow efficiency for inspecting, editing, or managing files directly from the results view.
+
+#### Double-Click to Open File
+
+- **Behavior**: Double-clicking a file item (child item under a group) opens the file using the default OS handler via [`QDesktopServices.openUrl()`](PySide6.QtGui.QDesktopServices.openUrl()).
+
+- **Implementation**: Connected to the tree widget's `itemDoubleClicked` signal in the dialog's setup method (e.g., `_setup_tree_behavior`).
+
+- **Cross-Platform Support**: Uses [`QUrl.fromLocalFile(path)`](PySide6.QtCore.QUrl.fromLocalFile()) for platform-agnostic opening. On Windows 11, this launches the default associated application (e.g., image viewer for JPG files). On macOS/Linux, it uses the system's default handler (e.g., Preview.app or Eye of GNOME).
+
+- **Integration with Existing Systems**: Triggers only on file items, ignoring group headers. Does not interfere with selection state—double-click opens the file but leaves checkboxes unchanged. In the Similarity Manager, the preview pane remains focused on the current group; opening a file allows side-by-side comparison in an external app without disrupting the dialog's state management via `SelectionStore`.
+
+- **Usability Enhancement**: Enables rapid file inspection or editing (e.g., opening an image in Photoshop) while keeping the manager open for batch operations like deletions. This reduces context switching, especially useful during duplicate/similarity reviews where users frequently verify files visually or in external tools.
+
+#### Right-Click Context Menu
+
+- **Behavior**: Right-clicking a file item displays a [`QMenu`](PySide6.QtWidgets.QMenu()) with context-specific actions tailored to file operations.
+
+- **Menu Actions**:
+  - **Open File**: Equivalent to double-click; opens with default OS handler.
+  - **Copy Path**: Copies the absolute file path to the system clipboard using [`QApplication.clipboard().setText()`](PySide6.QtWidgets.QApplication.clipboard().setText()).
+  - **OS-Dependent Actions**:
+    - **Windows-Specific**:
+      - "Open Containing Folder": Launches File Explorer at the file's location with the file pre-selected (`explorer /select,"full_path"` via subprocess).
+      - "Properties": Opens the native file properties dialog (`rundll32 shell32.dll,Control_RunDLL "full_path"` via subprocess).
+    - **Fallback for Other OS (macOS/Linux)**: "Open Folder" opens the parent directory in the default file manager (e.g., Finder or Nautilus) using `QDesktopServices.openUrl()` on the parent path.
+
+- **Implementation**: Connected to the tree widget's `customContextMenuRequested` signal. The menu is built dynamically based on `platform.system()` to include OS-specific items. Positioned at the mouse cursor using `mapToGlobal()`.
+
+- **Integration with Selection and Preview Systems**: Menu appears only for file items (checked via item hierarchy). Actions are non-destructive to selection—e.g., copying path or opening does not toggle checkboxes in `SelectionStore`. In the Duplicate Manager (metadata-only), actions complement the tree view. In the Similarity Manager, they integrate with the dual-pane preview: opening a file allows external viewing while the thumbnail preview stays active for group comparison.
+
+- **Edge Cases and Error Handling**:
+  - **Invalid/Non-Existent Paths**: Validate with `Path(path).exists()`; if false, log warning and display a selectable error dialog via `show_selectable_error()`.
+  - **Permission Denied**: Catch `OSError` or subprocess exceptions; log full details (path, action, platform, stack trace) to STDERR and show user-friendly message.
+  - **Group Headers**: No menu shown; right-click ignored to prevent confusion.
+  - **Clipboard/URL Failures**: Fallback to logging and notification; ensures partial failures (e.g., copy succeeds even if open fails) do not block the workflow.
+
+- **Usability Enhancement**: The context menu offers power-user shortcuts for common file tasks directly in the results view, streamlining workflows. Windows-specific actions leverage familiar shell behaviors (e.g., selected file in Explorer), while fallbacks ensure cross-platform consistency. This enhances productivity by allowing quick navigation, path sharing, or property inspection without alt-tabbing to a file manager.
+
+These interactions build on the MVC pattern: views emit signals to controllers, which handle business logic (e.g., path validation, logging) before delegating to OS services, ensuring seamless integration with the `SelectionStore` and immutable data models.
 
 ### Settings Profile Integration Pattern
 

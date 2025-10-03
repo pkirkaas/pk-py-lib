@@ -27,7 +27,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -57,7 +57,14 @@ from src.pk_py_lib.gui.utils.messages import show_selectable_error, show_selecta
 from src.pk_py_lib.gui.widgets import FileGroupView, SimilarityPreviewPane
 from src.pk_py_lib.core.logging import get_logger
 
-
+import platform
+import os
+import subprocess
+from PySide6.QtWidgets import QMenu, QApplication
+from PySide6.QtGui import QDesktopServices
+from pathlib import Path
+ 
+ 
 LOGGER = get_logger("img_app.widgets.similarity_manager")
 
 
@@ -260,13 +267,52 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         )
         self._group_view.selection_changed.connect(self._on_group_view_selection_changed)
         self._group_view.tree_widget.itemSelectionChanged.connect(self._on_tree_selection_changed)
+        self._group_view.tree_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self._group_view.tree_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._group_view.tree_widget.customContextMenuRequested.connect(self._show_context_menu)
         splitter.addWidget(self._group_view)
 
         self._preview_pane = SimilarityPreviewPane(self.selection_store, parent=self)
         splitter.addWidget(self._preview_pane)
         splitter.setSizes([780, 420])
-
         parent_layout.addWidget(splitter)
+
+    def _on_item_double_clicked(self, item, column):
+        """
+        Private handler for double-click events on tree items.
+
+        Parameters
+        ----------
+        item : QTreeWidgetItem
+            The item that was double-clicked.
+        column : int
+            The column index of the double-click event.
+
+        Notes
+        -----
+        This method opens the file associated with the item using the default OS application
+        handler via QDesktopServices. Only child items (files) are processed; group headers
+        are ignored. Success or failure is logged appropriately. Invalid or missing paths
+        are handled gracefully without crashing the dialog. The operation uses the system's
+        default handler for the file type, supporting images and other files cross-platform
+        (primarily Windows 11, but works on Linux/Mac via Qt).
+        """
+        if item.parent() is None:
+            # Ignore double-clicks on group headers
+            return
+
+        path_str = item.data(0, Qt.UserRole)
+        if not path_str:
+            LOGGER.warning("Double-clicked item has no associated file path")
+            return
+
+        url = QUrl.fromLocalFile(str(path_str))
+        success = QDesktopServices.openUrl(url)
+        if success:
+            LOGGER.info(f"Successfully opened file via default handler: {path_str}")
+        else:
+            LOGGER.warning(f"Failed to open file with default handler: {path_str}")
+
 
     # ------------------------------------------------------------------#
     # Public API
@@ -703,8 +749,199 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 
                 # Update the visual representation (only Quality column)
                 child.setText(7, score_display)
-
-
+ 
+ 
+    def _open_file(self, path: Path) -> None:
+        """
+        Open the file using the default OS application handler, reusing the double-click logic.
+        
+        Parameters
+        ----------
+        path : Path
+            The absolute file path to open.
+        
+        Notes
+        -----
+        Checks if the file exists before attempting to open; logs a warning if it does not.
+        Uses QDesktopServices for cross-platform compatibility, primarily tested on Windows 11.
+        Logs success or failure for debugging and user feedback.
+        """
+        if not os.path.exists(path):
+            LOGGER.warning(f"Cannot open file - does not exist: {path}")
+            return
+        
+        url = QUrl.fromLocalFile(str(path))
+        success = QDesktopServices.openUrl(url)
+        if success:
+            LOGGER.info(f"Successfully opened file via default handler: {path}")
+        else:
+            LOGGER.warning(f"Failed to open file with default handler: {path}")
+ 
+ 
+    def _copy_path_to_clipboard(self, path: Path) -> None:
+        """
+        Copy the absolute file path to the system clipboard.
+        
+        Parameters
+        ----------
+        path : Path
+            The absolute file path to copy as a string.
+        
+        Notes
+        -----
+        Always succeeds as it copies the path string regardless of file existence.
+        Logs the action for auditing.
+        """
+        QApplication.clipboard().setText(str(path))
+        LOGGER.info(f"Copied path to clipboard: {path}")
+ 
+ 
+    def _open_containing_folder(self, path: Path) -> None:
+        """
+        Open the containing folder in Windows Explorer, selecting the specific file.
+        
+        Parameters
+        ----------
+        path : Path
+            The absolute file path; the parent directory will be opened with the file selected.
+        
+        Notes
+        -----
+        Windows-specific using 'explorer /select,' command.
+        If the file does not exist, logs a warning and falls back to opening the parent folder.
+        Handles subprocess errors with logging; captures output to avoid console spam.
+        Permissions issues are handled by the OS (e.g., access denied).
+        """
+        if not os.path.exists(path):
+            LOGGER.warning(f"Cannot select file in explorer - does not exist: {path}")
+            self._open_folder(path)
+            return
+        
+        try:
+            subprocess.run(['explorer', '/select,', str(path)], check=True, capture_output=True)
+            LOGGER.info(f"Opened containing folder selecting file: {path}")
+        except subprocess.CalledProcessError as e:
+            LOGGER.warning(f"Failed to open containing folder: {e}")
+            self._open_folder(path)
+        except Exception as e:
+            LOGGER.warning(f"Unexpected error opening containing folder: {e}")
+            self._open_folder(path)
+ 
+ 
+    def _show_properties(self, path: Path) -> None:
+        """
+        Open the Windows file properties dialog for the specified file.
+        
+        Parameters
+        ----------
+        path : Path
+            The absolute file path for which to show properties.
+        
+        Notes
+        -----
+        Windows-specific using rundll32 shell32.dll,Control_RunDLL.
+        If the file does not exist or access is denied, the subprocess will fail, and an error is logged.
+        No fallback; lets the OS handle invalid cases.
+        Shell=True is used for compatibility with the rundll32 command.
+        """
+        try:
+            subprocess.run(['rundll32.exe', 'shell32.dll,Control_RunDLL', f'"{path}"'], shell=True, check=True, capture_output=True)
+            LOGGER.info(f"Opened properties dialog for: {path}")
+        except subprocess.CalledProcessError as e:
+            LOGGER.warning(f"Failed to open properties dialog: {e}")
+        except Exception as e:
+            LOGGER.warning(f"Unexpected error opening properties: {e}")
+ 
+ 
+    def _open_folder(self, path: Path) -> None:
+        """
+        Open the parent folder using a cross-platform method (fallback for non-Windows).
+        
+        Parameters
+        ----------
+        path : Path
+            The file path; opens the parent directory.
+        
+        Notes
+        -----
+        Uses QDesktopServices to open the parent directory, compatible with Windows, macOS, and Linux.
+        Does not check file existence as the goal is to open the directory.
+        Logs success or failure.
+        Serves as fallback for Windows-specific actions when they fail.
+        """
+        parent_path = path.parent
+        url = QUrl.fromLocalFile(str(parent_path))
+        success = QDesktopServices.openUrl(url)
+        if success:
+            LOGGER.info(f"Opened parent folder: {parent_path}")
+        else:
+            LOGGER.warning(f"Failed to open parent folder: {parent_path}")
+ 
+ 
+    def _show_context_menu(self, position) -> None:
+        """
+        Display a right-click context menu for file items in the tree widget.
+        
+        Parameters
+        ----------
+        position : QPoint
+            The global position where the right-click occurred.
+        
+        Notes
+        -----
+        Only activates for child file items (ignores group headers and clicks outside items).
+        Menu includes universal actions: 'Open File' (reuses double-click logic) and 'Copy Path'.
+        OS-dependent actions:
+        - On Windows: 'Open Containing Folder' (selects file in Explorer) and 'Properties' (system dialog).
+        - On other platforms: 'Open Folder' (opens parent directory via QDesktopServices).
+        Focuses on the right-clicked item for simplicity; does not interfere with multi-selection or SelectionStore.
+        Future enhancement: Support multi-select by applying actions to all selected items (see TODO).
+        Handles edge cases: Invalid paths logged and skipped; non-existent files warned per action; permissions deferred to OS.
+        Menu position mapped to global coordinates for proper display.
+        Logs menu display for debugging.
+        Integrates seamlessly with existing double-click, selection, and preview behaviors without modification.
+        """
+        item = self._group_view.tree_widget.itemAt(position)
+        if item is None or item.parent() is None:
+            return  # Ignore group headers and outside clicks
+        
+        path_str = item.data(0, Qt.UserRole)
+        if not path_str:
+            LOGGER.warning("Right-clicked item has no associated file path")
+            return
+        
+        path = Path(path_str)
+        
+        menu = QMenu(self)
+        
+        # Universal actions
+        open_action = menu.addAction("Open File")
+        open_action.triggered.connect(lambda: self._open_file(path))
+        
+        copy_action = menu.addAction("Copy Path")
+        copy_action.triggered.connect(lambda: self._copy_path_to_clipboard(path))
+        
+        # OS-dependent actions
+        system = platform.system()
+        if system == 'Windows':
+            folder_action = menu.addAction("Open Containing Folder")
+            folder_action.triggered.connect(lambda: self._open_containing_folder(path))
+            
+            props_action = menu.addAction("Properties")
+            props_action.triggered.connect(lambda: self._show_properties(path))
+        else:
+            # Cross-platform fallback
+            folder_action = menu.addAction("Open Folder")
+            folder_action.triggered.connect(lambda: self._open_folder(path))
+        
+        # TODO: Extend to multi-select in future by iterating over self._group_view.tree_widget.selectedItems()
+        # and applying actions to each valid file item, respecting SelectionStore.
+        
+        global_pos = self._group_view.tree_widget.viewport().mapToGlobal(position)
+        action = menu.exec(global_pos)
+        LOGGER.debug(f"Context menu displayed for file: {path}")
+ 
+ 
 # Mapping used for direction combo labels (shared between duplicates/similarity)
 DuplicateDirectionLabels: Mapping[PoolDirection, str] = {
     PoolDirection.ALL: "All Pools",

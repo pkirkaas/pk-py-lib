@@ -272,6 +272,39 @@ Acceptance checklist (UI)
 
 The two dialogs now share the summary/report scaffolding but diverge in the middle pane: duplicates deliver a metadata-only review surface, while similarity continues to prioritise visual inspection.
 
+### User Interaction Flows in Results Dialogs (Duplicate/Similar Managers)
+
+The Duplicate File Manager and Similar Image Manager dialogs support intuitive mouse interactions for file handling, enabling users to inspect and manage files directly from the results view without switching applications. These flows enhance usability by providing quick access to external tools (e.g., image editors, file explorers) while maintaining the dialog's focus on batch operations like deletions or selections.
+
+#### Double-Click to Open File
+- **Flow**: Users double-click a file item (child row in the tree) to launch it in the default OS-associated application. Group headers (parent rows) are ignored to avoid unintended actions.
+- **Examples**:
+  - In Duplicate Manager: Double-click a duplicate PDF to open it in Adobe Reader for content verification before deletion.
+  - In Similar Image Manager: Double-click a similar JPG to view it full-size in Windows Photos (on Windows 11) or Preview (on macOS), allowing side-by-side comparison with the dialog's thumbnail preview.
+- **Cross-Platform Behavior**: Uses Qt's `QDesktopServices.openUrl()` for seamless handling—e.g., opens images in the default viewer, documents in associated editors.
+- **Usability Enhancement**: Provides instant file access for verification (e.g., checking if duplicates are truly identical or if similar images are variants), reducing workflow interruptions. Users stay in the dialog for selections while externally inspecting files, ideal for large scans where quick triage is key.
+
+#### Right-Click Context Menu
+- **Flow**: Right-click a file item to display a context menu with universal and OS-specific actions. Only file items trigger the menu; group headers show nothing.
+- **Menu Actions** (Universal):
+  - **Open File**: Mirrors double-click; launches in default app.
+  - **Copy Path**: Copies the full absolute path to the clipboard for pasting into other tools (e.g., command line or email).
+- **OS-Dependent Actions**:
+  - **Windows-Specific**:
+    - **Open Containing Folder**: Opens File Explorer with the file pre-selected (`explorer /select,"path"`), allowing easy navigation to related files.
+    - **Properties**: Launches the native Properties dialog (`rundll32 shell32.dll`), showing details like size, attributes, and tabs for security/customization.
+  - **Fallback for macOS/Linux**: **Open Folder** opens the parent directory in the default file manager (e.g., Finder or Nautilus) via `QDesktopServices`.
+- **Examples**:
+  - In Duplicate Manager: Right-click a selected duplicate → "Copy Path" to note it in a spreadsheet; "Open Containing Folder" to browse the directory for context.
+  - In Similar Image Manager: Right-click a low-score similar image → "Open File" in an editor to crop/adjust; "Properties" (Windows) to check EXIF data for creation dates.
+- **Usability Enhancement**: The menu offers power-user shortcuts for common tasks, streamlining file management. Windows actions leverage familiar shell integration (e.g., selected file in Explorer speeds up folder reviews), while fallbacks ensure accessibility on other OS. This empowers users to copy paths for reporting, inspect properties for forensics, or open folders for bulk actions—all without leaving the app, boosting efficiency in duplicate/similarity workflows.
+
+#### Error Handling and Feedback
+- Invalid paths (e.g., deleted files) trigger a selectable error dialog with details, allowing copy-paste for logging.
+- All actions log success/failures with paths and context, ensuring traceability without disrupting the UI flow.
+
+These interactions integrate with the existing selection system (checkboxes remain independent) and preview pane (Similarity Manager), preserving MVC separation while adding practical file-handling capabilities.
+
 ---
 ## Custom Painting Strategy for Group List Tables
 

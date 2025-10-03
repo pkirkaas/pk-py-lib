@@ -729,6 +729,238 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         pass
 ```
 
+## Enhanced UI Interactions: Double-Click and Context Menu Implementation
+
+This section details the implementation of double-click to open files and right-click context menus in the Duplicate Manager and Similarity Manager dialogs. These features are added to the dialog-specific implementations (`duplicate_manager.py` and `similarity_manager.py`), building on the shared `FileGroupView` (QTreeWidget) from the base class. They enhance usability by providing quick file access and OS-integrated actions without disrupting the existing selection or preview systems.
+
+### Required Imports
+
+Add these imports to both `duplicate_manager.py` and `similarity_manager.py`:
+
+```python
+from PySide6.QtGui import QDesktopServices, QAction
+from PySide6.QtCore import QUrl
+from PySide6.QtWidgets import QMenu
+import platform
+import subprocess
+from pathlib import Path
+from ..core.logging import get_logger  # Assuming LOGGER is already defined
+```
+
+### Double-Click Implementation
+
+Connect the tree widget's `itemDoubleClicked` signal to a handler that opens the file only for child (file) items.
+
+#### In Dialog Setup (e.g., `_setup_tree_behavior` method)
+
+```python
+def _setup_tree_behavior(self) -> None:
+    """Setup tree widget behavior and connections."""
+    # Existing connections...
+    self.tree_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
+    self.tree_widget.customContextMenuRequested.connect(self._show_context_menu)
+```
+
+#### Handler Method (`_on_item_double_clicked`)
+
+```python
+def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+    """
+    Handle double-click on tree items to open files with default OS handler.
+    
+    Only responds to child (file) items, ignoring group headers.
+    
+    Args:
+        item: The double-clicked QTreeWidgetItem.
+        column: The column index (unused, but required by signal).
+    """
+    if not self._is_file_item(item):
+        return  # Ignore group headers
+    
+    file_path = self._get_file_path_from_item(item)
+    if not file_path:
+        LOGGER.warning("No valid path found for double-clicked item")
+        return
+    
+    self._open_file(file_path)
+```
+
+#### Helper Methods
+
+```python
+def _is_file_item(self, item: QTreeWidgetItem) -> bool:
+    """Check if the item represents a file (child of a group)."""
+    return item.parent() is not None  # Child items are files
+
+def _get_file_path_from_item(self, item: QTreeWidgetItem) -> Optional[str]:
+    """Extract the full file path from a file item."""
+    # Assuming path is stored in item data or reconstructed from text columns
+    # Example: Reconstruct from columns 1 (name) and 2 (directory)
+    name = item.text(1)
+    directory = item.text(2)
+    if name and directory:
+        return Path(directory) / name
+    return None
+
+def _open_file(self, file_path: str) -> None:
+    """
+    Open file using default OS handler via QDesktopServices.
+    
+    Handles edge cases: invalid paths, permissions, logging.
+    
+    Args:
+        file_path: Absolute path to the file.
+    """
+    path_obj = Path(file_path)
+    if not path_obj.exists():
+        error_msg = f"File does not exist: {file_path}"
+        LOGGER.warning(error_msg)
+        from ..gui.utils.messages import show_selectable_error
+        show_selectable_error(self, "File Not Found", error_msg)
+        return
+    
+    try:
+        url = QUrl.fromLocalFile(str(path_obj.absolute()))
+        QDesktopServices.openUrl(url)
+        LOGGER.info(f"Opened file: {file_path}")
+    except Exception as e:
+        error_msg = f"Failed to open file '{file_path}': {str(e)}"
+        LOGGER.error(error_msg, exc_info=True)
+        from ..gui.utils.messages import show_selectable_error
+        show_selectable_error(self, "Open Error", error_msg)
+```
+
+### Right-Click Context Menu Implementation
+
+Dynamically build and show a QMenu for file items only.
+
+#### Handler Method (`_show_context_menu`)
+
+```python
+def _show_context_menu(self, position: QPoint) -> None:
+    """
+    Show context menu on right-click for file items.
+    
+    Menu includes universal actions plus OS-specific ones.
+    
+    Args:
+        position: Global position for menu popup.
+    """
+    item = self.tree_widget.itemAt(position)
+    if not item or not self._is_file_item(item):
+        return  # Only for file items
+    
+    file_path = self._get_file_path_from_item(item)
+    if not file_path:
+        return
+    
+    menu = QMenu(self)
+    
+    # Universal actions
+    open_action = QAction("Open File", self)
+    open_action.triggered.connect(lambda: self._open_file(file_path))
+    menu.addAction(open_action)
+    
+    copy_action = QAction("Copy Path", self)
+    copy_action.triggered.connect(lambda: self._copy_path_to_clipboard(file_path))
+    menu.addAction(copy_action)
+    menu.addSeparator()
+    
+    # OS-dependent actions
+    system = platform.system()
+    if system == "Windows":
+        self._add_windows_actions(menu, file_path)
+    else:
+        # Fallback for macOS/Linux
+        folder_action = QAction("Open Folder", self)
+        folder_action.triggered.connect(lambda: self._open_folder(Path(file_path).parent))
+        menu.addAction(folder_action)
+    
+    menu.exec(self.tree_widget.viewport().mapToGlobal(position))
+
+def _copy_path_to_clipboard(self, file_path: str) -> None:
+    """Copy file path to system clipboard."""
+    try:
+        QApplication.clipboard().setText(file_path)
+        LOGGER.info(f"Copied path to clipboard: {file_path}")
+    except Exception as e:
+        error_msg = f"Failed to copy path '{file_path}': {str(e)}"
+        LOGGER.error(error_msg)
+        from ..gui.utils.messages import show_selectable_error
+        show_selectable_error(self, "Copy Error", error_msg)
+
+def _add_windows_actions(self, menu: QMenu, file_path: str) -> None:
+    """Add Windows-specific context menu actions."""
+    # Open Containing Folder (with file selected)
+    select_action = QAction("Open Containing Folder", self)
+    select_action.triggered.connect(lambda: self._open_windows_explorer(file_path))
+    menu.addAction(select_action)
+    
+    # Properties
+    props_action = QAction("Properties", self)
+    props_action.triggered.connect(lambda: self._open_windows_properties(file_path))
+    menu.addAction(props_action)
+
+def _open_windows_explorer(self, file_path: str) -> None:
+    """Open File Explorer with file selected."""
+    try:
+        subprocess.run(["explorer", "/select,", file_path], check=True)
+        LOGGER.info(f"Opened Explorer for: {file_path}")
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Failed to open Explorer for '{file_path}': {str(e)}"
+        LOGGER.error(error_msg)
+        from ..gui.utils.messages import show_selectable_error
+        show_selectable_error(self, "Explorer Error", error_msg)
+
+def _open_windows_properties(self, file_path: str) -> None:
+    """Open Windows file properties dialog."""
+    try:
+        subprocess.run([
+            "rundll32", "shell32.dll,Control_RunDLL", 
+            file_path.replace("&", "^&")  # Escape ampersands
+        ], check=True)
+        LOGGER.info(f"Opened Properties for: {file_path}")
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Failed to open Properties for '{file_path}': {str(e)}"
+        LOGGER.error(error_msg)
+        from ..gui.utils.messages import show_selectable_error
+        show_selectable_error(self, "Properties Error", error_msg)
+
+def _open_folder(self, folder_path: Path) -> None:
+    """Fallback: Open parent folder in default file manager."""
+    try:
+        url = QUrl.fromLocalFile(str(folder_path.absolute()))
+        QDesktopServices.openUrl(url)
+        LOGGER.info(f"Opened folder: {folder_path}")
+    except Exception as e:
+        error_msg = f"Failed to open folder '{folder_path}': {str(e)}"
+        LOGGER.error(error_msg)
+        from ..gui.utils.messages import show_selectable_error
+        show_selectable_error(self, "Folder Error", error_msg)
+```
+
+### Integration and Edge Case Handling
+
+- **Integration with Selection and Preview**: These handlers do not modify `SelectionStore`—actions are independent of checkboxes. In Similarity Manager, opening a file complements the preview pane; users can compare externally without losing dialog state. Double-click/right-click positions are mapped correctly via `viewport().mapToGlobal()` to avoid offset issues.
+
+- **Edge Cases**:
+  - **Invalid Paths**: Checked with `Path.exists()`; log and show selectable error dialog (import `show_selectable_error` from `src/pk_py_lib/gui/utils/messages.py`).
+  - **Permissions/Subprocess Failures**: Wrapped in try-except; log full details (path, platform, exc_info=True) to STDERR for debugging. User sees friendly, selectable messages.
+  - **Non-File Items**: Ignored via `_is_file_item()` to prevent errors on group headers.
+  - **Clipboard/OS Handler Failures**: Graceful degradation—e.g., if `openUrl` fails, log but don't crash; copy path succeeds independently.
+  - **Cross-Platform**: Uses `platform.system()` for conditional logic; fallbacks ensure macOS/Linux work without Windows-specific commands.
+  - **Logging**: All actions logged via `LOGGER` (info for success, warning/error for failures) with path and context for traceability.
+
+### Extending the Features
+
+To add these to a new dialog subclassing `BaseFileManagerDialog`:
+1. Add imports as shown.
+2. In `_setup_tree_behavior`, connect the signals.
+3. Implement the handlers, reusing helpers like `_open_file` and `_copy_path_to_clipboard`.
+4. Customize menu actions if needed (e.g., add "Rename" for specific use cases).
+5. Test edge cases: non-existent files, permission-denied opens, multi-platform behavior.
+
+This implementation ensures the features are modular, reusable, and aligned with the project's error-handling and logging standards.
 ## Phase 4: Integration and Testing (Week 4)
 
 ### Main Application Integration
