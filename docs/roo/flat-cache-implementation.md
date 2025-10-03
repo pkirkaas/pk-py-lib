@@ -201,7 +201,7 @@ Always use validating methods to ensure cache freshness and avoid operating on s
       use_entry_data(entry)
   ```
 
-- **Note on View-Only Use**: For read-only inspection (e.g., in dialogs), use [`get_cache_view_data`](src/pk_py_lib/core/flat_cache.py:1590). This method now includes validation and filters out stale entries, ensuring the view reflects current data without side effects like automatic recomputation. It is suitable for UI display but not for operational logic.
+- **Note on View-Only Use**: For read-only inspection (e.g., in dialogs), use [`get_cache_view_data`](src/pk_py_lib/core/flat_cache.py:1590). This method performs validation on all entries without raising exceptions, marking each as valid or invalid (with mismatch details for invalid ones). All entries are returned, allowing complete inspection of cache state, including stale data for debugging. Invalid entries are highlighted in the UI (e.g., red status in [`view_cache_dialog.py`](src/pk_py_lib/gui/dialogs/view_cache_dialog.py)). It is suitable for UI display but not for operational logic—use validating getters like `get_entry` for production workflows.
 
 - **Avoid Raw DB Queries**: Never query the SQLite DB directly for operational data (e.g., via `conn.execute("SELECT * FROM flat_cache_entries")`). This skips validation, risking use of outdated hashes or metrics. Reserve raw queries for administrative tasks like backups, with manual validation if needed.
 
@@ -256,7 +256,7 @@ Leverage `search_type` and `hash_types` parameters to retrieve only necessary da
 
 ### High-Risk Areas
 
-- **View Dialogs**: Previously, [`get_cache_view_data`](src/pk_py_lib/core/flat_cache.py:1590) returned unvalidated entries, risking display of stale data in UI (e.g., [`view_cache_dialog.py`](src/pk_py_lib/gui/dialogs/view_cache_dialog.py)). Now fixed: It validates and filters stale entries, ensuring views show only current data. For interactive views, pair with `invalidate_entry` on user actions (e.g., file deletion).
+- **View Dialogs**: The [`get_cache_view_data`](src/pk_py_lib/core/flat_cache.py:1590) method now performs non-raising validation on all entries, returning the complete cache state with validity flags and mismatch details for invalid ones. This allows full inspection without crashing on stale data, and the UI (e.g., [`view_cache_dialog.py`](src/pk_py_lib/gui/dialogs/view_cache_dialog.py)) highlights invalid entries (e.g., red status column). For interactive views, pair with `invalidate_entry` on user actions (e.g., file deletion) to refresh the cache.
 
 - **Large Batch Operations**: In scans with 10k+ files, validation can be I/O-intensive. Mitigate by:
   - Using `get_uncached_files` first to parallelize recomputes.

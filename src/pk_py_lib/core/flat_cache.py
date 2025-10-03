@@ -710,44 +710,51 @@ class FlatCacheManager:
             raise PermissionError(f"Could not read stats for {file_path}: {e}") from e
 
     @log_errors()
-    @log_errors()
-    @log_errors()
-    @log_errors()
-    def _validate_entry(self, entry: FlatCacheEntry) -> bool:
+    def _validate_entry(self, entry: FlatCacheEntry, strict: bool = True) -> Tuple[bool, Dict[str, Any]]:
         """
         Validates a cached entry against the current file system statistics.
         
         Parameters:
             entry (FlatCacheEntry): The cached entry to validate.
+            strict (bool): If True (default), raises FlatCacheValidationError on failure.
+                           If False, returns (False, mismatches) without raising.
         
         Returns:
-            bool: True if the entry is valid.
+            Tuple[bool, Dict[str, Any]]: (is_valid: bool, mismatches: dict)
+                - is_valid: True if valid.
+                - mismatches: Empty dict if valid; otherwise, details of failures.
         
         Raises:
-            FlatCacheValidationError: If validation fails, providing mismatch details.
+            FlatCacheValidationError: If strict=True and validation fails.
         """
         file_path = entry.path
-        self.logger.debug(f"Cache validate for {file_path}, action: start")  # Log validation start
-
+        self.logger.debug(f"Cache validate for {file_path}, action: start, strict: {strict}")  # Log validation start
+    
         try:
             current_size, current_mtime = self._get_file_stats(file_path)
             self.logger.debug(f"Cache validate_size for {file_path}, cached_size: {entry.size}, current_size: {current_size}")  # Log size check
         except FileNotFoundError:
             self.logger.debug(f"Cache validate for {file_path}, result: existence=False")  # Log existence check
-            raise FlatCacheValidationError(file_path, {"existence": "File not found"})
+            mismatches = {"existence": "File not found"}
+            if strict:
+                raise FlatCacheValidationError(file_path, mismatches)
+            return False, mismatches
         except PermissionError as e:
             self.logger.warning(f"Validation skipped due to permission error: {file_path}. Error: {e}")
-            raise FlatCacheValidationError(file_path, {"permission": str(e)})
-
+            mismatches = {"permission": str(e)}
+            if strict:
+                raise FlatCacheValidationError(file_path, mismatches)
+            return False, mismatches
+    
         mismatches = {}
-
+    
         # Size check
         if current_size != entry.size:
             self.logger.debug(f"Cache validate_size for {file_path}, result: valid=False")  # Log size invalid
             mismatches["size"] = f"Cached: {entry.size}, Current: {current_size}"
         else:
             self.logger.debug(f"Cache validate_size for {file_path}, result: valid=True")  # Log size valid
-
+    
         # Modification time check (with float tolerance for precision issues)
         self.logger.debug(f"Cache validate_date for {file_path}, cached_mtime: {entry.mtime}, current_mtime: {current_mtime}")  # Log date check
         if abs(current_mtime - entry.mtime) > 1e-6:
@@ -755,7 +762,7 @@ class FlatCacheManager:
             mismatches["mtime"] = f"Cached: {entry.mtime}, Current: {current_mtime}"
         else:
             self.logger.debug(f"Cache validate_date for {file_path}, result: valid=True")  # Log date valid
-
+    
         # Validity flag
         self.logger.debug(f"Cache validate_flag for {file_path}, is_valid: {entry.is_valid}")  # Log flag check
         if not entry.is_valid:
@@ -763,13 +770,15 @@ class FlatCacheManager:
             mismatches["is_valid"] = "Entry marked invalid"
         else:
             self.logger.debug(f"Cache validate_flag for {file_path}, result: valid=True")  # Log flag valid
-
+    
         if mismatches:
             self.logger.debug(f"Cache validate for {file_path}, result: overall_valid=False, mismatches: {len(mismatches)}")  # Log overall invalid
-            raise FlatCacheValidationError(file_path, mismatches)
-
+            if strict:
+                raise FlatCacheValidationError(file_path, mismatches)
+            return False, mismatches
+    
         self.logger.debug(f"Cache validate for {file_path}, result: overall_valid=True")  # Log overall valid
-        return True
+        return True, {}
 
     @log_errors()
     def get_entry(self, file_path: str) -> Optional[FlatCacheEntry]:
@@ -804,7 +813,7 @@ class FlatCacheManager:
                 self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: found=True")  # Log found
 
                 # Validate the retrieved entry against the current file system state
-                self._validate_entry(entry)
+                self._validate_entry(entry, strict=True)
 
                 # Migrate legacy BRISQUE scores (0-100) to new 0-1 scale if detected
                 if entry.brisque is not None and entry.brisque > 1.0:
@@ -1776,21 +1785,32 @@ class FlatCacheManager:
                 columns = [desc[0] for desc in cursor.description]
                 rows = [dict(row) for row in cursor.fetchall()]
 
-                # Validate and filter out stale entries to ensure only current data is displayed in the view dialog
-                valid_rows = []
+                # Validate each entry and mark validity without filtering
+                # Include all entries, valid or invalid, for complete view
+                all_rows = []
+                invalid_count = 0
                 for row_dict in rows:
+                    row_dict_copy = row_dict.copy()
                     try:
-                        entry = FlatCacheEntry.from_dict(row_dict)
-                        self._validate_entry(entry)
-                        valid_rows.append(row_dict)
-                    except FlatCacheValidationError:
-                        self.logger.debug(f"Filtered out invalid entry during cache view: {row_dict.get('path', 'unknown')}")
+                        entry = FlatCacheEntry.from_dict(row_dict_copy)
+                        is_valid, mismatches = self._validate_entry(entry, strict=False)
+                        row_dict_copy['is_valid'] = is_valid
+                        if not is_valid:
+                            row_dict_copy['validation_mismatches'] = mismatches
+                            invalid_count += 1
+                        all_rows.append(row_dict_copy)
+                    except Exception as e:
+                        self.logger.warning(f"Unexpected error validating entry {row_dict.get('path', 'unknown')}: {e}")
+                        row_dict_copy['is_valid'] = False
+                        row_dict_copy['validation_mismatches'] = {"unexpected": str(e)}
+                        all_rows.append(row_dict_copy)
+                        invalid_count += 1
 
-                rows = valid_rows
+                rows = all_rows
                 entry_count = len(rows)
 
                 self.logger.info(
-                    f"Cache view data fetched: {entry_count} valid entries, version {cache_version}"
+                    f"Cache view data fetched: {entry_count} total entries ({invalid_count} invalid), version {cache_version}"
                 )
 
                 # Get database file size
@@ -1814,6 +1834,8 @@ class FlatCacheManager:
                 metadata = {
                     'path': str(self.db_path),
                     'entry_count': entry_count,
+                    'valid_count': entry_count - invalid_count,
+                    'invalid_count': invalid_count,
                     'cache_version': cache_version,
                     'db_size': db_size,
                     'db_size_formatted': db_size_formatted

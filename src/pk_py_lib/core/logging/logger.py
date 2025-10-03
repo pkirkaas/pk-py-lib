@@ -268,6 +268,68 @@ class PKLogger:
         """Log critical message."""
         self._log(LogLevel.CRITICAL, message, exception=exception, **kwargs)
     
+    def log(
+        self,
+        level: Union[str, LogLevel],
+        message: str,
+        exception: Optional[Exception] = None,
+        exc_info: bool = False,
+        **kwargs
+    ) -> None:
+        """
+        Generic log method that accepts string levels or LogLevel enum.
+        
+        This method provides a flexible way to log messages at any level, mapping
+        string levels to the corresponding LogLevel enum values. It handles exceptions
+        similarly to the error method, supporting both explicit exceptions and
+        automatic capture via exc_info.
+        
+        Args:
+            level: Log level as string ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL",
+                   "TRACE", "WATCH", "SUCCESS") or LogLevel enum instance.
+            message: The log message to record.
+            exception: An optional explicit Exception instance to include in the log entry.
+            exc_info: If True and no exception is provided, captures the current exception
+                      from sys.exc_info()[1]. Useful for logging active exceptions without
+                      passing them explicitly.
+            **kwargs: Additional keyword arguments passed to the underlying _log method
+                      and included in the LogEntry (e.g., variables, context, tags).
+        
+        Note:
+            - String levels are case-insensitive and mapped to LogLevel enum values.
+            - Unknown string levels default to LogLevel.INFO.
+            - If both 'exception' and 'exc_info=True' are provided, the explicit 'exception'
+              takes precedence.
+            - This method ensures compatibility with standard logging patterns while
+              leveraging PKLogger's structured logging features.
+        
+        Example:
+            >>> log.log("INFO", "Processing file", file_path="/path/to/file.jpg")
+            >>> log.log("ERROR", "Failed to read file", exception=IOError("Access denied"))
+            >>> try:
+            ...     risky_operation()
+            ... except:
+            ...     log.log("ERROR", "Operation failed", exc_info=True)
+        """
+        if isinstance(level, str):
+            level_map = {
+                "TRACE": LogLevel.TRACE,
+                "DEBUG": LogLevel.DEBUG,
+                "INFO": LogLevel.INFO,
+                "WATCH": LogLevel.WATCH,
+                "SUCCESS": LogLevel.SUCCESS,
+                "WARNING": LogLevel.WARNING,
+                "ERROR": LogLevel.ERROR,
+                "CRITICAL": LogLevel.CRITICAL,
+            }
+            level = level_map.get(level.upper(), LogLevel.INFO)
+        
+        # Handle exc_info similar to the error method
+        if exc_info and exception is None:
+            exception = sys.exc_info()[1]
+        
+        self._log(level, message, exception=exception, **kwargs)
+    
     def watch(self, **variables) -> None:
         """
         Log variable values for debugging.

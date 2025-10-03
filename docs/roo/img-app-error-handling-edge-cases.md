@@ -2035,3 +2035,40 @@ The GUI error handling system follows these recovery principles:
 4. **Graceful Degradation**: Allow application to continue when possible
 
 This comprehensive error handling system ensures robust GUI operation with excellent user experience and detailed debugging capabilities.
+
+### 14.9 View Cache Dialog Specific Error Handling Enhancements
+
+To address a specific "Unexpected error: name 'QColor' is not defined" issue in the View Cache dialog (following the FlatCacheValidationError fix), the following enhancements were implemented in [`src/pk_py_lib/gui/dialogs/view_cache_dialog.py`](src/pk_py_lib/gui/dialogs/view_cache_dialog.py):
+
+#### 14.9.1 Missing Import Fix
+- **Issue**: The dialog used `QColor` for table cell coloring (valid/invalid entries) without importing it from `PySide6.QtGui`.
+- **Fix**: Added `from PySide6.QtGui import QStandardItemModel, QStandardItem, QColor` in the imports section (line 26).
+- **Impact**: Ensures proper coloring of valid (green) and invalid (red) cache entries in the table view, improving visual feedback without runtime errors.
+
+#### 14.9.2 Enhanced Exception Logging in `__init__`
+- **Previous Behavior**: Basic error messages shown in dialogs and labels, but insufficient logging to terminal/STDERR.
+- **Enhancements**: Updated both `except` blocks (FlatCacheDBError and general Exception) to use `logger.error` with comprehensive details:
+  - **Error Message**: Includes context like "Failed to load cache data from {db_path}" or "Unexpected error in ViewCacheDialog __init__ from {db_path}".
+  - **Traceback**: `exc_info=True` captures full stack trace.
+  - **File Path**: Logs the database path (`db_path`) from the cache manager.
+  - **Relevant Parameters**: For general exceptions, includes `metadata_keys` if available (list of metadata keys from partial load).
+  - **Logger**: Uses `get_logger(__name__)` initialized in `__init__` (line 55), ensuring output via console handler to STDERR/terminal.
+- **Compliance**: Aligns with project rules in `.roo/rules/15-PythonGUI.md` for detailed STDERR reporting (error text, file path, parameters, call stack).
+- **Example Log Output** (simulated error):
+  ```
+  [23:35:47] ERROR   Unexpected error in ViewCacheDialog __init__ from C:\Users\pkirk\AppData\Local\Pk\pk_py_lib\flat_cache.db: name 'QColor' is not defined
+  db_path: C:\Users\pkirk\AppData\Local\Pk\pk_py_lib\flat_cache.db
+  metadata_keys: []
+  Traceback (most recent call last):
+    File "src\pk_py_lib\gui\dialogs\view_cache_dialog.py", line 107, in __init__
+      item.setForeground(QColor("green"))
+  NameError: name 'QColor' is not defined
+  ```
+- **Testing Confirmation**: 
+  - Ran `pdm run imgapp` and triggered "View Cache": No GUI error; proper table display with colored validity column.
+  - Simulated exception (e.g., force NameError): Error dialog shown; full details logged to terminal/STDERR and `logs/img-app-terminal.log`.
+  - Verified console output uses RichConsoleOutput/SimpleConsoleOutput, routing ERROR to sys.stderr as required.
+
+#### 14.9.3 Global Exception Handler Assessment
+- **Evaluation**: The specific uncaught error was resolved by catching in `__init__` and enhancing logging. No additional global handler needed for this dialog, as errors are now fully caught and logged. For broader app coverage, existing `gui_error_handler` decorator and `handle_gui_error` function provide sufficient uncaught error handling in other GUI components.
+- **Recommendation**: Monitor for similar issues; if uncaught GUI errors appear elsewhere, integrate `sys.excepthook` override in `img_app/app.py` main() to route to `handle_gui_error`.

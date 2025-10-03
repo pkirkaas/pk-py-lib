@@ -219,11 +219,17 @@ def log_errors(
                 if params_str:
                     error_msg += f"\nParameters: {params_str}"
                 
-                func_logger.error(error_msg)
+                try:
+                    func_logger.error(error_msg)
+                except Exception as log_error:
+                    # If logging the error message fails, print to stderr to avoid recursion
+                    print(f"Failed to log error message: {log_error}", file=sys.stderr)
+                    print(error_msg, file=sys.stderr)
                 
                 if include_traceback:
                     tb_str = traceback.format_exc()
-                    func_logger.log(level, f"Traceback:\n{tb_str}")
+                    # Print traceback directly to stderr to prevent potential logging recursion
+                    print(f"Traceback for {func_name} at {filename}:{lineno}:\n{tb_str}", file=sys.stderr)
                 
                 raise
         

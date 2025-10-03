@@ -23,9 +23,10 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QStandardItemModel, QStandardItem
+from PySide6.QtGui import QStandardItemModel, QStandardItem, QColor
 
 from ...core.flat_cache import FlatCacheManager, FlatCacheDBError
+from ...core.logging.logger import get_logger
 from ..utils.messages import show_selectable_error
 
 
@@ -52,6 +53,7 @@ class ViewCacheDialog(QDialog):
         """
         super().__init__(parent)
         self.flat_cache_manager = flat_cache_manager
+        self.logger = get_logger(__name__)
         self.setWindowTitle("View Cache")
         self.setMinimumSize(800, 600)
         self.resize(1000, 700)  # Make resizable by default
@@ -65,8 +67,15 @@ class ViewCacheDialog(QDialog):
             # Fetch data from cache manager
             metadata, rows = self.flat_cache_manager.get_cache_view_data()
 
-            # Metadata label
-            meta_label = QLabel(f"Cache DB: {metadata['path']} ({metadata['db_size_formatted']}) | Entries: {metadata['entry_count']} | Version: {metadata['cache_version']}")
+            # Metadata label - now includes valid/invalid counts
+            valid_count = metadata.get('valid_count', metadata.get('entry_count', 0))
+            invalid_count = metadata.get('invalid_count', 0)
+            meta_label = QLabel(
+                f"Cache DB: {metadata['path']} ({metadata['db_size_formatted']}) | "
+                f"Total Entries: {metadata['entry_count']} | "
+                f"Valid: {valid_count} | Invalid: {invalid_count} | "
+                f"Version: {metadata['cache_version']}"
+            )
             meta_label.setWordWrap(True)
             meta_label.setStyleSheet("font-weight: bold; padding: 8px; background-color: #f0f0f0;")
             layout.addWidget(meta_label)
@@ -83,16 +92,37 @@ class ViewCacheDialog(QDialog):
                 if rows:
                     # Set headers from first row keys (assuming all rows have same keys)
                     headers = list(rows[0].keys())
+                    # Ensure 'is_valid' is included; add if missing
+                    if 'is_valid' not in headers:
+                        headers.insert(0, 'is_valid')  # Add as first column for prominence
                     model.setHorizontalHeaderLabels(headers)
 
-                    # Populate rows
+                    # Populate rows with validity handling
                     for row_data in rows:
                         row_items = []
-                        for value in row_data.values():
-                            item = QStandardItem(str(value))
-                            # Make non-editable
-                            item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-                            row_items.append(item)
+                        for key in headers:
+                            value = row_data.get(key, '')
+                            if key == 'is_valid':
+                                # Special handling for validity column
+                                if value is True:
+                                    item = QStandardItem("Valid")
+                                    item.setForeground(QColor("green"))
+                                elif value is False:
+                                    mismatches = row_data.get('validation_mismatches', {})
+                                    status_text = f"Invalid: {len(mismatches)} mismatch" + ("es" if len(mismatches) != 1 else "")
+                                    if mismatches:
+                                        status_text += f" ({', '.join(mismatches.keys())})"
+                                    item = QStandardItem(status_text)
+                                    item.setForeground(QColor("red"))
+                                else:
+                                    item = QStandardItem(str(value))
+                                item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+                                row_items.append(item)
+                            else:
+                                item = QStandardItem(str(value))
+                                # Make non-editable
+                                item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+                                row_items.append(item)
                         model.appendRow(row_items)
 
                 # Create table view
@@ -114,6 +144,10 @@ class ViewCacheDialog(QDialog):
                         background: #4a90e2;
                         color: #ffffff;
                     }
+                    QTableView {
+                        gridline-color: #ddd;
+                        background-color: white;
+                    }
                 """)
                 table.setSelectionBehavior(QAbstractItemView.SelectRows)
                 table.setSortingEnabled(True)  # Allow sorting by columns
@@ -128,10 +162,14 @@ class ViewCacheDialog(QDialog):
                 for col_idx, header_text in enumerate(headers):
                     if header_text == 'path':
                         table.setColumnWidth(col_idx, 300)
+                    elif header_text == 'is_valid':
+                        table.setColumnWidth(col_idx, 150)  # Wider for status messages
                     elif header_text in ['mtime', 'size', 'created_at', 'updated_at']:
                         table.setColumnWidth(col_idx, 120)
                     elif header_text == 'brisque':
                         table.setColumnWidth(col_idx, 80)
+                    elif header_text == 'validation_mismatches':
+                        table.setColumnWidth(col_idx, 200)  # For detailed mismatches
                     else:
                         # Others auto (e.g., hashes: 150, dimensions: 60)
                         table.setColumnWidth(col_idx, 150)
@@ -146,7 +184,9 @@ class ViewCacheDialog(QDialog):
 
         except FlatCacheDBError as e:
             # Error handling: show message dialog
-            error_msg = f"Failed to load cache data: {str(e)}"
+            db_path = getattr(self.flat_cache_manager, 'db_path', 'unknown')
+            error_msg = f"Failed to load cache data from {db_path}: {str(e)}"
+            self.logger.error(error_msg, exc_info=True, db_path=db_path)
             show_selectable_error(self, "Cache View Error", error_msg)
             # Fallback label
             error_label = QLabel(error_msg)
@@ -155,7 +195,9 @@ class ViewCacheDialog(QDialog):
             layout.addWidget(error_label)
         except Exception as e:
             # Unexpected error
-            error_msg = f"Unexpected error: {str(e)}"
+            db_path = getattr(self.flat_cache_manager, 'db_path', 'unknown')
+            error_msg = f"Unexpected error in ViewCacheDialog __init__ from {db_path}: {str(e)}"
+            self.logger.error(error_msg, exc_info=True, db_path=db_path, metadata_keys=list(metadata.keys()) if 'metadata' in locals() else [])
             show_selectable_error(self, "Cache View Error", error_msg)
             error_label = QLabel(error_msg)
             error_label.setWordWrap(True)
