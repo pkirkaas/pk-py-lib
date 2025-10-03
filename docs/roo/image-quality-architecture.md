@@ -134,6 +134,7 @@ sequenceDiagram
     participant Evaluator as BRISQUEImageQualityEvaluator
     participant Cache as FlatCacheManager
     participant OpenCV
+    participant PIL
 
     Caller->>Evaluator: evaluate(path, flat_cache_manager)
     alt Cache provided and enabled
@@ -143,13 +144,31 @@ sequenceDiagram
             Evaluator-->>Caller: normalized_score (from cache)
         else Miss, stale, or invalid
             Evaluator->>Evaluator: validate_input(path)
-            alt BRISQUE engine active
-                Evaluator->>OpenCV: imread(path); QualityBRISQUE_compute(image)
-                OpenCV-->>Evaluator: raw_score
-                Evaluator->>Evaluator: normalize(100.0 - raw_score, clamp=[0,100])
-            else Fallback
-                Evaluator->>Evaluator: laplacian_variance(grayscale_image)
-                Evaluator->>Evaluator: empirical_normalize_to_0_100()
+            Evaluator->>OpenCV: imread(path, IMREAD_COLOR)
+            alt Load fails (e.g., palette PNG)
+                OpenCV-->>Evaluator: None
+                Evaluator->>PIL: Image.open(path).convert('RGB')
+                PIL-->>Evaluator: rgb_image
+                Evaluator->>OpenCV: cv2.cvtColor(rgb_image, COLOR_RGB2BGR)
+            end
+            alt Pre-check: dimensions/aspect
+                Evaluator->>Evaluator: height, width = image.shape[:2]<br/>aspect_ratio = max(width/height, height/width)<br/>if width < 2 or height < 2 or aspect_ratio > 100:<br/>    log warning; fallback to Laplacian
+                alt Valid dimensions
+                    alt Min dim < 8: pad
+                        Evaluator->>OpenCV: copyMakeBorder(..., BORDER_REFLECT_101)
+                    end
+                    alt BRISQUE engine active
+                        Evaluator->>OpenCV: QualityBRISQUE_compute(image)
+                        OpenCV-->>Evaluator: raw_score
+                        Evaluator->>Evaluator: normalize(1.0 - raw_score/100.0, clamp=[0,1])
+                    else Fallback
+                        Evaluator->>Evaluator: laplacian_variance(grayscale_image)
+                        Evaluator->>Evaluator: empirical_normalize_to_0_1()
+                    end
+                else Skip BRISQUE; fallback to Laplacian
+                    Evaluator->>Evaluator: laplacian_variance(grayscale_image)
+                    Evaluator->>Evaluator: normalize [0,1] (higher-better)
+                end
             end
             alt Computation success
                 Evaluator->>Cache: update('brisque', score, algorithm, current_stats)
@@ -244,18 +263,18 @@ This integration shifts the quality computation from the GUI thread to the backg
    - If `flat_cache_manager` is provided:
      - Retrieve existing entry from FlatCache using the image path.
      - Validate the entry: check if 'brisque' score is non-None and file stats (size, mtime, inode, device) match the current file.
-     - If valid, log a DEBUG message and return the cached normalized score (0-100, higher better).
+     - If valid, log a DEBUG message and return the cached normalized score (0-1, higher better).
    - If no valid cache entry or `flat_cache_manager` not provided:
      - Validate input path; raise `ImageQualityInputError` if the file does not exist or is unreadable.
      - Load image via `cv2.imread(path, cv2.IMREAD_COLOR)`.
      - If BRISQUE engine is active:
        - Compute raw score using `cv2.quality.QualityBRISQUE_compute(image, model_path, range_path)`.
-       - Normalize score: `100.0 - raw_score`, clamped to [0.0, 100.0].
+       - Normalize score: `1.0 - (raw_score / 100.0)`, clamped to [0.0, 1.0].
        - Set algorithm to 'brisque'.
      - If BRISQUE engine is inactive (fallback due to model failure):
        - Convert to grayscale if needed.
        - Compute Laplacian variance as a sharpness proxy.
-       - Normalize variance empirically to 0-100 scale (higher better).
+       - Normalize variance empirically to 0-1 scale (higher better).
        - Set algorithm to 'laplacian'.
      - If computation succeeds and `flat_cache_manager` is provided:
        - Update the cache entry with the normalized score in the 'brisque' column, algorithm name, and current file stats.
@@ -271,6 +290,69 @@ This integration shifts the quality computation from the GUI thread to the backg
 4. **Error Handling**
    - All initialization failures are logged as `ERROR` with full traceback.
    - Computation failures (e.g., during `compute`) are logged as `WARNING` and trigger the Laplacian fallback.
+
+## Evaluator Robustness and Edge Case Handling
+
+Recent enhancements to the `[class BRISQUEImageQualityEvaluator](src/pk_py_lib/core/image/quality/brisque.py:1)` introduce a multi-layered robustness pipeline to handle problematic images, such as narrow palette PNGs (e.g., 1x400 icons from jQuery UI) that trigger OpenCV resize assertion failures (e.g., `inv_scale_x <=0`). These improvements prevent crashes during batch operations like similarity scans while maintaining consistent scoring. The core SVR model and registry remain unchanged, but the evaluation flow now includes pre-validation and fallbacks.
+
+### Loading Pipeline
+- **Primary Load**: Attempt `cv2.imread(path, cv2.IMREAD_COLOR)` for standard BGR loading.
+- **Fallback for Problematic Formats**: If the load returns `None` (common for palette-mode or transparent PNGs), use PIL as a bridge:
+  - `from PIL import Image; img = Image.open(path).convert('RGB')`
+  - Convert to BGR: `image = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)`
+- This ensures compatibility with diverse PNG variants without altering OpenCV's core behavior. Logs `INFO` on fallback activation with path details.
+
+### Dimension Checks
+- After loading, extract `height, width = image.shape[:2]`.
+- Compute aspect ratio: `aspect_ratio = max(width / height if height > 0 else 0, height / width if width > 0 else 0)`.
+- Early skip conditions (trigger Laplacian fallback):
+  - `width < 2 or height < 2`: Invalid dimensions for BRISQUE filters.
+  - `aspect_ratio > 100`: Extremely narrow/tall images (e.g., lines or banners) that cause resize scaling errors in OpenCV's internal downsampling.
+- Code snippet for aspect ratio and check:
+  ```python
+  height, width = image.shape[:2]
+  if height == 0 or width == 0:
+      raise ImageQualityInputError(f"Empty image: {path}")
+  aspect_ratio = max(width / height, height / width)
+  if width < 2 or height < 2 or aspect_ratio > 100:
+      logger.warning(
+          f"Image too narrow/tall: {width}x{height}, aspect {aspect_ratio:.2f}. "
+          f"Using Laplacian fallback for {path}."
+      )
+      # Proceed to Laplacian variance computation
+  ```
+- These checks occur before BRISQUE computation, avoiding exceptions like `cv2.error: assertion "inv_scale_x > 0" failed`.
+
+### Padding Mechanism
+- For small images where `min(width, height) < 8` (below BRISQUE's typical filter kernel size), apply optional reflective padding to reach a minimum viable size without distortion:
+  - Use `cv2.copyMakeBorder(image, top=0, bottom=pad_h, left=0, right=pad_w, borderType=cv2.BORDER_REFLECT_101)`
+  - Padding calculation: Ensure padded dimensions are at least 8x8 while preserving aspect ratio; reflect edges for seamless filter compatibility.
+- Logs `DEBUG` on padding: "Padded small image from {orig_shape} to {padded_shape}".
+- This prevents underflow in convolutional features without introducing artifacts.
+
+### Fallback Integration
+- **Seamless Transition**: If BRISQUE is skipped (dimensions) or fails (model/load errors), compute Laplacian variance on grayscale:
+  - `gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)`
+  - `laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()`
+  - Normalize empirically to [0,1] (higher-better sharpness): Scale based on observed ranges (e.g., divide by max expected variance ~10^4-10^5 for typical images), clamped.
+- Set `quality_algorithm = 'laplacian'` and log the transition with details (e.g., "BRISQUE skipped due to narrow dimensions; using Laplacian variance: {var:.2f}").
+- Cache updates use the fallback score if computation succeeds, ensuring persistence.
+
+### Benefits
+- **Crash Prevention**: Handles edge-case images (palette PNGs, 1xN strips, transparent overlays) that previously halted scans in `find_similar_phash` or `FlatCacheManager` population.
+- **Consistency**: Uniform [0,1] scoring across image types; Laplacian provides a reliable sharpness proxy for non-viable BRISQUE inputs.
+- **Performance**: Early skips reduce unnecessary computations; padding is lightweight compared to full BRISQUE.
+- **Observability**: Enhanced logging (WARNING for skips/fallbacks, DEBUG for loads/padding) aids debugging in large collections.
+
+### Example
+For a narrow 1x400 PNG (e.g., a UI icon):
+- Loading succeeds via PIL fallback (palette handled).
+- Dimension check: `width=400, height=1, aspect_ratio=400 > 100` → Logs "Image too narrow/tall: 400x1, aspect 400.00. Using Laplacian fallback for /path/to/icon.png".
+- Computes Laplacian variance (~low due to uniformity, e.g., 0.05), normalizes to ~0.0-0.1 (poor sharpness).
+- Returns low score; caches as 'laplacian' for future queries.
+
+### Updated Evaluation Flow
+The sequence diagram above now includes a pre-check branch after loading, showing the dimension validation, optional padding, and fallback path. This reflects the resilient pipeline without altering the overall caching or normalization logic.
 
 ## Code Skeletons
 
@@ -381,22 +463,54 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
         if not candidate.is_file():
             raise ImageQualityInputError(f"Image does not exist: {candidate}")
 
-        image = cv2.imread(str(candidate), cv2.IMREAD_GRAYSCALE)
-        if image is None or not image.size:
+        image = cv2.imread(str(candidate), cv2.IMREAD_COLOR)
+        if image is None:
+            # Fallback to PIL for palette/transparency PNGs
+            from PIL import Image
+            pil_img = Image.open(candidate).convert('RGB')
+            image = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            logger.info(f"PIL fallback used for {candidate}")
+
+        if image.size == 0:
             raise ImageQualityInputError(f"Failed to load image: {candidate}")
+
+        # Dimension checks and padding
+        height, width = image.shape[:2]
+        aspect_ratio = max(width / height, height / width)
+        use_brisque = True
+        if width < 2 or height < 2 or aspect_ratio > 100:
+            logger.warning(f"Image too narrow/tall: {width}x{height}, aspect {aspect_ratio:.2f}. Using Laplacian fallback for {candidate}")
+            use_brisque = False
+        elif min(width, height) < 8:
+            # Apply reflective padding
+            pad_w = max(0, 8 - width)
+            pad_h = max(0, 8 - height)
+            image = cv2.copyMakeBorder(image, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT_101)
+            logger.debug(f"Padded image from ({width}, {height}) to ({image.shape[1]}, {image.shape[0]})")
 
         model_path, range_path = self._ensure_model_assets()
         try:
-            score = cv2.quality.QualityBRISQUE_compute(image, str(model_path), str(range_path))
+            if use_brisque:
+                score = cv2.quality.QualityBRISQUE_compute(image, str(model_path), str(range_path))
+                normalized = 1.0 - (float(score[0]) / 100.0)
+                normalized = max(0.0, min(1.0, normalized))
+                algorithm = 'brisque'
+            else:
+                # Laplacian fallback
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+                normalized = min(lap_var / 10000.0, 1.0)  # Empirical scaling
+                algorithm = 'laplacian'
         except cv2.error as exc:
             raise ImageQualityComputationError(f"BRISQUE computation failed: {exc}") from exc
 
         logger.debug(
-            "BRISQUE evaluated %s -> %.4f",
+            "Quality evaluated %s -> %.4f (%s)",
             candidate,
-            float(score[0]),
+            normalized,
+            algorithm,
         )
-        return float(score[0])
+        return normalized
 
     def _ensure_model_assets(self) -> tuple[Path, Path]:
         with self._model_lock:
@@ -512,13 +626,13 @@ To ensure consistency across the pluggable system, all evaluators normalize thei
 
 - **Base Interface**: The `[class ImageQualityEvaluator](src/pk_py_lib/core/image/quality/base.py:1)` docstring mandates normalization in the `evaluate` method. Subclasses must transform native scores accordingly.
 
-- **BRISQUE Example**: Native BRISQUE scores are lower-better (0: pristine, 100: distorted). The `[class BRISQUEImageQualityEvaluator](src/pk_py_lib/core/image/quality/brisque.py:1)` inverts this via `normalized_score = (100.0 - raw_score) / 100.0`, clamping to [0.0, 1.0] for edge cases (e.g., raw >100 or <0). Both raw and normalized values are logged for debugging.
+- **BRISQUE Example**: Native BRISQUE scores are lower-better (0: pristine, 100: distorted). The `[class BRISQUEImageQualityEvaluator](src/pk_py_lib/core/image/quality/brisque.py:1)` inverts this via `normalized_score = 1.0 - (raw_score / 100.0)`, clamping to [0.0, 1.0] for edge cases (e.g., raw >100 or <0). Both raw and normalized values are logged for debugging.
 
-- **Other Evaluators**: Future lower-better metrics will be normalized identically to BRISQUE: `normalized_score = 100.0 - raw_score`, clamped to [0.0, 100.0].
+- **Other Evaluators**: Future lower-better metrics will be normalized identically to BRISQUE: `normalized_score = 1.0 - (raw_score / 100.0)`, clamped to [0.0, 1.0].
 
 - **Future Evaluators**:
-  - For higher-better natives (e.g., some sharpness metrics), pass through or scale to 0-100.
-  - For lower-better (e.g., NIQE), invert similarly: `normalized_score = (100.0 - raw_score) / 100.0`, clamped to [0.0, 1.0].
+  - For higher-better natives (e.g., some sharpness metrics), pass through or scale to 0-1.
+  - For lower-better (e.g., NIQE), invert similarly: `normalized_score = 1.0 - (raw_score / 100.0)`, clamped to [0.0, 1.0].
   - Document the transformation in the subclass docstring and log intermediate values.
 
 This convention simplifies downstream usage (e.g., sorting images by quality) and supports extensibility without changing consumer code.

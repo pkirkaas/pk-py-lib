@@ -25,6 +25,7 @@ Raises:
 import os
 import cv2
 import numpy as np
+from PIL import Image
 import textwrap
 from typing import Optional
 from urllib.request import urlopen
@@ -209,22 +210,36 @@ def _ensure_asset(directory: str, filename: str, url: str, logger) -> str:
 class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
     """
         BRISQUE-based image quality evaluator.
-    
-        Loads bundled SVM model for QualityBRISQUE. If model missing/load fails,
-        falls back to Laplacian variance (sharpness; higher variance = better quality).
-    
-        Normalizes scores to higher-better scale (0-1).
-    
+
+        This evaluator uses OpenCV's QualityBRISQUE for blind image quality assessment based on natural
+        scene statistics (NSS). It loads a pre-trained SVM model from bundled assets in 'models/'.
+        Native BRISQUE scores are in [0, 100] with lower values indicating better quality; this
+        implementation normalizes them to [0, 1] where higher values indicate better perceived quality
+        for consistency with the ImageQualityEvaluator interface: normalized_score = max(0, min(1, (100 - raw) / 100)).
+
+        Robustness Improvements:
+        - Robust image loading: Attempts cv2.imread first; falls back to PIL.Image.open() for problematic
+          formats like palette PNGs with transparency (e.g., 1x400 narrow PNGs that fail OpenCV loading).
+        - Pre-computation checks: Skips BRISQUE computation for images with extreme dimensions (width/height < 2)
+          or aspect ratios > 100 (e.g., narrow 1x400 PNGs), logging a warning and using Laplacian variance fallback.
+        - Padding for small images: If min(width, height) < 8 pixels, pads with BORDER_REFLECT_101 to ensure
+          filter kernels (e.g., for NSS extraction) do not trigger OpenCV assertion failures during resize.
+        - Fallback logic: If BRISQUE model loading or computation fails (e.g., due to OpenCV errors on invalid images),
+          or for skipped cases, computes Laplacian variance on grayscale (higher variance = sharper/better) and normalizes
+          empirically: min(1.0, (variance / 100.0) / 100.0), suitable for typical image variances (e.g., ~0.05-0.5 for narrow PNGs).
+        - Enhanced logging: Detailed warnings for fallbacks, including image shape, aspect ratio, and error traces.
+
         Args:
             None (uses bundled model or fallback).
-    
+
         Attributes:
             brisque: The OpenCV QualityBRISQUE instance (or None if fallback).
             logger: Project logger.
-    
+
         Example:
             evaluator = BRISQUEImageQualityEvaluator()
-            score = evaluator.evaluate('/path/to/img.jpg')  # e.g., 0.747 (BRISQUE) or 0.652 (Laplacian)
+            score = evaluator.evaluate('/path/to/high_quality.jpg')  # e.g., 0.747 (BRISQUE normalized)
+            score_narrow = evaluator.evaluate('/path/to/narrow_palette.png')  # e.g., 0.123 (Laplacian fallback for 1x400 PNG)
         """
 
     _instance = None
@@ -287,39 +302,44 @@ class BRISQUEImageQualityEvaluator(ImageQualityEvaluator):
     def evaluate(self, path: str, flat_cache_manager: Optional[FlatCacheManager] = None) -> float:
         """
         Evaluate the quality of the image at the given path using BRISQUE or fallback.
-Supports caching via FlatCacheManager: before computing the BRISQUE (or fallback Laplacian)
-score, checks the cache for an existing valid entry with a non-None 'brisque' value.
-The entry is validated against current file stats (size, mtime) by get_entry().
-If valid cached score exists, returns it immediately without recomputing.
-After successful computation, stores the normalized score in the 'brisque' field
-of the cache entry and persists it.
 
-If BRISQUE loaded successfully:
-    - Loads image with OpenCV, computes raw BRISQUE score (0-100, lower = better quality).
-    - Normalizes to higher-better scale: (100 - raw_score) / 100, clamped to [0, 1].
+        Supports caching via FlatCacheManager: before computing the BRISQUE (or fallback Laplacian)
+        score, checks the cache for an existing valid entry with a non-None 'brisque' value.
+        The entry is validated against current file stats (size, mtime) by get_entry().
+        If valid cached score exists, returns it immediately without recomputing.
+        After successful computation, stores the normalized score in the 'brisque' field
+        of the cache entry and persists it.
 
-Fallback (if BRISQUE model load/compute fails):
-    - Converts to grayscale, computes Laplacian variance (higher = sharper/better).
-    - Normalizes empirically: min(1, (variance / 100) / 100) for typical image variance range.
+        Behavior:
+        - If BRISQUE loaded successfully and image passes pre-checks:
+          - Loads image robustly (cv2.imread with PIL fallback for palette PNGs/transparency issues).
+          - Performs dimension pre-check: skips BRISQUE if width/height < 2 or aspect ratio > 100 (e.g., narrow 1x400 PNGs).
+          - Pads small images (<8px min dimension) to avoid OpenCV resize assertions.
+          - Computes raw BRISQUE score (0-100, lower = better), normalizes to [0, 1] higher-better: (100 - raw) / 100.
+        - For invalid/narrow images or BRISQUE failures: falls back to Laplacian variance on grayscale
+          (higher variance = sharper/better), normalized empirically: min(1.0, (var / 100.0) / 100.0).
+          Example: Narrow palette PNGs (e.g., 1x400) typically yield ~0.05-0.5 via fallback.
+        - The fallback score is also cached under 'brisque' as it represents this evaluator's output.
+        - Enhanced logging for fallbacks, including shape, aspect, and errors.
 
-- The fallback score is also cached under 'brisque' as it represents this evaluator's output.
+        Args:
+            path (str): Absolute or relative path to the image file.
+            flat_cache_manager (Optional[FlatCacheManager]): Optional instance for caching.
+                If provided, enables read/write of 'brisque' scores. Defaults to None (no caching).
 
-Args:
-    path (str): Absolute or relative path to the image file.
-    flat_cache_manager (Optional[FlatCacheManager]): Optional instance for caching.
-        If provided, enables read/write of 'brisque' scores. Defaults to None (no caching).
+        Returns:
+            float: Normalized quality score in [0, 1], where higher values indicate better perceived quality.
 
-Returns:
-    float: Normalized quality score in [0, 1], where higher values indicate better perceived quality.
+        Raises:
+            ImageQualityFileError: If the file does not exist, is not a valid file, or cannot be loaded as an image
+                (even with PIL fallback).
+            ImageQualityComputationError: If both BRISQUE and fallback computations fail (e.g., invalid image data).
 
-Raises:
-    ImageQualityFileError: If the file does not exist, is not a valid file, or cannot be loaded as an image.
-    ImageQualityComputationError: If both BRISQUE and fallback computations fail.
-
-Examples:
-    >>> evaluator = BRISQUEImageQualityEvaluator()
-    >>> score = evaluator.evaluate('/path/to/high_quality.jpg')  # e.g., 0.853 (BRISQUE, cached on second call)
-    >>> score_no_cache = evaluator.evaluate('/path/to/low_quality.jpg', flat_cache_manager=None)  # Computes fresh, no cache
+        Examples:
+            >>> evaluator = BRISQUEImageQualityEvaluator()
+            >>> score = evaluator.evaluate('/path/to/high_quality.jpg')  # e.g., 0.853 (BRISQUE, cached on second call)
+            >>> score_narrow = evaluator.evaluate('/path/to/1x400_palette.png')  # e.g., 0.123 (Laplacian fallback)
+            >>> score_no_cache = evaluator.evaluate('/path/to/low_quality.jpg', flat_cache_manager=None)  # Computes fresh, no cache
         """
         # --- 1. Check Flat Cache First (Avoid Unnecessary Computation) ---
         # Retrieve and validate cache entry; if 'brisque' is set, it's considered valid for this evaluator
@@ -343,45 +363,89 @@ Examples:
         if not os.path.isfile(path):
             raise ImageQualityFileError(f"Not a file: {path}", path=path)
 
-        # Load image
+        # Robust image loading: Try OpenCV first, fallback to PIL for problematic formats
+        # (e.g., palette PNGs with transparency that fail cv2.imread, like 1x400 narrow images)
         image = cv2.imread(path, cv2.IMREAD_COLOR)
-        if image is None or image.size == 0:
-            raise ImageQualityFileError(f"Failed to load image: {path}", path=path)
+        if image is None or len(image.shape) != 3 or image.shape[0] <= 0 or image.shape[1] <= 0:
+            try:
+                pil_img = Image.open(path).convert('RGB')
+                image = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+                self.logger.debug(f"Loaded via PIL fallback for {path}, shape={image.shape}")
+            except Exception as pil_exc:
+                raise ImageQualityFileError(f"Failed to load image with OpenCV and PIL fallback: {path}", path=path) from pil_exc
+
+        # Dimension pre-check: Skip BRISQUE for extreme cases to avoid OpenCV errors
+        # (e.g., width/height < 2 or aspect > 100, common in narrow palette PNGs like 1x400)
+        h, w = image.shape[:2]
+        aspect_ratio = max(h / w if w > 0 else float('inf'), w / h if h > 0 else float('inf'))
 
         normalized_score = None
-
-        if self.brisque is not None:
-            try:
-                # OpenCV's QualityBRISQUE.compute() returns (score, features, ...).
-                # Score can be a float or a 1-element sequence (tuple/list/ndarray).
-                result = self.brisque.compute(image)
-                
-                # Extract the score component (first element of the result tuple)
-                raw_score = result[0]
-                
-                # If the score component is a sequence (e.g., (score,)), extract the scalar value
-                if isinstance(raw_score, (list, tuple, np.ndarray)):
-                    raw_score = raw_score[0]
-                
-                # Ensure final score is a float
-                raw_score = float(raw_score)
-                # Normalize BRISQUE: raw is 0-100 lower-better; convert to 0-1 higher-better
-                normalized_score = max(0.0, min(1.0, (100.0 - raw_score) / 100.0))
-                self.logger.debug(f"BRISQUE raw: {raw_score:.2f}, normalized: {normalized_score:.3f} for {path}")
-            except Exception as e:
-                self.logger.warning(f"BRISQUE compute failed for {path}: {str(e)}. Falling back to Laplacian variance.")
-        
-        # Fallback: Laplacian variance
-        if normalized_score is None:
+        if w < 2 or h < 2 or aspect_ratio > 100:
+            self.logger.warning(
+                f"Image too narrow or extreme aspect for BRISQUE: {path} (h={h}, w={w}, aspect={aspect_ratio:.1f}). "
+                f"Using Laplacian fallback to avoid OpenCV resize assertions."
+            )
+            # Fallback: Laplacian variance (no BRISQUE computation)
             try:
                 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
                 lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
                 normalized_score = min(1.0, (lap_var / 100.0) / 100.0)  # Scale typical var to 0-1
-                self.logger.debug(f"Laplacian fallback: var={lap_var:.2f}, normalized={normalized_score:.3f} for {path}")
+                self.logger.debug(f"Laplacian fallback (extreme dims): var={lap_var:.2f}, normalized={normalized_score:.3f} for {path}")
             except Exception as e:
                 raise ImageQualityComputationError(
-                    f"Laplacian fallback failed for {path}: {str(e)}", path=path, original_error=e
+                    f"Laplacian fallback failed for extreme image {path}: {str(e)}", path=path, original_error=e
                 ) from e
+        else:
+            # Padding logic for very small images: Ensures min dimension >=8px for BRISQUE filters
+            # (prevents assertion failures in OpenCV's internal resize for NSS extraction)
+            if min(h, w) < 8:
+                target_size = 8
+                pad_h = max(0, target_size - h)
+                pad_w = max(0, target_size - w)
+                top = pad_h // 2
+                bottom = pad_h - top
+                left = pad_w // 2
+                right = pad_w - left
+                image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_REFLECT_101)
+                self.logger.debug(
+                    f"Padded small image for BRISQUE: {path} from ({h},{w}) to ({image.shape[0]},{image.shape[1]})"
+                )
+
+            if self.brisque is not None:
+                try:
+                    # OpenCV's QualityBRISQUE.compute() returns (score, features, ...).
+                    # Score can be a float or a 1-element sequence (tuple/list/ndarray).
+                    result = self.brisque.compute(image)
+                    
+                    # Extract the score component (first element of the result tuple)
+                    raw_score = result[0]
+                    
+                    # If the score component is a sequence (e.g., (score,)), extract the scalar value
+                    if isinstance(raw_score, (list, tuple, np.ndarray)):
+                        raw_score = raw_score[0]
+                    
+                    # Ensure final score is a float
+                    raw_score = float(raw_score)
+                    # Normalize BRISQUE: raw is 0-100 lower-better; convert to 0-1 higher-better
+                    normalized_score = max(0.0, min(1.0, (100.0 - raw_score) / 100.0))
+                    self.logger.debug(f"BRISQUE raw: {raw_score:.2f}, normalized: {normalized_score:.3f} for {path}")
+                except Exception as e:
+                    self.logger.warning(
+                        f"BRISQUE compute failed for {path}: {e}. Image shape: {getattr(image, 'shape', 'None')}. "
+                        f"Falling back to Laplacian variance.", exc_info=True
+                    )
+            
+            # Fallback: Laplacian variance
+            if normalized_score is None:
+                try:
+                    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                    lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+                    normalized_score = min(1.0, (lap_var / 100.0) / 100.0)  # Scale typical var to 0-1
+                    self.logger.debug(f"Laplacian fallback: var={lap_var:.2f}, normalized={normalized_score:.3f} for {path}")
+                except Exception as e:
+                    raise ImageQualityComputationError(
+                        f"Laplacian fallback failed for {path}: {str(e)}", path=path, original_error=e
+                    ) from e
 
         # --- 2. Update Flat Cache ---
         if flat_cache_manager and normalized_score is not None:

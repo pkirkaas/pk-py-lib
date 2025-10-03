@@ -40,54 +40,61 @@ from pk_py_lib.core.logging import get_logger
 class ImageQualityEvaluatorRegistry:
     """Singleton-like registry for ImageQualityEvaluator classes.
     
-    This class manages a dictionary of registered evaluator classes, keyed by string identifiers.
-    It acts as a central point for pluggable quality metrics, allowing the provider to select
-    evaluators based on settings. The registry is class-level, so it's shared across instances
-    (effectively singleton behavior without explicit instance management).
+        This class manages a dictionary of registered evaluator classes, keyed by string identifiers.
+        It acts as a central point for pluggable quality metrics, allowing the provider to select
+        evaluators based on settings. The registry is class-level, so it's shared across instances
+        (effectively singleton behavior without explicit instance management).
     
-    All registered evaluators return normalized scores where higher values indicate higher image quality.
+        All registered evaluators return normalized scores where higher values indicate higher image quality.
     
-    Initialization:
-    - On first access or import, automatically registers the default 'brisque' evaluator.
-    - Additional evaluators can be registered via register_evaluator().
+        Initialization:
+        - On first access or import, automatically registers the default 'brisque' evaluator.
+        - Additional evaluators can be registered via register_evaluator().
     
-    Attributes
-    ----------
-    _evaluators : dict[str, Type[ImageQualityEvaluator]]
-        Internal class-level dict mapping keys to evaluator classes. Populated on import.
+        Recent Improvements for 'brisque' Evaluator:
+        - The BRISQUE evaluator now handles palette PNGs (e.g., with transparency) and narrow images (e.g., 1x400)
+          gracefully via robust loading (PIL fallback for failed cv2.imread), pre-checks for extreme dimensions/aspect
+          ratios (skips BRISQUE if width/height <2 or aspect >100, using Laplacian fallback), and padding for small
+          images (<8px min dim). This prevents OpenCV resize assertion failures and ensures consistent normalized
+          scores [0,1] higher-better, even for edge cases.
     
-    Raises
-    ------
-    ValueError
-        If attempting to register a duplicate key or retrieve an unknown key.
+        Attributes
+        ----------
+        _evaluators : dict[str, Type[ImageQualityEvaluator]]
+            Internal class-level dict mapping keys to evaluator classes. Populated on import.
     
-    Examples
-    --------
-    # Basic retrieval (after auto-registration)
-    cls = ImageQualityEvaluatorRegistry.get_evaluator_class("brisque")
-    # cls == BRISQUEImageQualityEvaluator
+        Raises
+        ------
+        ValueError
+            If attempting to register a duplicate key or retrieve an unknown key.
     
-    # Registering a custom evaluator
-    class CustomEvaluator(ImageQualityEvaluator):
-        # Implementation...
-        pass
+        Examples
+        --------
+        # Basic retrieval (after auto-registration)
+        cls = ImageQualityEvaluatorRegistry.get_evaluator_class("brisque")
+        # cls == BRISQUEImageQualityEvaluator
     
-    ImageQualityEvaluatorRegistry.register_evaluator("custom", CustomEvaluator)
+        # Registering a custom evaluator
+        class CustomEvaluator(ImageQualityEvaluator):
+            # Implementation...
+            pass
     
-    # Error handling
-    try:
-        cls = ImageQualityEvaluatorRegistry.get_evaluator_class("unknown")
-    except ValueError as e:
-        # e.message: "Unknown image quality evaluator: unknown"
-        pass
+        ImageQualityEvaluatorRegistry.register_evaluator("custom", CustomEvaluator)
     
-    Notes
-    -----
-    - Registration is permanent (no unregister); for dynamic unloading, extend if needed.
-    - Logs INFO on successful registration, WARNING on duplicates.
-    - Enum in settings schema should mirror registered keys for validation.
-    - All evaluators normalize scores to higher-better convention for consistency.
-    """
+        # Error handling
+        try:
+            cls = ImageQualityEvaluatorRegistry.get_evaluator_class("unknown")
+        except ValueError as e:
+            # e.message: "Unknown image quality evaluator: unknown"
+            pass
+    
+        Notes
+        -----
+        - Registration is permanent (no unregister); for dynamic unloading, extend if needed.
+        - Logs INFO on successful registration, WARNING on duplicates.
+        - Enum in settings schema should mirror registered keys for validation.
+        - All evaluators normalize scores to higher-better convention for consistency.
+        """
 
     # Class-level registry dict; shared across all instances (singleton pattern)
     _evaluators: dict[str, Type[ImageQualityEvaluator]] = {}
