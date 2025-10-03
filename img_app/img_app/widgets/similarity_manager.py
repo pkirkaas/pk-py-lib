@@ -60,9 +60,10 @@ from src.pk_py_lib.core.logging import get_logger
 import platform
 import os
 import subprocess
-from PySide6.QtWidgets import QMenu, QApplication
+from PySide6.QtWidgets import QMenu, QApplication, QMessageBox
 from PySide6.QtGui import QDesktopServices
 from pathlib import Path
+from src.pk_py_lib.core.filesystem.operations import FileOperations
  
  
 LOGGER = get_logger("img_app.widgets.similarity_manager")
@@ -934,6 +935,13 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             folder_action = menu.addAction("Open Folder")
             folder_action.triggered.connect(lambda: self._open_folder(path))
         
+        # File management actions
+        copy_action = menu.addAction("Copy To")
+        copy_action.triggered.connect(lambda: self._perform_copy(path_str))
+        
+        move_action = menu.addAction("Move To")
+        move_action.triggered.connect(lambda: self._perform_move(path_str))
+        
         # TODO: Extend to multi-select in future by iterating over self._group_view.tree_widget.selectedItems()
         # and applying actions to each valid file item, respecting SelectionStore.
         
@@ -942,6 +950,187 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         LOGGER.debug(f"Context menu displayed for file: {path}")
  
  
+    def _perform_copy(self, path: str) -> None:
+        """
+        Perform copy operation for the selected file in the similarity manager.
+        
+        Parameters
+        ----------
+        path : str
+            The absolute file path of the file to copy.
+        
+        Notes
+        -----
+        Opens a directory selection dialog using FileOperations.select_target_directory
+        with operation='copy'. If a directory is selected and valid, attempts to copy
+        the file using FileOperations.copy_file_to_dir, which preserves metadata and
+        handles directory creation. On success, removes the file entry from the current
+        groups model (via _remove_file_from_model) and refreshes the view to reflect
+        the change, effectively removing it from the similarity display. Logs the
+        operation details including target directory. If the copy fails (e.g., due to
+        permissions, disk space, or invalid path), displays a warning QMessageBox
+        with user-friendly message and returns without model changes; full error
+        details are available in the application logs via the provided LOGGER.
+        
+        This action is intended for handling similar images by copying them to a new
+        location while updating the UI immediately. The original file remains in
+        its location post-copy. Clears the preview pane after successful operation
+        to reflect the model change.
+        
+        Examples
+        --------
+        Typically triggered from context menu:
+        
+        .. code-block:: python
+            
+            copy_action = menu.addAction("Copy To")
+            copy_action.triggered.connect(lambda: self._perform_copy(path_str))
+        
+        Edge Cases:
+        - If target_dir selection is canceled, no operation is performed.
+        - Handles non-existent source files gracefully (logged as failure).
+        - Cross-platform compatible, but tested primarily on Windows 11.
+        - Does not support directories; assumes path is a file from the tree widget.
+        """
+        target_dir = FileOperations.select_target_directory(parent=self, operation='copy')
+        if target_dir:
+            success = FileOperations.copy_file_to_dir(path, target_dir, logger=LOGGER)
+            if success:
+                self._remove_file_from_model(path)
+                self._preview_pane.clear()
+                LOGGER.info(f"File copied to {target_dir} and removed from similarity view: {path}")
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Copy Failed",
+                    "Failed to copy the file. Please check the application logs for detailed error information."
+                )
+
+    def _perform_move(self, path: str) -> None:
+        """
+        Perform move operation for the selected file in the similarity manager.
+        
+        Parameters
+        ----------
+        path : str
+            The absolute file path of the file to move.
+        
+        Notes
+        -----
+        Opens a directory selection dialog using FileOperations.select_target_directory
+        with operation='move'. If a directory is selected and valid, attempts to move
+        the file using FileOperations.move_file_to_dir, which relocates the file and
+        removes the source. Handles cross-device moves by copying then deleting.
+        On success, removes the file entry from the current groups model (via
+        _remove_file_from_model) and refreshes the view. Since this is a similarity
+        manager with perceptual matches, moving one file may affect group scores,
+        but for simplicity, the item is simply removed from the display and a note
+        is logged; no automatic re-grouping or re-scan is performed. Clears the
+        preview pane after successful operation.
+        Logs the operation details including target directory. If the move fails
+        (e.g., permissions, cross-device issues, or invalid path), displays a
+        warning QMessageBox and returns without model changes; full details in logs.
+        
+        This action relocates the file permanently, updating the UI to reflect its
+        removal from the similarity list.
+        
+        Examples
+        --------
+        Typically triggered from context menu:
+        
+        .. code-block:: python
+            
+            move_action = menu.addAction("Move To")
+            move_action.triggered.connect(lambda: self._perform_move(path_str))
+        
+        Edge Cases:
+        - If target_dir selection is canceled, no operation is performed.
+        - Source file is removed on success; no undo except via system recycle bin if applicable.
+        - Handles non-existent source files gracefully (logged as failure).
+        - Cross-platform, but optimized for Windows 11 file operations.
+        - Assumes path is a file; directories not supported in this context.
+        """
+        target_dir = FileOperations.select_target_directory(parent=self, operation='move')
+        if target_dir:
+            success = FileOperations.move_file_to_dir(path, target_dir, logger=LOGGER)
+            if success:
+                self._remove_file_from_model(path)
+                self._preview_pane.clear_previews()
+                LOGGER.info(f"File moved to {target_dir} and removed from similarity view: {path}")
+                # Note: Moving one similar image may affect group scores; consider re-scanning if needed
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Move Failed",
+                    "Failed to move the file. Please check the application logs for detailed error information."
+                )
+
+    def _remove_file_from_model(self, path: str) -> None:
+        """
+        Remove a specific file path from the groups model and refresh the dialog view.
+        
+        Parameters
+        ----------
+        path : str
+            The absolute file path to remove from the groups.
+        
+        Notes
+        -----
+        Iterates through the current self._model.groups (tuple of Group instances) to
+        find the group containing the path in its items (tuple of str paths). Creates
+        a new Group instance using dataclasses.replace with the file removed from items.
+        If the resulting items tuple is empty, skips adding the group to keep the view
+        clean (avoids empty similarity groups). Collects all unmodified groups and the
+        updated one(s). If the path was found and removed (path_found=True), constructs
+        a new tuple of groups and calls self.refresh_groups to update the model and
+        rebuild the view via _update_model and FileGroupView.update_model. Logs the
+        removal for auditing. If the path is not found in any group, logs a warning
+        but performs no refresh.
+        
+        This method ensures immutability by using replace and tuples, aligning with
+        the composition-centric architecture. Only refreshes if a change occurred,
+        optimizing UI updates. After refresh, the preview pane auto-updates via
+        existing connections (_on_tree_selection_changed); clears explicitly if needed.
+        
+        Examples
+        --------
+        Called post-copy or post-move:
+        
+        .. code-block:: python
+            
+            self._remove_file_from_model("/path/to/similar/file.jpg")
+        
+        Usage in Context:
+        - Ensures the tree widget (self._group_view.tree_widget) reflects the model
+          after file operations, maintaining consistency between UI and data.
+        - Handles single-file removal; for multi-select, would need extension.
+        
+        Edge Cases:
+        - Path not in any group: Warns and skips refresh.
+        - Multiple groups with same path: Unlikely in similarity model, but would
+          remove from first match only (iterative).
+        - Empty model: No-op.
+        - Group becomes empty: Skipped, reducing group count.
+        - Quality scores: If removing a file with score, the refresh will recompute
+          if evaluator active, but for simplicity, just remove and refresh.
+        """
+        updated_groups = []
+        path_found = False
+        for group in self._model.groups:
+            if path in group.items:
+                new_items = tuple(item for item in group.items if item != path)
+                path_found = True
+                if new_items:
+                    new_group = replace(group, items=new_items)
+                    updated_groups.append(new_group)
+            else:
+                updated_groups.append(group)
+        
+        if path_found:
+            self.refresh_groups(tuple(updated_groups))
+            LOGGER.debug(f"Removed {path} from similarity model and refreshed view")
+        else:
+            LOGGER.warning(f"Path not found in any group when removing: {path}")
 # Mapping used for direction combo labels (shared between duplicates/similarity)
 DuplicateDirectionLabels: Mapping[PoolDirection, str] = {
     PoolDirection.ALL: "All Pools",

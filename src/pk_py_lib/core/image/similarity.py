@@ -26,6 +26,8 @@ from pk_py_lib.core.image.quality.base import ImageQualityEvaluator
 from pathlib import Path
 from pathlib import Path
 
+VALID_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp'}
+
 # LSH removed; always use brute-force
 
 
@@ -94,7 +96,7 @@ def is_image_extension(path: str) -> bool:
     Returns:
         bool: True if the extension is a known image format.
     """
-    return Path(path).suffix.lower() in {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.heif', '.heic'}
+    return Path(path).suffix.lower() in VALID_IMAGE_EXTENSIONS
 
 
 def get_resolution(path: str, search_type: str = 'similarity') -> str:
@@ -209,6 +211,9 @@ def get_image_quality_score(
     if evaluator is None:
         return None, None
     
+    if not is_image_extension(path):
+        return None, None
+    
     # Prefer cached value if available
     if flat_cache_manager:
         try:
@@ -292,7 +297,7 @@ def compute_phash(
     hash_size: int = 8,
     settings: Optional[Dict] = None,
     flat_cache_manager: Optional[FlatCacheManager] = None
-) -> str:
+) -> Optional[str]:
     """
     Compute perceptual hash (pHash) for an image using Discrete Cosine Transform (DCT).
 
@@ -308,7 +313,7 @@ def compute_phash(
             If provided, checks cache entry's 'phash' field before computing and stores result.
 
     Returns:
-        str: 16-character hexadecimal hash string (e.g., 'a1b2c3d4e5f67890').
+        Optional[str]: 16-character hexadecimal hash string (e.g., 'a1b2c3d4e5f67890'), or None for non-image files.
 
     Raises:
         InvalidImageError: If the image file does not exist, is not a valid image, or has an
@@ -340,6 +345,9 @@ def compute_phash(
     path = Path(image_path)
     if not path.is_file():
         raise InvalidImageError(image_path, "File does not exist or is not a file")
+
+    if not is_image_extension(image_path):
+        return None
 
     # Use flat_cache.get_hashes for integrated caching and computation
     if flat_cache_manager:
@@ -393,7 +401,7 @@ def compute_color_phash(
     hash_size: int = 8,
     settings: Optional[Dict] = None,
     flat_cache_manager: Optional[FlatCacheManager] = None
-) -> str:
+) -> Optional[str]:
     """
     Compute a color-aware perceptual hash by averaging pHashes of RGB channels.
     Note: Custom hash not directly supported by flat_cache.get_hashes; compute directly.
@@ -410,7 +418,7 @@ def compute_color_phash(
             If provided, checks cache entry's 'color_phash' field before computing and stores result.
 
     Returns:
-        str: 16-character hexadecimal hash string.
+        Optional[str]: 16-character hexadecimal hash string, or None for non-image files.
 
     Raises:
         InvalidImageError: For invalid images.
@@ -436,6 +444,9 @@ def compute_color_phash(
     path = Path(image_path)
     if not path.is_file():
         raise InvalidImageError(image_path, "File does not exist or is not a file")
+
+    if not is_image_extension(image_path):
+        return None
 
     # Note: Custom color_phash is not cached in the simplified flat_cache schema
     # It will be computed on demand each time
@@ -762,7 +773,7 @@ def compute_whash(
     wavelet: str = 'db1',
     settings: Optional[Dict] = None,
     flat_cache_manager: Optional[FlatCacheManager] = None
-) -> str:
+) -> Optional[str]:
     """
     Compute wavelet hash (wHash) for an image using Discrete Wavelet Transform (DWT).
     Uses flat_cache.get_hashes for integrated caching.
@@ -782,7 +793,7 @@ def compute_whash(
             If provided, checks cache entry's 'whash' field before computing and stores result.
 
     Returns:
-        str: 16-character hexadecimal hash string (e.g., 'a1b2c3d4e5f67890').
+        Optional[str]: 16-character hexadecimal hash string (e.g., 'a1b2c3d4e5f67890'), or None for non-image files.
 
     Raises:
         InvalidImageError: If the image file does not exist, is not a valid image, or has an
@@ -814,6 +825,9 @@ def compute_whash(
     path = Path(image_path)
     if not path.is_file():
         raise InvalidImageError(image_path, "File does not exist or is not a file")
+
+    if not is_image_extension(image_path):
+        return None
 
     # Use flat_cache.get_hashes for integrated caching and computation
     if flat_cache_manager:
@@ -869,7 +883,7 @@ def compute_color_whash(
     wavelet: str = 'db1',
     settings: Optional[Dict] = None,
     flat_cache_manager: Optional[FlatCacheManager] = None
-) -> str:
+) -> Optional[str]:
     """
     Compute a color-aware wavelet hash by averaging wHashes of RGB channels.
     Note: Custom hash; compute directly and update cache if possible.
@@ -889,7 +903,7 @@ def compute_color_whash(
             If provided, checks cache entry's 'color_whash' field before computing and stores result.
 
     Returns:
-        str: 16-character hexadecimal hash string.
+        Optional[str]: 16-character hexadecimal hash string, or None for non-image files.
 
     Raises:
         InvalidImageError: For invalid images.
@@ -916,6 +930,9 @@ def compute_color_whash(
     path = Path(image_path)
     if not path.is_file():
         raise InvalidImageError(image_path, "File does not exist or is not a file")
+
+    if not is_image_extension(image_path):
+        return None
 
     # Note: Custom color_whash is not cached in the simplified flat_cache schema
     # It will be computed on demand each time

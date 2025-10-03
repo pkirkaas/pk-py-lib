@@ -729,9 +729,9 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         pass
 ```
 
-## Enhanced UI Interactions: Double-Click and Context Menu Implementation
+## Enhanced UI Interactions: Double-Click, Context Menu, and File Management Implementation
 
-This section details the implementation of double-click to open files and right-click context menus in the Duplicate Manager and Similarity Manager dialogs. These features are added to the dialog-specific implementations (`duplicate_manager.py` and `similarity_manager.py`), building on the shared `FileGroupView` (QTreeWidget) from the base class. They enhance usability by providing quick file access and OS-integrated actions without disrupting the existing selection or preview systems.
+This section details the implementation of double-click to open files, right-click context menus, and file management operations in the Duplicate Manager and Similarity Manager dialogs. These features are added to the dialog-specific implementations (`duplicate_manager.py` and `similarity_manager.py`), building on the shared `FileGroupView` (QTreeWidget) from the base class. They enhance usability by providing quick file access, OS-integrated actions, and direct file management capabilities without disrupting the existing selection or preview systems.
 
 ### Required Imports
 
@@ -961,6 +961,556 @@ To add these to a new dialog subclassing `BaseFileManagerDialog`:
 5. Test edge cases: non-existent files, permission-denied opens, multi-platform behavior.
 
 This implementation ensures the features are modular, reusable, and aligned with the project's error-handling and logging standards.
+
+## File Management Operations Implementation
+
+This section details the implementation of "Copy To" and "Move To" context menu functionality that enables users to copy or move files directly from the DuplicateManager and SimilarityManager dialogs. These operations integrate with the existing UI patterns while providing seamless file management capabilities.
+
+### Overview of Copy/Move Functionality
+
+The file management operations provide users with the ability to:
+- **Copy files** to new locations while preserving the original
+- **Move files** to new locations (relocate permanently)
+- **Automatic UI updates** after operations (files removed from groups)
+- **Error handling and user feedback** for failed operations
+- **Cross-platform compatibility** with Windows, macOS, and Linux
+
+### Implementation Architecture
+
+#### Shared Utilities Integration
+
+**File: [`src/pk_py_lib/core/filesystem/operations.py`](src/pk_py_lib/core/filesystem/operations.py)**
+
+```python
+"""
+File operations utility providing safe copy/move operations with comprehensive error handling.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional, Union
+from PySide6.QtWidgets import QWidget, QFileDialog
+
+from ..logging import get_logger
+
+
+class FileOperations:
+    """
+    Centralized file operations with error handling and logging.
+    
+    Provides safe file copy/move operations with user feedback,
+    directory creation, and comprehensive error reporting.
+    """
+
+    @staticmethod
+    def select_target_directory(parent: QWidget, operation: str = "copy") -> Optional[Path]:
+        """
+        Show directory selection dialog for file operations.
+        
+        Args:
+            parent: Parent widget for the dialog
+            operation: Operation type ("copy" or "move") for dialog title
+            
+        Returns:
+            Selected directory path or None if cancelled
+        """
+        title = f"Select Target Directory for {operation.title()}"
+        target_dir = QFileDialog.getExistingDirectory(
+            parent,
+            title,
+            "",  # Start from current directory
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+        )
+        
+        return Path(target_dir) if target_dir else None
+    
+    @staticmethod
+    def copy_file_to_dir(
+        source_path: Union[str, Path],
+        target_dir: Union[str, Path],
+        *,
+        logger: Optional[object] = None
+    ) -> bool:
+        """
+        Safely copy file to target directory with error handling.
+        
+        Args:
+            source_path: Source file path
+            target_dir: Target directory path
+            logger: Optional logger for operation tracking
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        source = Path(source_path)
+        target = Path(target_dir)
+        
+        try:
+            # Validate source exists
+            if not source.exists():
+                raise FileNotFoundError(f"Source file does not exist: {source}")
+            
+            # Create target directory if needed
+            target.mkdir(parents=True, exist_ok=True)
+            
+            # Generate unique target path
+            target_path = target / source.name
+            
+            # Handle naming conflicts
+            counter = 1
+            while target_path.exists():
+                stem = source.stem
+                suffix = source.suffix
+                target_path = target / f"{stem}_{counter}{suffix}"
+                counter += 1
+            
+            # Perform copy with metadata preservation
+            import shutil
+            shutil.copy2(source, target_path)
+            
+            if logger:
+                logger.info(f"Successfully copied {source} to {target_path}")
+            
+            return True
+            
+        except Exception as e:
+            if logger:
+                logger.error(f"Failed to copy {source} to {target}: {e}", exc_info=True)
+            return False
+    
+    @staticmethod
+    def move_file_to_dir(
+        source_path: Union[str, Path],
+        target_dir: Union[str, Path],
+        *,
+        logger: Optional[object] = None
+    ) -> bool:
+        """
+        Safely move file to target directory with cross-platform support.
+        
+        Args:
+            source_path: Source file path
+            target_dir: Target directory path
+            logger: Optional logger for operation tracking
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        source = Path(source_path)
+        target = Path(target_dir)
+        
+        try:
+            # Validate source exists
+            if not source.exists():
+                raise FileNotFoundError(f"Source file does not exist: {source}")
+            
+            # Create target directory if needed
+            target.mkdir(parents=True, exist_ok=True)
+            
+            # Generate unique target path
+            target_path = target / source.name
+            
+            # Handle naming conflicts
+            counter = 1
+            while target_path.exists():
+                stem = source.stem
+                suffix = source.suffix
+                target_path = target / f"{stem}_{counter}{suffix}"
+                counter += 1
+            
+            # Perform move (copy + delete for cross-device moves)
+            import shutil
+            shutil.move(str(source), str(target_path))
+            
+            if logger:
+                logger.info(f"Successfully moved {source} to {target_path}")
+            
+            return True
+            
+        except Exception as e:
+            if logger:
+                logger.error(f"Failed to move {source} to {target}: {e}", exc_info=True)
+            return False
+```
+
+#### Context Menu Integration
+
+**Integration in Both Managers: [`img_app/img_app/widgets/duplicate_manager.py`](img_app/img_app/widgets/duplicate_manager.py) and [`img_app/img_app/widgets/similarity_manager.py`](img_app/img_app/widgets/similarity_manager.py)**
+
+```python
+def _show_context_menu(self, position: QPoint) -> None:
+    """
+    Show context menu with file management operations.
+    
+    Extends the existing context menu with Copy To and Move To actions
+    that integrate with the FileOperations utility class.
+    """
+    # ... existing context menu setup ...
+    
+    # File management actions
+    copy_action = menu.addAction("Copy To")
+    copy_action.triggered.connect(lambda: self._perform_copy(path_str))
+    
+    move_action = menu.addAction("Move To")
+    move_action.triggered.connect(lambda: self._perform_move(path_str))
+```
+
+### User Flow and Interaction Design
+
+#### Context Menu Integration Pattern
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant CM as Context Menu
+    participant FO as FileOperations
+    participant DM as Dialog Model
+    participant UI as User Interface
+    
+    U->>CM: Right-click file item
+    CM->>U: Display menu with "Copy To"/"Move To"
+    U->>CM: Select "Copy To"
+    CM->>FO: Call select_target_directory()
+    FO->>U: Show directory selection dialog
+    U->>FO: Select target directory
+    FO->>FO: Validate and copy file
+    FO->>DM: Remove file from model groups
+    DM->>UI: Refresh display
+    UI->>U: Update tree view (file removed)
+```
+
+#### Directory Persistence Mechanism
+
+**File: [`src/pk_py_lib/gui/dialogs/base_file_manager_dialog.py`](src/pk_py_lib/gui/dialogs/base_file_manager_dialog.py)**
+
+```python
+class BaseFileManagerDialog(QDialog):
+    """
+    Enhanced base dialog with file operation state management.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._last_target_directory: Optional[Path] = None
+        self._operation_history: List[Tuple[str, str, str]] = []  # (operation, source, target)
+    
+    def _get_suggested_directory(self, operation: str) -> str:
+        """
+        Provide suggested directory based on operation history.
+        
+        Returns:
+            Path string to use as default in file dialog
+        """
+        if self._last_target_directory and self._last_target_directory.exists():
+            return str(self._last_target_directory)
+        
+        # Fallback to user's home directory
+        return str(Path.home())
+    
+    def _record_operation(self, operation: str, source_path: str, target_path: str) -> None:
+        """
+        Record operation for history and learning.
+        
+        Args:
+            operation: "copy" or "move"
+            source_path: Source file path
+            target_path: Target directory path
+        """
+        self._last_target_directory = Path(target_path)
+        self._operation_history.append((operation, source_path, target_path))
+        
+        # Keep only last 10 operations
+        if len(self._operation_history) > 10:
+            self._operation_history = self._operation_history[-10:]
+```
+
+#### Model Update Behavior After Operations
+
+**Implementation in Both Managers:**
+
+```python
+def _remove_file_from_model(self, path: str) -> None:
+    """
+    Remove file from dialog model after successful operation.
+    
+    Updates the immutable Group data structures and refreshes the view
+    to reflect the file's removal from similarity/duplicate groups.
+    """
+    updated_groups = []
+    path_found = False
+    
+    for group in self._model.groups:
+        if path in group.items:
+            # Create new group without the moved/copied file
+            new_items = tuple(item for item in group.items if item != path)
+            path_found = True
+            
+            # Only keep groups that still have files
+            if new_items:
+                new_group = replace(group, items=new_items)
+                updated_groups.append(new_group)
+        else:
+            updated_groups.append(group)
+    
+    if path_found:
+        self.refresh_groups(tuple(updated_groups))
+        LOGGER.debug(f"Removed {path} from model and refreshed view")
+    else:
+        LOGGER.warning(f"Path not found in any group when removing: {path}")
+```
+
+### Error Handling and User Feedback
+
+#### Comprehensive Error Scenarios
+
+```python
+def _perform_copy(self, path: str) -> None:
+    """
+    Handle copy operation with comprehensive error handling.
+    """
+    try:
+        # 1. Directory Selection
+        target_dir = FileOperations.select_target_directory(
+            parent=self,
+            operation='copy'
+        )
+        if not target_dir:
+            return  # User cancelled
+        
+        # 2. File Operation
+        success = FileOperations.copy_file_to_dir(path, target_dir, logger=LOGGER)
+        
+        if success:
+            # 3. Model Update
+            self._remove_file_from_model(path)
+            self._preview_pane.clear()  # Clear preview for removed file
+            LOGGER.info(f"File copied to {target_dir}: {path}")
+        else:
+            # 4. User Feedback for Failure
+            QMessageBox.warning(
+                self,
+                "Copy Failed",
+                "Failed to copy the file. Please check the application logs for detailed error information."
+            )
+            
+    except Exception as e:
+        # 5. Unexpected Error Handling
+        LOGGER.error(f"Unexpected error during copy operation: {e}", exc_info=True)
+        QMessageBox.critical(
+            self,
+            "Operation Error",
+            f"An unexpected error occurred: {str(e)}"
+        )
+```
+
+#### Logging Strategy
+
+**Structured Logging for Operations:**
+
+```python
+# Success logging
+LOGGER.info(
+    "File operation completed",
+    extra={
+        "operation": "copy",
+        "source": source_path,
+        "target": target_dir,
+        "dialog_type": self.__class__.__name__,
+        "success": True
+    }
+)
+
+# Failure logging with context
+LOGGER.error(
+    "File operation failed",
+    extra={
+        "operation": "move",
+        "source": source_path,
+        "target": target_dir,
+        "error_type": type(e).__name__,
+        "error_message": str(e),
+        "dialog_type": self.__class__.__name__,
+        "success": False
+    },
+    exc_info=True
+)
+```
+
+### Testing Considerations
+
+#### Unit Test Coverage
+
+**File: `tests/test_file_management_operations.py`**
+
+```python
+"""
+Tests for file management operations in dialogs.
+"""
+
+import pytest
+import tempfile
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from src.pk_py_lib.core.filesystem.operations import FileOperations
+
+
+class TestFileOperations:
+    """Test FileOperations utility class."""
+    
+    def test_select_target_directory(self):
+        """Test directory selection dialog."""
+        with patch('PySide6.QtWidgets.QFileDialog.getExistingDirectory') as mock_dialog:
+            mock_dialog.return_value = "/selected/path"
+            
+            result = FileOperations.select_target_directory(None, "copy")
+            assert result == Path("/selected/path")
+            mock_dialog.assert_called_once()
+    
+    def test_copy_file_to_dir_success(self):
+        """Test successful file copy operation."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_file = Path(temp_dir) / "source.txt"
+            target_dir = Path(temp_dir) / "target"
+            
+            # Create source file
+            source_file.write_text("test content")
+            
+            # Mock logger
+            mock_logger = Mock()
+            
+            # Perform copy
+            success = FileOperations.copy_file_to_dir(
+                source_file, target_dir, logger=mock_logger
+            )
+            
+            assert success == True
+            assert (target_dir / "source.txt").exists()
+            assert (target_dir / "source.txt").read_text() == "test content"
+            mock_logger.info.assert_called_once()
+    
+    def test_copy_file_missing_source(self):
+        """Test copy operation with missing source file."""
+        mock_logger = Mock()
+        
+        success = FileOperations.copy_file_to_dir(
+            "/nonexistent/file.txt", "/target/dir", logger=mock_logger
+        )
+        
+        assert success == False
+        mock_logger.error.assert_called_once()
+
+
+@pytest.mark.gui
+class TestDialogIntegration:
+    """Integration tests for file operations in dialogs."""
+    
+    def test_context_menu_copy_action(self, qtbot):
+        """Test Copy To action in context menu."""
+        # Setup dialog with test file
+        dialog = SimilarityManagerDialog()
+        
+        # Simulate right-click context menu
+        # Verify Copy To action exists and functions correctly
+        # ... test implementation ...
+        
+    def test_model_update_after_move(self, qtbot):
+        """Test model updates after move operation."""
+        # Setup dialog with test groups
+        # Perform move operation
+        # Verify file removed from model and UI updated
+        # ... test implementation ...
+```
+
+#### Integration Testing Strategy
+
+**Key Test Scenarios:**
+1. **Directory Selection**: Verify dialog appears and captures user selection
+2. **File Operations**: Test successful copy/move operations
+3. **Error Conditions**: Test handling of missing files, permission errors, disk space
+4. **Model Updates**: Verify UI refreshes correctly after operations
+5. **Cross-Platform**: Test behavior on Windows, macOS, Linux
+6. **Edge Cases**: Naming conflicts, special characters, long paths
+
+### Performance and Memory Considerations
+
+#### Efficient Model Updates
+
+```python
+def _remove_file_from_model_optimized(self, path: str) -> None:
+    """
+    Optimized version for large group collections.
+    
+    Uses dictionary lookup for O(1) group finding instead of
+    linear search when dealing with many groups.
+    """
+    # Pre-build lookup for large collections
+    if len(self._model.groups) > 100:
+        group_lookup = {group.ref_path: group for group in self._model.groups}
+        # ... optimized implementation ...
+    else:
+        # Standard implementation for smaller collections
+        # ... existing logic ...
+```
+
+#### Memory Management During Operations
+
+- **Large File Handling**: Operations process files sequentially to avoid memory spikes
+- **Preview Cleanup**: Preview panes cleared immediately after operations to free resources
+- **Model Immutability**: Uses `dataclasses.replace()` for efficient immutable updates
+
+### Future Enhancement Opportunities
+
+#### Multi-Select Operations
+
+```python
+def _perform_copy_multiple(self, paths: List[str]) -> None:
+    """
+    Future enhancement: Copy multiple selected files.
+    
+    Would extend current single-file operations to handle
+    SelectionStore selections for batch operations.
+    """
+    target_dir = FileOperations.select_target_directory(parent=self, operation='copy')
+    if not target_dir:
+        return
+    
+    success_count = 0
+    for path in paths:
+        if FileOperations.copy_file_to_dir(path, target_dir, logger=LOGGER):
+            self._remove_file_from_model(path)
+            success_count += 1
+    
+    # Show summary of batch operation
+    QMessageBox.information(
+        self,
+        "Batch Copy Complete",
+        f"Successfully copied {success_count} of {len(paths)} files."
+    )
+```
+
+#### Undo Functionality
+
+```python
+def _record_operation_for_undo(self, operation: str, source_path: str, target_path: str) -> None:
+    """
+    Future enhancement: Record operations for undo support.
+    
+    Would maintain operation history for potential undo functionality
+    in future versions.
+    """
+    undo_info = {
+        'operation': operation,
+        'source': source_path,
+        'target': target_path,
+        'timestamp': datetime.now()
+    }
+    self._undo_stack.append(undo_info)
+```
+
+This implementation provides a robust foundation for file management operations that integrates seamlessly with the existing dialog architecture while maintaining the project's standards for error handling, logging, and user experience.
+
 ## Phase 4: Integration and Testing (Week 4)
 
 ### Main Application Integration

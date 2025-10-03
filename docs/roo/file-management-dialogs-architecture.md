@@ -279,6 +279,9 @@ The file management dialogs support enhanced user interactions through double-cl
 - **Menu Actions**:
   - **Open File**: Equivalent to double-click; opens with default OS handler.
   - **Copy Path**: Copies the absolute file path to the system clipboard using [`QApplication.clipboard().setText()`](PySide6.QtWidgets.QApplication.clipboard().setText()).
+  - **File Management Operations**:
+    - **Copy To**: Opens directory selection dialog and copies file to chosen location
+    - **Move To**: Opens directory selection dialog and moves file to chosen location
   - **OS-Dependent Actions**:
     - **Windows-Specific**:
       - "Open Containing Folder": Launches File Explorer at the file's location with the file pre-selected (`explorer /select,"full_path"` via subprocess).

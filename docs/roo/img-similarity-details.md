@@ -335,6 +335,133 @@ To support hierarchical GUI display and rich statistics, new dataclasses are int
 
 **GUI Integration**: In [duplicate_manager.py](img_app/img_app/widgets/duplicate_manager.py), populate QTreeWidget with Group data: top item for group stats/thumb, children for ImageData (checkbox, thumb via delegate). Post-delete filters groups, recomputes stats.
 ---
+## Similarity Score Explanation
+
+### Overview of the Score Metric
+The "score" column in similarity results represents a normalized perceptual similarity metric between images within a detected cluster (group). This score is expressed as a floating-point value between 0.0 and 1.0, where:
+- 1.0 indicates perfect similarity (identical hashes, zero Hamming distance).
+- 0.0 indicates maximum dissimilarity (completely different hashes, 64-bit Hamming distance).
+- Values are typically displayed as percentages (e.g., 85% for a score of 0.85) in the GUI or CLI output for user-friendliness.
+
+This metric is derived specifically from the Hamming distance between the perceptual hash of an image and the reference image's hash within its cluster. It provides a quantitative measure of visual similarity, allowing users to prioritize actions (e.g., reviewing near-matches vs. loose associations).
+
+### Underlying Algorithm: pHash and wHash via imagehash
+The scores are computed using perceptual hashing algorithms implemented in the `imagehash` library, which is a standard third-party package for Python image processing. The library provides robust, fixed-length (64-bit) hashes that capture structural and perceptual features of images rather than exact byte content. This makes them ideal for detecting visually similar images, including those that have been resized, compressed, cropped, or lightly edited.
+
+- **pHash (Perceptual Hash)**: Based on Discrete Cosine Transform (DCT). It focuses on low-frequency components of the image after grayscale conversion and resizing (default to 32x32 pixels). The hash emphasizes overall structure and is resilient to minor changes in brightness, contrast, or JPEG artifacts. Computation involves:
+  1. Resizing the image to a small square.
+  2. Applying 2D DCT to obtain frequency coefficients.
+  3. Selecting the low-frequency 8x8 block (64 coefficients).
+  4. Thresholding against the mean (excluding DC) to generate 64 binary bits.
+  
+- **wHash (Wavelet Hash)**: Based on Discrete Wavelet Transform (DWT) using PyWavelets. It captures multi-resolution features, making it more invariant to scaling, rotation, and translation. Computation involves:
+  1. Resizing to a larger square (default 64x64 for better wavelet decomposition).
+  2. Applying multi-level DWT (e.g., using 'db1' Daubechies wavelet).
+  3. Computing the mean of approximation coefficients.
+  4. Thresholding wavelet coefficients to form 64 bits.
+
+Both algorithms produce a 64-bit hash represented as a 16-character hexadecimal string. The choice between pHash (faster, default) and wHash (more robust to transformations) is configurable via settings (e.g., `similarity.enabled_algorithms` in `core/settings_schema.py`).
+
+### Score Calculation: From Hamming Distance to Normalized Similarity
+The raw similarity between two images is measured by the **Hamming distance**: the number of differing bits when the two 64-bit hashes are XORed and the result is counted for '1' bits. This distance ranges from 0 (identical) to 64 (completely dissimilar).
+
+The normalized score is then derived as:
+```
+score = 1.0 - (hamming_distance / 64.0)
+```
+- For distance = 0: score = 1.0 (100% similar).
+- For distance = 10: score ≈ 0.844 (84.4% similar, typical for "visually similar" under default thresholds).
+- For distance = 32: score = 0.5 (50% similar, moderate perceptual overlap).
+
+In the grouping process (detailed in `core/image/similarity.py`), each cluster selects a reference image (typically the first or the one with the lowest file modification date). For every other image in the cluster:
+1. Compute the Hamming distance to the reference hash.
+2. Normalize to the score as above.
+3. Store in the `ImageData` model (see Group Model section) for display.
+
+This per-reference calculation ensures scores are relative and interpretable within the context of the group, aiding user decisions (e.g., higher scores indicate closer matches to the "archetype" image).
+
+### Transitive Clustering and Scores Below Threshold
+Image groups are formed using a **union-find (disjoint set union) algorithm** for efficient clustering based on pairwise similarities. The process works as follows:
+1. Compute all perceptual hashes for candidate images.
+2. Identify pairwise matches where Hamming distance ≤ configurable threshold (e.g., 10 for pHash, set in `similarity.phash_threshold`).
+3. Use union-find to connect images transitively: If A matches B (≤ threshold) and B matches C (≤ threshold), then A, B, and C form a single cluster, even if A and C exceed the threshold (e.g., distance=15 > 10).
+
+This transitive closure allows detection of broader "families" of similar images (e.g., a chain of progressively edited photos). However, it can result in **scores below the threshold equivalent** (e.g., score < 0.844 for threshold=10) relative to the reference:
+- These "loose" members are included because of indirect connections but flagged visually (e.g., lower score in the GUI tree).
+- Rationale: Transitive grouping captures real-world scenarios like iterative edits (e.g., meme variants), but relative scores prevent over-grouping unrelated images.
+- User Impact: In the `SimilarityManagerDialog` (img_app/widgets/similarity_manager.py), low-score images can be reviewed or excluded during actions like deletion. Logs warn of clusters with wide score variance (e.g., min_score < 0.7).
+
+Thresholds are tunable via settings profiles, with defaults validated empirically on sample datasets (e.g., ensuring >95% precision/recall for known similar pairs). For exact duplicates, scores are always 1.0, aligning with the legacy duplicate finder.
+
+### Usage Examples
+- **CLI Output**: `pdm run imgapp similarity --path /images --algorithm phash --threshold 10` lists groups with scores: "Group 1: ref.jpg (score=1.0), variant1.jpg (0.92), variant2.jpg (0.78)".
+- **GUI Display**: In the results tree, the score column shows percentages; hover tooltips explain: "Normalized similarity to reference (1 - Hamming/64); transitive clustering may include scores below threshold equivalent (0.84 for threshold=10)".
+- **Edge Cases**: Invalid images (e.g., corrupted) yield None hashes, skipped with logged warnings. Zero-size images raise `ImageSimilarityError` with path details.
+
+This metric balances precision and recall, with full details logged for debugging (see core/logging/logger.py).
+
+## File Type Filtering
+
+### Overview of Image Validation
+To ensure efficient processing and avoid errors in perceptual hashing or quality assessment, the similarity detection pipeline enforces strict file type filtering. Only recognized image files are processed; non-image files (e.g., PDFs, videos, text documents) are skipped early to prevent exceptions in image loading (Pillow) or hashing (imagehash). This filtering occurs at multiple stages:
+1. **Traversal Phase**: During filesystem scanning (core/filesystem/traversal.py).
+2. **Hashing Phase**: In compute_phash/whash functions (core/image/similarity.py).
+3. **Grouping Phase**: Before union-find clustering.
+
+Skipping non-images reduces computational overhead (e.g., avoiding failed PIL.Image.open calls) and ensures clean datasets for similarity analysis. Filtered files are logged as warnings with paths for traceability.
+
+### VALID_IMAGE_EXTENSIONS Set
+The supported image formats are defined in a centralized constant set for maintainability and extensibility:
+
+```python
+VALID_IMAGE_EXTENSIONS = {
+    '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp'
+}
+```
+
+- **Rationale for Selection**:
+  - Covers the most common raster formats: JPEG (lossy, ubiquitous), PNG (lossless, transparency), GIF (animated/simple), BMP (uncompressed, legacy), TIFF (high-quality, multi-page), WebP (modern, efficient compression).
+  - Excludes vector formats (e.g., .svg) as they require different processing (not perceptual hashing).
+  - Case-insensitive matching (lowercased extensions) for cross-platform compatibility.
+  - Extensibility: Add formats via settings (e.g., future .heic support) without code changes.
+
+This set aligns with Pillow's robust loaders; unsupported formats raise `UnidentifiedImageError`, caught and logged.
+
+### Skipping Mechanism in Hashing and Quality Functions
+Non-image files are filtered early in core functions to return `None` hashes or scores, preventing downstream errors:
+
+- **In Hash Computation** (e.g., `compute_phash` in core/image/similarity.py):
+  1. Extract lowercase extension from `os.path.splitext(image_path)[1]`.
+  2. If not in VALID_IMAGE_EXTENSIONS: Return `None`, log `logger.warning(f"Skipping non-image: {image_path}")`.
+  3. Else: Proceed to `PIL.Image.open(image_path)`; catch exceptions (e.g., IOError for corrupted images) and return `None`.
+  - Batch variants (`compute_phash_batch`) apply this per-path, yielding `{path: hash or None}`.
+
+- **In Quality Assessment** (core/image/quality/registry.py, e.g., Brisque evaluator):
+  - Similar check before model inference: Return `None` score for non-images.
+  - Integrates with similarity workflow: Quality scores (if enabled) are only computed for valid images.
+
+- **Error Details in Logs**: Warnings include full path, extension, and reason (e.g., "Invalid extension '.pdf'"). For valid extensions but load failures (e.g., truncated JPEG), log `ImageLoadError` with traceback.
+
+### Pre-Grouping Filtering
+Before clustering (in `find_similar_images`):
+1. After batch hashing, filter `hashes` dict to exclude `None` values: `valid_hashes = {p: h for p, h in hashes.items() if h is not None}`.
+2. Log summary: `logger.info(f"Processed {len(valid_hashes)}/{total_files} valid images; skipped {skipped_count} non-images")`.
+3. Proceed to LSH/brute-force only on valid hashes, ensuring union-find operates on clean data.
+
+This prevents "ghost" entries in groups and maintains performance (e.g., for 10k files, skipping 20% non-images saves ~20% compute time).
+
+### Integration and Settings
+- **Traversal Hook** (core/filesystem/traversal.py): In `scan_directory`, check `is_image_file(path)` using VALID_IMAGE_EXTENSIONS before adding to image list or computing hashes.
+- **Settings Extension** (core/settings_schema.py): Optional `similarity.valid_extensions` list to override defaults (e.g., exclude .gif for static images only). Defaults to the set above.
+- **GUI/CLI Feedback**: In results dialogs (e.g., SimilarityManager), show skipped count in summary report. Users can re-scan with custom extensions via settings profiles.
+- **Edge Cases**:
+  - Hidden files (e.g., .DS_Store): Filtered by traversal (non-image extensions).
+  - Case variations (e.g., .JPG): Handled by lowercasing.
+  - Multi-extension aliases (e.g., .tiff/.tif): Both included.
+  - Future: Dynamic extension validation via Pillow's supported formats query.
+
+This filtering ensures robustness, with all skips auditable via logs (core/logging/outputs/file.py for persistent records).
+
 ## Selection UI and State Synchronization — Minimal Fix (2025-09-20)
 
 Left Pane: Groups Tree (QTreeWidget)

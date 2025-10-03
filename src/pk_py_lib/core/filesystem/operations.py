@@ -16,6 +16,8 @@ import tempfile
 
 from ..logging import get_logger
 
+from PySide6.QtWidgets import QFileDialog
+from PySide6.QtCore import QSettings
 log = get_logger(__name__)
 
 
@@ -447,6 +449,303 @@ class FileOperations:
         except Exception as e:
             log.error(f"Error cleaning empty directories in {root}", exception=e)
             return deleted
+    @staticmethod
+    def select_target_directory(parent=None, operation='copy', last_dir=None) -> Optional[str]:
+        """
+        Select a target directory using a file dialog with last directory persistence.
+
+        This function provides a user-friendly way to select a target directory for copy or move
+        operations. It uses QFileDialog to present a native directory selection dialog and
+        persists the last selected directory using QSettings for future use. The persistence
+        is operation-specific (separate keys for copy and move) to allow different default
+        directories for different operations.
+
+        The dialog starts in the provided last_dir if specified, otherwise it retrieves the
+        persisted directory from settings. If no persisted directory exists, it defaults to
+        the user's home directory.
+
+        Args:
+            parent: The parent widget for the dialog (e.g., the main window). If None,
+                    the dialog will be a top-level window.
+            operation: The type of operation ('copy' or 'move'). Determines which persistence
+                       key to use. Defaults to 'copy'.
+            last_dir: Optional override for the starting directory. If provided, this takes
+                      precedence over the persisted directory. Should be a valid directory path
+                      as a string.
+
+        Returns:
+            str: The selected directory path if a directory was chosen, None if the dialog
+                 was canceled or no directory was selected.
+
+        Raises:
+            ValueError: If operation is neither 'copy' nor 'move'.
+            OSError: If there are issues accessing the file system for the starting directory.
+
+        Example:
+            # In a PySide6 widget class
+            from PySide6.QtWidgets import QWidget
+            from PySide6.QtCore import QSettings
+
+            class MyWidget(QWidget):
+                def __init__(self):
+                    super().__init__()
+                    self.settings = QSettings('pk_py_lib', 'img_app')
+
+                def perform_copy(self):
+                    # Select directory, starting from last used for copy
+                    target_dir = FileOperations.select_target_directory(
+                        parent=self,
+                        operation='copy'
+                    )
+                    if target_dir:
+                        print(f"Selected directory: {target_dir}")
+                        # Proceed with copy operation
+                    else:
+                        print("Directory selection canceled")
+
+            # Usage: Creates a dialog starting from persisted 'last_copy_dir' or home
+            widget = MyWidget()
+            widget.perform_copy()
+
+        Usage Notes:
+            - The persistence uses QSettings with organization 'pk_py_lib' and application
+              'img_app'. Keys are stored under the group 'file_operations' as 'last_copy_dir'
+              or 'last_move_dir'.
+            - If last_dir is provided but invalid, the dialog may fail to start there and
+              fall back to the default.
+            - This function is designed for GUI applications using PySide6. It blocks until
+              the user selects a directory or cancels.
+            - For non-interactive use, consider providing a default directory via last_dir
+              and handling None returns appropriately.
+
+        Error Handling:
+            - If the starting directory does not exist, the dialog will start from the
+              parent directory or default.
+            - File system permission errors are logged but do not prevent dialog display.
+            - Invalid operation types raise ValueError to ensure correct key usage.
+        """
+        from PySide6.QtCore import QSettings
+        import os
+
+        if operation not in ['copy', 'move']:
+            raise ValueError(f"Invalid operation: {operation}. Must be 'copy' or 'move'.")
+
+        org = 'pk_py_lib'
+        app_name = 'img_app'
+        settings = QSettings(org, app_name)
+        settings.beginGroup('file_operations')
+
+        key = f"last_{operation}_dir"
+
+        # Determine starting directory
+        default_start = os.path.expanduser('~')
+        start_dir = last_dir or settings.value(key, default_start)
+
+        # Ensure start_dir is a valid path
+        if not os.path.isdir(start_dir):
+            start_dir = default_start
+
+        caption = f"Select Target Directory for {operation.title()} Operation"
+
+        selected_dir = QFileDialog.getExistingDirectory(
+            parent,
+            caption,
+            start_dir
+        )
+
+        if selected_dir:
+            # Persist the selected directory
+            settings.setValue(key, selected_dir)
+            settings.sync()  # Ensure immediate save
+            log.info(f"Selected and persisted target directory for {operation}: {selected_dir}")
+            return selected_dir
+
+        log.info(f"Target directory selection canceled for {operation}")
+        return None
+
+    @staticmethod
+    def copy_file_to_dir(src_path: str, target_dir: str, logger=None) -> bool:
+        """
+        Copy a single file to the specified target directory.
+
+        This function performs a safe copy of a file to a target directory using shutil.copy2,
+        which preserves metadata (timestamps, permissions). It creates the target directory
+        if it does not exist and handles common errors such as file not found, permission
+        denied, or disk full. The destination filename is the same as the source basename.
+
+        Args:
+            src_path: The full path to the source file as a string. Must be a valid file path.
+            target_dir: The target directory path as a string. Will be created if it does not exist.
+            logger: Optional logger instance for detailed logging. If None, uses the module's
+                    default logger. Should support info, error, and exc_info methods.
+
+        Returns:
+            bool: True if the copy operation was successful, False otherwise.
+
+        Raises:
+            None: Errors are caught, logged, and result in False return. No exceptions are
+                  propagated to allow non-blocking operation in batch processes.
+
+        Example:
+            from pathlib import Path
+            import logging
+
+            # Simple usage with default logger
+            success = FileOperations.copy_file_to_dir(
+                src_path='/path/to/source/image.jpg',
+                target_dir='/path/to/target/dir'
+            )
+            if success:
+                print("File copied successfully")
+            else:
+                print("Copy failed - check logs")
+
+            # With custom logger
+            my_logger = logging.getLogger('my_app')
+            success = FileOperations.copy_file_to_dir(
+                src_path=str(Path.home() / 'Documents' / 'file.txt'),
+                target_dir='/backup/files',
+                logger=my_logger
+            )
+
+        Usage Notes:
+            - The destination path is constructed as target_dir / basename(src_path).
+            - If the destination file already exists, shutil.copy2 will overwrite it.
+            - Metadata preservation includes file times and permissions where possible.
+            - For large files, this operation may take time; consider progress reporting in
+              calling code for batch operations.
+            - Paths should be absolute for reliability, but relative paths are resolved
+              relative to the current working directory.
+            - This function is designed for single-file operations and does not support
+              directories. Use safe_copy for more advanced scenarios with conflict resolution.
+
+        Error Handling:
+            - FileNotFoundError: Source file does not exist - logged as error, returns False.
+            - PermissionError: Insufficient permissions for source or target - logged, returns False.
+            - FileExistsError or OSError: Issues with target directory creation or write - logged, returns False.
+            - All exceptions are caught and logged with full traceback via exc_info=True.
+            - If logger is None, falls back to module logger (pk_py_lib.core.filesystem.operations).
+        """
+        from pathlib import Path
+        import shutil
+
+        if logger is None:
+            logger = log
+
+        src = Path(src_path)
+        if not src.is_file():
+            logger.error(f"Source is not a valid file: {src_path}")
+            return False
+
+        target = Path(target_dir)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.error(f"Failed to create target directory {target_dir}: {e}", exc_info=True)
+            return False
+
+        dest = target / src.name
+
+        try:
+            shutil.copy2(src_path, dest)
+            logger.info(f"Successfully copied {src_path} to {dest}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to copy {src_path} to {target_dir}: {e}", exc_info=True)
+            return False
+
+    @staticmethod
+    def move_file_to_dir(src_path: str, target_dir: str, logger=None) -> bool:
+        """
+        Move a single file to the specified target directory.
+
+        This function performs a safe move of a file to a target directory using shutil.move,
+        which relocates the file and removes the source. It creates the target directory
+        if it does not exist and handles common errors such as file not found, permission
+        denied, or cross-device moves. The destination filename is the same as the source basename.
+
+        Args:
+            src_path: The full path to the source file as a string. Must be a valid file path.
+            target_dir: The target directory path as a string. Will be created if it does not exist.
+            logger: Optional logger instance for detailed logging. If None, uses the module's
+                    default logger. Should support info, error, and exc_info methods.
+
+        Returns:
+            bool: True if the move operation was successful, False otherwise.
+
+        Raises:
+            None: Errors are caught, logged, and result in False return. No exceptions are
+                  propagated to allow non-blocking operation in batch processes.
+
+        Example:
+            from pathlib import Path
+            import logging
+
+            # Simple usage with default logger
+            success = FileOperations.move_file_to_dir(
+                src_path='/path/to/source/image.jpg',
+                target_dir='/path/to/target/dir'
+            )
+            if success:
+                print("File moved successfully")
+            else:
+                print("Move failed - check logs")
+
+            # With custom logger and relative paths
+            my_logger = logging.getLogger('my_app')
+            success = FileOperations.move_file_to_dir(
+                src_path='images/temp.jpg',
+                target_dir=str(Path.home() / 'organized'),
+                logger=my_logger
+            )
+
+        Usage Notes:
+            - The destination path is constructed as target_dir / basename(src_path).
+            - If the destination file already exists, shutil.move will overwrite it for files
+              (but may fail for cross-device moves without copying first).
+            - Cross-device moves (e.g., different drives) are handled by shutil.move, which
+              copies and deletes as needed.
+            - The source file is removed upon successful move.
+            - For large files or network paths, this may take time; consider progress reporting.
+            - Paths should be absolute for reliability, but relative paths work relative to cwd.
+            - This function is for single-file moves and does not support directories. Use
+              safe_move for advanced conflict resolution and directory support.
+
+        Error Handling:
+            - FileNotFoundError: Source file does not exist - logged as error, returns False.
+            - PermissionError: Insufficient permissions for source removal or target write - logged, returns False.
+            - OSError: Cross-device issues, target directory creation failures - logged, returns False.
+            - All exceptions are caught and logged with full traceback via exc_info=True.
+            - If logger is None, falls back to module logger (pk_py_lib.core.filesystem.operations).
+        """
+        from pathlib import Path
+        import shutil
+
+        if logger is None:
+            logger = log
+
+        src = Path(src_path)
+        if not src.is_file():
+            logger.error(f"Source is not a valid file: {src_path}")
+            return False
+
+        target = Path(target_dir)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.error(f"Failed to create target directory {target_dir}: {e}", exc_info=True)
+            return False
+
+        dest = target / src.name
+
+        try:
+            shutil.move(src_path, dest)
+            logger.info(f"Successfully moved {src_path} to {dest}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to move {src_path} to {target_dir}: {e}", exc_info=True)
+            return False
+
 
 
 class SafeFileOperations:
