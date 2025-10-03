@@ -150,34 +150,6 @@ class ViewCacheDialog(QDialog):
                 model_end = time.time()
                 self.logger.info(f"ViewCacheDialog __init__: Model population completed in {model_end - model_start:.2f} seconds. Rows: {len(rows) if rows else 0}")
 
-                    # Populate rows with validity handling
-                    for row_data in rows:
-                        row_items = []
-                        for key in headers:
-                            value = row_data.get(key, '')
-                            if key == 'is_valid':
-                                # Special handling for validity column
-                                if value is True:
-                                    item = QStandardItem("Valid")
-                                    item.setForeground(QColor("green"))
-                                elif value is False:
-                                    mismatches = row_data.get('validation_mismatches', {})
-                                    status_text = f"Invalid: {len(mismatches)} mismatch" + ("es" if len(mismatches) != 1 else "")
-                                    if mismatches:
-                                        status_text += f" ({', '.join(mismatches.keys())})"
-                                    item = QStandardItem(status_text)
-                                    item.setForeground(QColor("red"))
-                                else:
-                                    item = QStandardItem(str(value))
-                                item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-                                row_items.append(item)
-                            else:
-                                item = QStandardItem(str(value))
-                                # Make non-editable
-                                item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-                                row_items.append(item)
-                        model.appendRow(row_items)
-
                 import time
                 table_start = time.time()
                 # Create table view
