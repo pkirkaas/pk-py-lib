@@ -74,6 +74,9 @@ LOGGER = get_logger(__name__)
 # GUI error handling
 from ..utils.messages import handle_gui_error
 
+import inspect
+from src.pk_py_lib.core.logging.decorators import log_errors, log_warnings
+
 
 # ----------------------------- Filter Model ---------------------------------
 
@@ -237,7 +240,17 @@ class FileSystemFilterProxy(QSortFilterProxyModel):
             if left_letter and right_letter:
                 return left_letter < right_letter
         except Exception as e:
-            LOGGER.warning(f"Error in lessThan for drive sorting: {e}\n{traceback.format_exc()}")
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+            func_name = "lessThan"
+            locals_info = {k: str(v)[:100] for k, v in locals().items() if k not in ["e", "exc_type", "exc_value", "exc_tb", "left", "right"]}  # Truncate long locals
+            LOGGER.error(
+                f"Error in {func_name} at line {line_no} in {__file__}: "
+                f"{exc_type.__name__ if exc_type else type(e).__name__}: {exc_value if exc_value else str(e)}. "
+                f"Locals: {locals_info}. "
+                f"GUI context: Comparing drives {left_name if 'left_name' in locals() else 'unknown'} vs {right_name if 'right_name' in locals() else 'unknown'}. "
+                f"Traceback:\n{traceback.format_exc()}"
+            )
             # Fallback on any error to avoid warnings/crashes
             pass
         
@@ -254,34 +267,46 @@ class FileSystemFilterProxy(QSortFilterProxyModel):
         self._spec = spec.normalized()
         self.invalidateFilter()
 
+    @log_warnings
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:  # type: ignore[override]
-        source_model = self.sourceModel()
-        if not isinstance(source_model, QFileSystemModel):
-            return True
-
-        idx = source_model.index(source_row, 0, source_parent)
-        if not idx or not idx.isValid():
-            return False
-
-        is_dir = source_model.isDir(idx)
-        name = source_model.fileName(idx)
-        # Hidden check
-        if not self._spec.include_hidden and name.startswith("."):
-            return False
-
-        # Directory rules
-        if is_dir:
-            # if directories not allowed to be visible/selectable, still accept
-            # directory rows to allow navigation down to files unless we want to fully hide directories
-            # Design choice: hide directories from view when allow_dirs is False to keep UI simple
-            return self._spec.allow_dirs
-
-        # File rules
-        if not self._spec.allow_files:
-            return False
-
-        ext = Path(name).suffix.lower()
-        return self._spec.allows_file_extension(ext)
+        try:
+            source_model = self.sourceModel()
+            if not isinstance(source_model, QFileSystemModel):
+                return True
+    
+            idx = source_model.index(source_row, 0, source_parent)
+            if not idx or not idx.isValid():
+                return False
+    
+            is_dir = source_model.isDir(idx)
+            name = source_model.fileName(idx)
+            # Hidden check
+            if not self._spec.include_hidden and name.startswith("."):
+                return False
+    
+            # Directory rules
+            if is_dir:
+                # Design choice: hide directories from view when allow_dirs is False to keep UI simple
+                return self._spec.allow_dirs
+    
+            # File rules
+            if not self._spec.allow_files:
+                return False
+    
+            ext = Path(name).suffix.lower()
+            return self._spec.allows_file_extension(ext)
+        except Exception as e:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+            func_name = "filterAcceptsRow"
+            LOGGER.warning(
+                f"Warning in {func_name} at line {line_no} in {__file__}: "
+                f"{exc_type.__name__}: {exc_value}. "
+                f"Row: {source_row}, parent: {source_parent}. "
+                f"GUI context: Filtering row in filesystem proxy. Filter spec: {self._spec}. "
+                f"Traceback:\n{traceback.format_exc()}"
+            )
+            return False  # Reject on error to be safe
 
 
 # ----------------------------- Custom Branch Delegate ------------------------
@@ -337,18 +362,39 @@ class BranchIndicatorDelegate(QStyledItemDelegate):
             try:
                 src_index = model.mapToSource(index)
                 model = model.sourceModel()
-            except Exception:
-                pass
+            except Exception as e:
+                exc_type, exc_value, exc_tb = sys.exc_info()
+                line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+                func_name = "paint"
+                LOGGER.warning(
+                    f"Warning in {func_name} mapToSource at line {line_no} in {__file__}: "
+                    f"{exc_type.__name__}: {exc_value}. "
+                    f"Index: {index}. "
+                    f"GUI context: Mapping index for branch indicator in tree view. "
+                    f"Traceback:\n{traceback.format_exc()}"
+                )
+                src_index = index
+                model = index.model()
 
         is_dir = False
         has_children = False
         try:
             if isinstance(model, QFileSystemModel):
                 is_dir = model.isDir(src_index)
-                # Assume directories/drives can expand
-                has_children = is_dir or True if model.fileInfo(src_index).isDir() else False
-        except Exception:
-            pass
+                has_children = is_dir or model.fileInfo(src_index).isDir()
+        except Exception as e:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+            func_name = "paint"
+            LOGGER.warning(
+                f"Warning in {func_name} fileInfo/isDir at line {line_no} in {__file__}: "
+                f"{exc_type.__name__}: {exc_value}. "
+                f"src_index: {src_index}. "
+                f"GUI context: Determining if item has children for branch indicator. File list size: N/A. "
+                f"Traceback:\n{traceback.format_exc()}"
+            )
+            is_dir = False
+            has_children = False
 
         # Compute geometry
         rect: QRect = option.rect
@@ -382,7 +428,17 @@ class BranchIndicatorDelegate(QStyledItemDelegate):
         if hasattr(self.tree.model(), "mapFromSource") and model is getattr(self.tree.model(), "sourceModel", None):
             try:
                 view_index = self.tree.model().mapFromSource(index)
-            except Exception:
+            except Exception as e:
+                exc_type, exc_value, exc_tb = sys.exc_info()
+                line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+                func_name = "editorEvent"
+                LOGGER.warning(
+                    f"Warning in {func_name} mapFromSource at line {line_no} in {__file__}: "
+                    f"{exc_type.__name__}: {exc_value}. "
+                    f"Index: {index}. Event type: {etype}. "
+                    f"GUI context: Handling click on branch indicator. "
+                    f"Traceback:\n{traceback.format_exc()}"
+                )
                 view_index = index
 
         etype = event.type()
@@ -394,9 +450,10 @@ class BranchIndicatorDelegate(QStyledItemDelegate):
             indicator_rect = QRect(indicator_x, indicator_y, self.box_size, self.box_size)
             # PySide6 may expose pos via .position() (Qt6) or .pos() (Qt5 style); support both
             try:
-                pos = event.position().toPoint()  # type: ignore[attr-defined]
-            except Exception:
-                pos = event.pos()  # type: ignore[attr-defined]
+                pos = event.position().toPoint()
+            except Exception as e:
+                LOGGER.debug(f"Fallback to event.pos() in editorEvent: {e}")
+                pos = event.pos()
             if indicator_rect.contains(pos):
                 if etype == QEvent.MouseButtonRelease:
                     # Toggle expansion; consume event
@@ -487,8 +544,16 @@ class PathSelectorDialog(QDialog):
             else:
                 # As a robust fallback, maximize then restore height to avoid full-screen
                 self.showMaximized()
-        except Exception:
-            pass
+        except Exception as e:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+            func_name = "__init__"
+            LOGGER.debug(
+                f"Debug in {func_name} resize logic at line {line_no} in {__file__}: "
+                f"{exc_type.__name__}: {exc_value}. "
+                f"GUI context: Setting dialog size to match parent window. "
+                f"Traceback:\n{traceback.format_exc()}"
+            )
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -663,8 +728,16 @@ class PathSelectorDialog(QDialog):
             else:
                 # Fallback: maximize horizontally
                 self.showMaximized()
-        except Exception:
-            pass
+        except Exception as e:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+            func_name = "_build_ui"
+            LOGGER.debug(
+                f"Debug in {func_name} resize at line {line_no} in {__file__}: "
+                f"{exc_type.__name__}: {exc_value}. "
+                f"GUI context: Adjusting dialog width in build UI. "
+                f"Traceback:\n{traceback.format_exc()}"
+            )
 
         # Selected path preview
         preview = QWidget(self)
@@ -685,7 +758,8 @@ class PathSelectorDialog(QDialog):
         self.tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
 
     def _expand_to_path(self, path: Path) -> None:
-        try:
+        @log_errors
+        def expand_logic():
             src_idx = self.fs_model.index(str(path))
             if not src_idx.isValid():
                 return
@@ -697,10 +771,8 @@ class PathSelectorDialog(QDialog):
                 self.tree.expand(prox_idx)
                 self.tree.scrollTo(prox_idx)
                 self.tree.setCurrentIndex(prox_idx)
-        except Exception as e:
-            LOGGER.warning(f"Error in _expand_to_path: {e}\n{traceback.format_exc()}")
-            # Non-fatal
-            pass
+
+        expand_logic()
 
     def _gather_filter_from_controls(self) -> PathFilterSpec:
         wl = {s.strip() for s in self.inp_whitelist.text().split(",") if s.strip()}
@@ -740,9 +812,17 @@ class PathSelectorDialog(QDialog):
             if col < 0:
                 col, order = 0, Qt.AscendingOrder
             self.tree.sortByColumn(col, order)
-        except Exception:
+        except Exception as e:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+            func_name = "_on_dir_loaded_sort"
+            LOGGER.warning(
+                f"Warning in {func_name} at line {line_no} in {__file__}: "
+                f"{exc_type.__name__}: {exc_value}. "
+                f"GUI context: Reapplying sort after directory load. Selected directory: {_path}. "
+                f"Traceback:\n{traceback.format_exc()}"
+            )
             # Non-fatal; sorting is optional
-            pass
 
     def _on_selection_changed(self) -> None:
         idx = self.tree.currentIndex()
@@ -762,7 +842,16 @@ class PathSelectorDialog(QDialog):
             self._selected_path = p
             self.lbl_selected.setText(str(p))
         except Exception as e:
-            LOGGER.warning(f"Error in _on_selection_changed: {e}\n{traceback.format_exc()}")
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+            func_name = "_on_selection_changed"
+            LOGGER.error(
+                f"Error in {func_name} at line {line_no} in {__file__}: "
+                f"{exc_type.__name__}: {exc_value}. "
+                f"Params: idx={idx}. "
+                f"GUI context: Updating selected path preview. File list size: {self.proxy.rowCount()}. "
+                f"Traceback:\n{traceback.format_exc()}"
+            )
             self._selected_path = None
             self.lbl_selected.setText("")
 
@@ -789,8 +878,18 @@ class PathSelectorDialog(QDialog):
                 self._selected_path = p
                 self.accept()
         except Exception as e:
-            LOGGER.warning(f"Error in _on_double_clicked: {e}\n{traceback.format_exc()}")
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+            func_name = "_on_double_clicked"
+            LOGGER.error(
+                f"Error in {func_name} at line {line_no} in {__file__}: "
+                f"{exc_type.__name__}: {exc_value}. "
+                f"Params: idx={idx}. "
+                f"GUI context: Handling double-click on tree item. Selected directory: {self.tree.rootIndex().data() if self.tree.rootIndex().isValid() else 'root'}. "
+                f"Traceback:\n{traceback.format_exc()}"
+            )
 
+    @log_errors
     def _accept(self) -> None:
         # Validate selection against filter rules and exist
         if not self._selected_path:
@@ -802,39 +901,59 @@ class PathSelectorDialog(QDialog):
             )
             return
         p = self._selected_path
-        if not p.exists():
-            handle_gui_error(
-                parent=self,
-                error=f"Path does not exist:\n{p}",
-                title="Invalid path",
-                component_name="PathSelectorDialog"
-            )
-            return
-        if p.is_dir() and not self._filter_spec.allow_dirs:
-            handle_gui_error(
-                parent=self,
-                error="Directory selection is not allowed",
-                title="Not allowed",
-                component_name="PathSelectorDialog"
-            )
-            return
-        if p.is_file():
-            if not self._filter_spec.allow_files:
+        try:
+            if not p.exists():
                 handle_gui_error(
                     parent=self,
-                    error="File selection is not allowed",
+                    error=f"Path does not exist:\n{p}",
+                    title="Invalid path",
+                    component_name="PathSelectorDialog"
+                )
+                return
+            if p.is_dir() and not self._filter_spec.allow_dirs:
+                handle_gui_error(
+                    parent=self,
+                    error="Directory selection is not allowed",
                     title="Not allowed",
                     component_name="PathSelectorDialog"
                 )
                 return
-            if not self._filter_spec.allows_file_extension(p.suffix):
-                handle_gui_error(
-                    parent=self,
-                    error=f"File extension not allowed: {p.suffix}",
-                    title="Filtered out",
-                    component_name="PathSelectorDialog"
-                )
-                return
+            if p.is_file():
+                if not self._filter_spec.allow_files:
+                    handle_gui_error(
+                        parent=self,
+                        error="File selection is not allowed",
+                        title="Not allowed",
+                        component_name="PathSelectorDialog"
+                    )
+                    return
+                if not self._filter_spec.allows_file_extension(p.suffix):
+                    handle_gui_error(
+                        parent=self,
+                        error=f"File extension not allowed: {p.suffix}",
+                        title="Filtered out",
+                        component_name="PathSelectorDialog"
+                    )
+                    return
+        except (OSError, PermissionError, IOError) as e:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+            func_name = "_accept"
+            LOGGER.error(
+                f"Error in {func_name} path validation at line {line_no} in {__file__}: "
+                f"{exc_type.__name__}: {exc_value}. "
+                f"Path: {p}. "
+                f"Filter spec: allow_dirs={self._filter_spec.allow_dirs}, allow_files={self._filter_spec.allow_files}, whitelist size={len(self._filter_spec.whitelist_ext)}. "
+                f"GUI context: Validating selected path before accept. Selected directory: {self.tree.currentIndex().data() if self.tree.currentIndex().isValid() else 'none'}. "
+                f"Traceback:\n{traceback.format_exc()}"
+            )
+            handle_gui_error(
+                parent=self,
+                error=f"Cannot validate path due to access error:\n{p}\nDetails: {e}",
+                title="Access Error",
+                component_name="PathSelectorDialog"
+            )
+            return
         self.accept()
 
     def _qt_message_handler(self, msg_type: QtMsgType, context, message: str) -> None:
@@ -984,11 +1103,30 @@ class MultiPathSelectorWidget(QWidget):
         - Not a subpath of any existing entries; if it is a parent of any, replace minimal set
         """
         p = Path(path).resolve()
-        if not p.exists():
+        try:
+            if not p.exists():
+                handle_gui_error(
+                    parent=self,
+                    error=f"The selected path does not exist:\n{p}",
+                    title="Path Does Not Exist",
+                    component_name="MultiPathSelectorWidget"
+                )
+                return
+        except (OSError, PermissionError, IOError) as e:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+            func_name = "_try_add_path"
+            LOGGER.error(
+                f"Error in {func_name} exists check at line {line_no} in {__file__}: "
+                f"{exc_type.__name__}: {exc_value}. "
+                f"Path: {p}. "
+                f"GUI context: Adding path to multi-selector. Current paths count: {len(self._current_paths())}. "
+                f"Traceback:\n{traceback.format_exc()}"
+            )
             handle_gui_error(
                 parent=self,
-                error=f"The selected path does not exist:\n{p}",
-                title="Path Does Not Exist",
+                error=f"Cannot access the selected path:\n{p}\nError: {e}",
+                title="Access Denied",
                 component_name="MultiPathSelectorWidget"
             )
             return
@@ -1044,7 +1182,26 @@ class MultiPathSelectorWidget(QWidget):
 
         # Combine and reduce set with remove_contained_paths (maintain minimal set)
         new_set = existing_norm + [p]
-        reduced = PathOperations.remove_contained_paths(new_set)
+        try:
+            reduced = PathOperations.remove_contained_paths(new_set)
+        except Exception as e:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+            func_name = "_try_add_path"
+            LOGGER.error(
+                f"Error in {func_name} remove_contained_paths at line {line_no} in {__file__}: "
+                f"{exc_type.__name__}: {exc_value}. "
+                f"New set: {new_set}. "
+                f"GUI context: Reducing paths for minimal set in multi-selector. Current paths count: {len(existing_norm)}. "
+                f"Traceback:\n{traceback.format_exc()}"
+            )
+            handle_gui_error(
+                parent=self,
+                error=f"Cannot process paths for minimal set: {e}",
+                title="Path Processing Error",
+                component_name="MultiPathSelectorWidget"
+            )
+            return
 
         # If parent path replaced children, update list accordingly
         reduced_set = set(reduced)
@@ -1066,12 +1223,14 @@ class MultiPathSelectorWidget(QWidget):
 
     # Public API
 
+    @log_errors
     def get_paths(self) -> List[Path]:
         """
         Return the current list of selected paths as Path objects (normalized).
         """
         return PathOperations.normalize_paths(self._current_paths())
 
+    @log_errors
     def set_paths(self, paths: Sequence[Union[str, Path]]) -> None:
         """
         Replace current list with provided paths after normalization and de-containment minimalization.
@@ -1080,12 +1239,31 @@ class MultiPathSelectorWidget(QWidget):
             widget.set_paths([Path('/data/images'), Path('/data/images/cat.jpg')])
             # The resulting list will only include '/data/images'
         """
-        norm = PathOperations.normalize_paths([Path(p) for p in paths if p is not None])
-        minimal = PathOperations.remove_contained_paths(norm)
-        self.list_paths.clear()
-        for p in sorted(minimal):
-            self.list_paths.addItem(QListWidgetItem(str(p)))
-        self._refresh_counts()
+        try:
+            norm = PathOperations.normalize_paths([Path(p) for p in paths if p is not None])
+            minimal = PathOperations.remove_contained_paths(norm)
+            self.list_paths.clear()
+            for p in sorted(minimal):
+                self.list_paths.addItem(QListWidgetItem(str(p)))
+            self._refresh_counts()
+        except Exception as e:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
+            func_name = "set_paths"
+            LOGGER.error(
+                f"Error in {func_name} at line {line_no} in {__file__}: "
+                f"{exc_type.__name__}: {exc_value}. "
+                f"Paths: {paths}. "
+                f"GUI context: Setting paths in multi-selector. Previous count: {self.list_paths.count()}. "
+                f"Traceback:\n{traceback.format_exc()}"
+            )
+            # Do not update list on error to avoid bad state
+            handle_gui_error(
+                parent=self,
+                error=f"Cannot set paths due to processing error: {e}",
+                title="Path Set Error",
+                component_name="MultiPathSelectorWidget"
+            )
 
 
 class DirectorySelectorWidget(PathSelectorDialog):

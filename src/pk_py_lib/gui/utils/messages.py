@@ -13,12 +13,24 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ...core.logging import get_logger
+from ...core.logging.decorators import log_errors
+import traceback
+import sys
+import inspect
+
+logger = get_logger(__name__)
+
 # Defensive import to keep library importable in headless/test environments
 try:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QMessageBox, QWidget, QLabel
     PYSIDE_AVAILABLE = True
-except Exception:  # pragma: no cover
+except Exception as e:  # pragma: no cover
+    logger.error(
+        "Failed to import PySide6 for message dialogs",
+        exception=e
+    )
     PYSIDE_AVAILABLE = False
 
     class _Missing:
@@ -28,6 +40,7 @@ except Exception:  # pragma: no cover
     Qt = QMessageBox = QWidget = QLabel = _Missing()  # type: ignore
 
 
+@log_errors()
 def _enable_label_selection(box: "QMessageBox") -> None:
     """Internal: enable text selection on QMessageBox labels."""
     try:
@@ -49,10 +62,13 @@ def _enable_label_selection(box: "QMessageBox") -> None:
                 lbl.setOpenExternalLinks(True)
                 # Ensure text is in plain text format for reliable selection
                 lbl.setTextFormat(Qt.PlainText)
-            except Exception:
-                # Ignore if the binding lacks attributes on current platform
-                pass
-                
+            except Exception as e:
+                logger.warning(
+                    f"Failed to enable selection on label in message box",
+                    exception=e,
+                    variables={'label_count': len(labels)}
+                )
+
         # Also ensure built-in labels with specific names are selectable (backward compatibility)
         for name in ("qt_msgbox_label", "qt_msgbox_informativelabel"):
             lbl = box.findChild(QLabel, name)
@@ -64,14 +80,21 @@ def _enable_label_selection(box: "QMessageBox") -> None:
                 )
                 lbl.setOpenExternalLinks(True)
                 lbl.setTextFormat(Qt.PlainText)
-            except Exception:
-                # Ignore if the binding lacks attributes on current platform
-                pass
-    except Exception:
+            except Exception as e:
+                logger.warning(
+                    f"Failed to enable selection on built-in label '{name}'",
+                    exception=e
+                )
+    except Exception as e:
         # Never let this helper crash the app
-        pass
+        logger.error(
+            "Error in _enable_label_selection",
+            exception=e,
+            variables={'box_type': type(box)}
+        )
 
 
+@log_errors()
 def show_selectable_message(
     parent: Optional["QWidget"],
     title: str,
@@ -81,7 +104,7 @@ def show_selectable_message(
 ) -> int:
     """
     Show a modal QMessageBox with selectable/copyable text.
-
+ 
     Parameters
     ----------
     parent : Optional[QWidget]
@@ -94,65 +117,126 @@ def show_selectable_message(
         Optional subordinate text shown below the main text.
     icon : QMessageBox.Icon
         Icon to display (e.g., Critical, Warning, Information).
-
+ 
     Returns
     -------
     int
         exec() result (QDialog.DialogCode), useful if caller branches on buttons.
-
+ 
     Raises
     ------
     RuntimeError
         If PySide6 is not available in the current environment.
     """
-    if not PYSIDE_AVAILABLE:  # pragma: no cover
-        raise RuntimeError("PySide6 is required for show_selectable_message")
+    try:
+        if not PYSIDE_AVAILABLE:  # pragma: no cover
+            raise RuntimeError("PySide6 is required for show_selectable_message")
 
-    box = QMessageBox(parent)
-    if icon is None:
-        icon = QMessageBox.Critical
-    box.setIcon(icon)
-    box.setWindowTitle(title)
-    box.setText(text)
-    if informative_text:
-        try:
-            box.setInformativeText(informative_text)
-        except Exception:
-            # Fallback: append informative text to main text if the property is unavailable
+        box = QMessageBox(parent)
+        if icon is None:
+            icon = QMessageBox.Critical
+        box.setIcon(icon)
+        box.setWindowTitle(title)
+        box.setText(text)
+        if informative_text:
             try:
-                box.setText(f"{text}\n\n{informative_text}")
-            except Exception:
-                pass
+                box.setInformativeText(informative_text)
+            except Exception as e:
+                logger.warning(
+                    "Failed to set informative text, falling back to main text",
+                    exception=e,
+                    variables={'informative_text': informative_text[:100]}
+                )
+                # Fallback: append informative text to main text if the property is unavailable
+                try:
+                    box.setText(f"{text}\n\n{informative_text}")
+                except Exception as fallback_e:
+                    logger.error(
+                        "Fallback text setting also failed",
+                        exception=fallback_e
+                    )
 
-    _enable_label_selection(box)
-    return box.exec()
+        _enable_label_selection(box)
+        return box.exec()
+    except RuntimeError as e:
+        logger.error(
+            "PySide6 not available for message dialog",
+            exception=e,
+            variables={'title': title, 'text': text[:100]}
+        )
+        # Fallback: print to stderr since GUI not available
+        import sys
+        print(f"Message Dialog Error - {title}: {text}", file=sys.stderr)
+        return 0  # Arbitrary return for non-GUI case
+    except Exception as e:
+        logger.error(
+            "Unexpected error showing selectable message",
+            exception=e,
+            variables={'title': title, 'text': text[:100], 'parent_type': type(parent)}
+        )
+        # Show a basic error if possible
+        try:
+            basic_box = QMessageBox(parent)
+            basic_box.setWindowTitle("Message Display Error")
+            basic_box.setText(f"Failed to display message: {str(e)}")
+            basic_box.exec()
+        except:
+            pass
+        return 0
 
 
+@log_errors()
 def show_selectable_error(
     parent: Optional["QWidget"], title: str, text: str, informative_text: Optional[str] = None
 ) -> int:
     """
     Convenience wrapper for a Critical message box with selectable text.
     """
-    return show_selectable_message(parent, title, text, informative_text, icon=QMessageBox.Critical)
+    try:
+        return show_selectable_message(parent, title, text, informative_text, icon=QMessageBox.Critical)
+    except Exception as e:
+        logger.error(
+            "Error showing selectable error message",
+            exception=e,
+            variables={'title': title, 'text': text[:100]}
+        )
+        return 0
 
 
+@log_errors()
 def show_selectable_warning(
     parent: Optional["QWidget"], title: str, text: str, informative_text: Optional[str] = None
 ) -> int:
     """
     Convenience wrapper for a Warning message box with selectable text.
     """
-    return show_selectable_message(parent, title, text, informative_text, icon=QMessageBox.Warning)
+    try:
+        return show_selectable_message(parent, title, text, informative_text, icon=QMessageBox.Warning)
+    except Exception as e:
+        logger.error(
+            "Error showing selectable warning message",
+            exception=e,
+            variables={'title': title, 'text': text[:100]}
+        )
+        return 0
 
 
+@log_errors()
 def show_selectable_info(
     parent: Optional["QWidget"], title: str, text: str, informative_text: Optional[str] = None
 ) -> int:
     """
     Convenience wrapper for an Information message box with selectable text.
     """
-    return show_selectable_message(parent, title, text, informative_text, icon=QMessageBox.Information)
+    try:
+        return show_selectable_message(parent, title, text, informative_text, icon=QMessageBox.Information)
+    except Exception as e:
+        logger.error(
+            "Error showing selectable info message",
+            exception=e,
+            variables={'title': title, 'text': text[:100]}
+        )
+        return 0
 
 
 __all__ = [
@@ -169,13 +253,18 @@ __all__ = [
 try:
     from ...core.logging import get_logger, LogLevel
     LOGGING_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    logger.warning(
+        "Logging infrastructure not available",
+        exception=e
+    )
     LOGGING_AVAILABLE = False
     get_logger = lambda name: None  # type: ignore
     LogLevel = type('LogLevel', (), {})  # type: ignore
 
 import traceback
 import inspect
+import sys
 from typing import Any, Callable, Optional, TypeVar, Union, ContextManager
 from functools import wraps
 from contextlib import contextmanager
@@ -185,6 +274,7 @@ T = TypeVar('T')
 F = TypeVar('F', bound=Callable[..., Any])
 
 
+@log_errors()
 def handle_gui_error(
     parent: Optional["QWidget"],
     error: Union[str, Exception],
@@ -218,78 +308,86 @@ def handle_gui_error(
     >>> handle_gui_error(self, ValueError("Invalid input"), "Validation Error", component_name="SettingsEditor")
     >>> handle_gui_error(None, "File not found", "File Error", file_path="/path/to/file")
     """
-    # Get error message and exception details
-    error_message = str(error) if isinstance(error, Exception) else error
-    exception_obj = error if isinstance(error, Exception) else None
-    
-    # Get caller information for logging
-    caller_frame = inspect.currentframe().f_back
-    caller_info = ""
-    file_path = ""
-    line_number = 0
-    
-    if caller_frame:
-        try:
-            frame_info = inspect.getframeinfo(caller_frame)
-            file_path = frame_info.filename
-            line_number = frame_info.lineno
-            caller_info = f"{file_path}:{line_number}"
-        finally:
-            del caller_frame  # Prevent reference cycles
-    
-    # Show user-friendly error dialog
-    dialog_message = error_message
-    if component_name:
-        dialog_message = f"{component_name}: {error_message}"
-    
-    show_selectable_error(parent, title, dialog_message)
-    
-    # Log detailed error information to STDERR
-    if LOGGING_AVAILABLE:
-        logger = get_logger("gui.error")
+    try:
+        # Get error message and exception details
+        error_message = str(error) if isinstance(error, Exception) else error
+        exception_obj = error if isinstance(error, Exception) else None
         
-        # Build comprehensive log context
-        log_context = {
-            "component": component_name or "Unknown",
-            "file_path": file_path,
-            "line_number": line_number,
-            **context_vars
-        }
+        # Get caller information for logging
+        caller_frame = inspect.currentframe().f_back
+        file_path = ""
+        line_number = 0
         
-        # Include call stack for exceptions
-        if exception_obj:
-            stack_trace = "".join(traceback.format_exception(
-                type(exception_obj), exception_obj, exception_obj.__traceback__
-            ))
-            log_context["stack_trace"] = stack_trace
+        if caller_frame:
+            try:
+                frame_info = inspect.getframeinfo(caller_frame)
+                file_path = frame_info.filename
+                line_number = frame_info.lineno
+            finally:
+                del caller_frame  # Prevent reference cycles
         
+        # Show user-friendly error dialog
+        dialog_message = error_message
+        if component_name:
+            dialog_message = f"{component_name}: {error_message}"
+        
+        show_selectable_error(parent, title, dialog_message)
+        
+        # Log detailed error information
+        if LOGGING_AVAILABLE:
+            logger = get_logger("gui.error")
+            
+            # Build comprehensive log context
+            log_context = {
+                "component": component_name or "Unknown",
+                "file_path": file_path,
+                "line_number": line_number,
+                **context_vars
+            }
+            
+            # Include call stack for exceptions
+            if exception_obj:
+                stack_trace = "".join(traceback.format_exception(
+                    type(exception_obj), exception_obj, exception_obj.__traceback__
+                ))
+                log_context["stack_trace"] = stack_trace
+            
+            logger.error(
+                f"GUI Error: {error_message}",
+                exception=exception_obj,
+                variables=log_context
+            )
+        else:
+            # Fallback to simple STDERR output if logging is not available
+            error_details = [
+                f"GUI ERROR: {title}",
+                f"Message: {error_message}",
+                f"Component: {component_name or 'Unknown'}",
+                f"Location: {file_path}:{line_number}",
+            ]
+            
+            if context_vars:
+                error_details.append("Context:")
+                for key, value in context_vars.items():
+                    error_details.append(f"  {key}: {value}")
+            
+            if exception_obj:
+                error_details.append("Stack Trace:")
+                error_details.append(traceback.format_exc())
+            
+            print("\n".join(error_details), file=sys.stderr)
+    except Exception as handler_e:
         logger.error(
-            f"GUI Error: {error_message}",
-            exception=exception_obj,
-            variables=log_context
+            "Error in GUI error handler itself",
+            exception=handler_e,
+            variables={'original_error': str(error), 'title': title}
         )
-    else:
-        # Fallback to simple STDERR output if logging is not available
+        # Ultimate fallback
         import sys
-        error_details = [
-            f"GUI ERROR: {title}",
-            f"Message: {error_message}",
-            f"Component: {component_name or 'Unknown'}",
-            f"Location: {file_path}:{line_number}",
-        ]
-        
-        if context_vars:
-            error_details.append("Context:")
-            for key, value in context_vars.items():
-                error_details.append(f"  {key}: {value}")
-        
-        if exception_obj:
-            error_details.append("Stack Trace:")
-            error_details.append(traceback.format_exc())
-        
-        print("\n".join(error_details), file=sys.stderr)
+        print(f"CRITICAL: Error handler failed - Original: {str(error)}", file=sys.stderr)
 
 
+@log_errors()
 def gui_error_handler(
     component_name: Optional[str] = None,
     **default_context: Any
@@ -344,9 +442,12 @@ def gui_error_handler(
                     if i == 0 and arg_names and arg_names[0] == 'self':
                         continue  # Skip self parameter
                     if i < len(arg_names):
-                        context[arg_names[i]] = arg_value
+                        try:
+                            context[arg_names[i]] = repr(arg_value)[:100]  # Truncate large values
+                        except:
+                            context[arg_names[i]] = '<unrepresentable>'
                 
-                context.update(kwargs)
+                context.update({k: repr(v)[:100] for k, v in kwargs.items()})
                 
                 handle_gui_error(
                     parent=parent,
@@ -362,6 +463,7 @@ def gui_error_handler(
     return decorator
 
 
+@log_errors()
 @contextmanager
 def gui_error_context(
     parent: Optional["QWidget"] = None,

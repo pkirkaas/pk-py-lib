@@ -13,7 +13,15 @@ from typing import List, Optional, Dict, Any
 from enum import Enum
 from pathlib import Path
 
+from ..core.logging.decorators import log_errors
+from ..core.logging.logger import get_logger
+import traceback
+import sys
+import inspect
+
 from .models import SelectionStore
+
+logger = get_logger(__name__)
 
 
 class DialogView(Enum):
@@ -72,12 +80,28 @@ class FileItem:
     @property
     def basename(self) -> str:
         """Return file basename."""
-        return Path(self.path).name
-    
+        try:
+            return Path(self.path).name
+        except (ValueError, TypeError) as e:
+            logger.error(
+                f"Error accessing basename for path '{self.path}'",
+                exception=e,
+                variables={'path': self.path, 'file': __file__, 'line': sys.exc_info()[2].tb_lineno if sys.exc_info()[2] else inspect.currentframe().f_lineno}
+            )
+            return "Invalid Path"
+
     @property
     def directory(self) -> str:
         """Return parent directory."""
-        return str(Path(self.path).parent)
+        try:
+            return str(Path(self.path).parent)
+        except (ValueError, TypeError) as e:
+            logger.error(
+                f"Error accessing directory for path '{self.path}'",
+                exception=e,
+                variables={'path': self.path, 'file': __file__, 'line': sys.exc_info()[2].tb_lineno if sys.exc_info()[2] else inspect.currentframe().f_lineno}
+            )
+            return "Invalid Path"
 
 
 @dataclass(frozen=True)
@@ -136,6 +160,7 @@ class Group:
     ref_path: str
     
     @property
+    @log_errors()
     def item_count(self) -> int:
         """Return number of items in group."""
         return len(self.items)
@@ -174,30 +199,41 @@ class DialogState:
     current_view: DialogView = DialogView.TREE
     filter_text: str = ""
     
+    @log_errors()
     def get_filtered_groups(self) -> List[Group]:
         """Return groups filtered by current filter text."""
         if not self.filter_text:
             return self.groups
         
-        filter_lower = self.filter_text.lower()
-        filtered_groups = []
-        
-        for group in self.groups:
-            # Filter group items
-            filtered_items = [
-                item for item in group.items
-                if filter_lower in item.path.lower() or 
-                   filter_lower in item.basename.lower()
-            ]
+        try:
+            filter_lower = self.filter_text.lower()
+            filtered_groups = []
             
-            if filtered_items:
-                # Create new group with filtered items
-                # Note: stats may need recalculation in actual implementation
-                filtered_groups.append(Group(
-                    id=group.id,
-                    items=filtered_items,
-                    stats=group.stats,  # Simplified - stats may need recalculation
-                    ref_path=group.ref_path
-                ))
-        
-        return filtered_groups
+            for group in self.groups:
+                # Filter group items
+                filtered_items = [
+                    item for item in group.items
+                    if filter_lower in item.path.lower() or
+                       filter_lower in item.basename.lower()
+                ]
+                
+                if filtered_items:
+                    # Create new group with filtered items
+                    # Note: stats may need recalculation in actual implementation
+                    filtered_groups.append(Group(
+                        id=group.id,
+                        items=filtered_items,
+                        stats=group.stats,  # Simplified - stats may need recalculation
+                        ref_path=group.ref_path
+                    ))
+            
+            return filtered_groups
+        except (ValueError, AttributeError, TypeError) as e:
+            logger.error(
+                f"Error filtering groups with text '{self.filter_text}'",
+                exception=e,
+                variables={'filter_text': self.filter_text, 'groups_count': len(self.groups), 'file': __file__, 'line': sys.exc_info()[2].tb_lineno if sys.exc_info()[2] else inspect.currentframe().f_lineno}
+            )
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(None, "Filtering Error", f"Failed to filter groups: {str(e)}")
+            return self.groups  # Return unfiltered to prevent crash

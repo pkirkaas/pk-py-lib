@@ -12,6 +12,10 @@ Usage:
     dialog.exec()
 """
 
+import sys
+import traceback
+import inspect
+
 from PySide6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -27,6 +31,7 @@ from PySide6.QtGui import QStandardItemModel, QStandardItem, QColor
 
 from ...core.flat_cache import FlatCacheManager, FlatCacheDBError
 from ...core.logging.logger import get_logger
+from ...core.logging.decorators import log_errors
 from ..utils.messages import show_selectable_error
 
 
@@ -44,19 +49,43 @@ class ViewCacheDialog(QDialog):
         FlatCacheDBError: If database access fails.
     """
 
+    @log_errors
     def closeEvent(self, event):
         """
         Override closeEvent to log timing around dialog closure.
         This is called when the dialog is about to close (e.g., via X button, accept, reject).
         """
-        import time
-        close_start = time.time()
-        self.logger.info(f"ViewCacheDialog closeEvent start at {close_start}")
-        # Call parent to perform actual close
-        super().closeEvent(event)
-        close_end = time.time()
-        self.logger.info(f"ViewCacheDialog closeEvent end at {close_end}, duration: {close_end - close_start:.2f}s")
+        try:
+            import time
+            close_start = time.time()
+            self.logger.info(f"ViewCacheDialog closeEvent start at {close_start}")
+            # Call parent to perform actual close
+            super().closeEvent(event)
+            close_end = time.time()
+            self.logger.info(f"ViewCacheDialog closeEvent end at {close_end}, duration: {close_end - close_start:.2f}s")
+        except Exception as e:
+            exc_type = type(e).__name__
+            exc_info = sys.exc_info()
+            tb_lineno = exc_info[2].tb_lineno if exc_info[2] else inspect.currentframe().f_lineno
+            func_name = inspect.currentframe().f_code.co_name
+            locals_dict = locals()
+            error_msg = f"{exc_type}: {str(e)}"
+            if hasattr(self, 'logger'):
+                self.logger.error(
+                    error_msg,
+                    extra={
+                        "file": __file__,
+                        "line": tb_lineno,
+                        "function": func_name,
+                        "locals": locals_dict,
+                        "traceback": traceback.format_exc(),
+                        "dialog_title": self.windowTitle(),
+                    }
+                )
+            # For closeEvent, do not show QMessageBox as it may interfere with closing
+            # Just log and continue
 
+    @log_errors
     def __init__(self, flat_cache_manager: FlatCacheManager, parent=None):
         """
         Initialize the View Cache dialog.
@@ -64,23 +93,23 @@ class ViewCacheDialog(QDialog):
         Fetches data from the cache manager and sets up the UI.
         Handles empty database gracefully with a message.
         """
-        super().__init__(parent)
-        self.flat_cache_manager = flat_cache_manager
-        self.logger = get_logger(__name__)
-        self.setWindowTitle("View Cache")
-        self.setMinimumSize(800, 600)
-        self.resize(1000, 700)  # Make resizable by default
-
-        # Main layout
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
-
         try:
+            super().__init__(parent)
+            self.flat_cache_manager = flat_cache_manager
+            self.logger = get_logger(__name__)
+            self.setWindowTitle("View Cache")
+            self.setMinimumSize(800, 600)
+            self.resize(1000, 700)  # Make resizable by default
+
+            # Main layout
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(12, 12, 12, 12)
+            layout.setSpacing(12)
+
+            # Fetch data from cache manager
             import time
             start_time = time.time()
             self.logger.info(f"ViewCacheDialog __init__: Starting get_cache_view_data at {start_time}")
-            # Fetch data from cache manager
             metadata, rows = self.flat_cache_manager.get_cache_view_data()
             end_time = time.time()
             self.logger.info(f"ViewCacheDialog __init__: get_cache_view_data completed in {end_time - start_time:.2f} seconds. Rows: {len(rows) if rows else 0}")
@@ -105,11 +134,8 @@ class ViewCacheDialog(QDialog):
                 empty_label.setStyleSheet("font-style: italic; color: #666; padding: 20px;")
                 layout.addWidget(empty_label)
             else:
-                import time
-                model_start = time.time()
-                import time
-                model_start = time.time()
                 # Create model for table
+                model_start = time.time()
                 model = QStandardItemModel()
                 if rows:
                     # Set headers from first row keys (assuming all rows have same keys)
@@ -118,7 +144,7 @@ class ViewCacheDialog(QDialog):
                     if 'is_valid' not in headers:
                         headers.insert(0, 'is_valid')  # Add as first column for prominence
                     model.setHorizontalHeaderLabels(headers)
-    
+        
                     # Populate rows with validity handling
                     for row_data in rows:
                         row_items = []
@@ -146,13 +172,12 @@ class ViewCacheDialog(QDialog):
                                 item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
                                 row_items.append(item)
                         model.appendRow(row_items)
-    
+        
                 model_end = time.time()
                 self.logger.info(f"ViewCacheDialog __init__: Model population completed in {model_end - model_start:.2f} seconds. Rows: {len(rows) if rows else 0}")
 
-                import time
-                table_start = time.time()
                 # Create table view
+                table_start = time.time()
                 table = QTableView(self)
                 table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
                 table.setModel(model)
@@ -212,6 +237,9 @@ class ViewCacheDialog(QDialog):
                 # Add table to layout
                 layout.addWidget(table)
 
+            # Ensure layout is applied
+            self.setLayout(layout)
+
         except FlatCacheDBError as e:
             # Error handling: show message dialog
             db_path = getattr(self.flat_cache_manager, 'db_path', 'unknown')
@@ -233,19 +261,39 @@ class ViewCacheDialog(QDialog):
             error_label.setWordWrap(True)
             error_label.setStyleSheet("color: #c00; padding: 8px;")
             layout.addWidget(error_label)
+            raise
 
-        # Ensure layout is applied
-        self.setLayout(layout)
-
-        # Syntax validation: This file has been reviewed for Python syntax correctness.
-
+    @log_errors
     def __del__(self):
         """
         Destructor logging to time object cleanup/garbage collection.
         Note: __del__ may not be called immediately; used for post-close diagnostics.
         """
-        import time
-        del_time = time.time()
-        self.logger.info(f"ViewCacheDialog __del__ called at {del_time}")
-        if hasattr(self, 'logger'):
-            self.logger.info(f"ViewCacheDialog cleanup completed (model rows: {getattr(self, 'row_count', 'unknown') if hasattr(self, 'row_count') else 'unknown'})")
+        try:
+            import time
+            del_time = time.time()
+            if hasattr(self, 'logger'):
+                self.logger.info(f"ViewCacheDialog __del__ called at {del_time}")
+                self.logger.info(f"ViewCacheDialog cleanup completed (model rows: {getattr(self, 'row_count', 'unknown') if hasattr(self, 'row_count') else 'unknown'})")
+        except Exception as e:
+            exc_type = type(e).__name__
+            exc_info = sys.exc_info()
+            tb_lineno = exc_info[2].tb_lineno if exc_info[2] else inspect.currentframe().f_lineno
+            func_name = inspect.currentframe().f_code.co_name
+            locals_dict = locals()
+            error_msg = f"{exc_type}: {str(e)}"
+            # Since __del__, logging may not be available, but try
+            try:
+                get_logger(__name__).error(
+                    error_msg,
+                    extra={
+                        "file": __file__,
+                        "line": tb_lineno,
+                        "function": func_name,
+                        "locals": locals_dict,
+                        "traceback": traceback.format_exc(),
+                        "dialog_title": getattr(self, 'windowTitle', lambda: 'ViewCacheDialog')(),
+                    }
+                )
+            except:
+                pass  # Silent fail in __del__

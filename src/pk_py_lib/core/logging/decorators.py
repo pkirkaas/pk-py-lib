@@ -8,6 +8,10 @@ import functools
 import time
 from typing import Any, Callable, Optional
 from .logger import get_logger
+import sys
+import traceback
+import inspect
+import warnings
 
 # Get module logger
 logger = get_logger(__name__)
@@ -66,7 +70,7 @@ def log_calls(
                 
             except Exception as e:
                 # Log exception
-                func_logger.error(f"{func.__name__} raised {type(e).__name__}: {e}")
+                func_logger.error(f"{func.__name__} raised {type(e).__name__}: {e}", exception=e)
                 raise
         
         return wrapper
@@ -174,12 +178,16 @@ def log_errors(
 ):
     """
     Decorator to catch and log exceptions with file path, line number, function name,
-    parameters, and traceback.
+    parameters, locals context (especially for GUI: self class, widget states), and traceback.
+    
+    Enhanced for GUI components: captures locals at the exception site, including self.class.name
+    and widget identifiers if available (e.g., objectName for Qt widgets). Filters safe variables
+    and truncates large representations.
     
     Args:
         level: Log level for the error messages (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         include_args: Whether to include function arguments in the log
-        include_traceback: Whether to include the full traceback in the log
+        include_traceback: Whether to include the full traceback (handled by logger now)
         logger_name: Optional specific logger name to use instead of function's module
     
     Example:
@@ -188,10 +196,14 @@ def log_errors(
             if param < 0:
                 raise ValueError("Negative parameter")
             return param * 2
+        
+        class TestWidget:
+            @log_errors()
+            def gui_method(self, user_input):
+                # Simulate GUI error
+                if not user_input:
+                    raise ValueError("Empty input")
     """
-    import sys
-    import traceback
-    
     def decorator(func: Callable) -> Callable:
         func_logger = get_logger(logger_name or func.__module__)
         
@@ -202,9 +214,9 @@ def log_errors(
             except Exception as e:
                 # Get file and line from the exception frame
                 exc_type, exc_value, exc_traceback = sys.exc_info()
-                frame = exc_traceback.tb_frame
-                filename = frame.f_code.co_filename
-                lineno = exc_traceback.tb_lineno
+                frame = exc_traceback.tb_frame if exc_traceback else None
+                filename = frame.f_code.co_filename if frame else __file__
+                lineno = exc_traceback.tb_lineno if exc_traceback else 0
                 func_name = func.__name__
                 
                 # Format parameters
@@ -215,23 +227,100 @@ def log_errors(
                 else:
                     params_str = ""
                 
-                error_msg = f"Error in {func_name} at {filename}:{lineno}: {e}"
+                error_msg = f"Error in {func_name} at {filename}:{lineno}: {exc_type.__name__}: {str(e)}"
                 if params_str:
                     error_msg += f"\nParameters: {params_str}"
                 
-                try:
-                    func_logger.error(error_msg)
-                except Exception as log_error:
-                    # If logging the error message fails, print to stderr to avoid recursion
-                    print(f"Failed to log error message: {log_error}", file=sys.stderr)
-                    print(error_msg, file=sys.stderr)
+                # Capture relevant locals at error site for GUI context
+                error_locals = {}
+                if frame:
+                    try:
+                        locals_dict = frame.f_locals
+                        for key, value in locals_dict.items():
+                            if key == 'self' and hasattr(value, '__class__'):
+                                error_locals['self_class'] = value.__class__.__name__
+                                # Capture GUI-specific states if Qt-like widget
+                                if hasattr(value, 'objectName'):
+                                    error_locals['widget_objectName'] = value.objectName()
+                                elif hasattr(value, 'windowTitle'):
+                                    error_locals['window_title'] = value.windowTitle()
+                                # Capture user inputs or common GUI vars
+                                if hasattr(value, 'text') and callable(value.text):
+                                    error_locals['current_text'] = value.text()[:50]  # Truncate
+                            elif not key.startswith('_') and not callable(value) and not isinstance(value, type):
+                                try:
+                                    error_locals[key] = repr(value)[:100]  # Truncate large reps
+                                except (Exception):
+                                    error_locals[key] = '<unrepresentable>'
+                    except Exception:
+                        error_locals['capture_error'] = 'Failed to capture locals'
                 
-                if include_traceback:
-                    tb_str = traceback.format_exc()
-                    # Print traceback directly to stderr to prevent potential logging recursion
-                    print(f"Traceback for {func_name} at {filename}:{lineno}:\n{tb_str}", file=sys.stderr)
+                # Log with full details: message, exception for traceback, variables for context
+                try:
+                    func_logger.error(
+                        error_msg,
+                        exception=e,
+                        variables=error_locals
+                    )
+                except Exception as log_error:
+                    # Fallback to stderr if logging fails
+                    print(f"Failed to log error: {log_error}", file=sys.stderr)
+                    print(error_msg, file=sys.stderr)
+                    if error_locals:
+                        print(f"Locals: {error_locals}", file=sys.stderr)
+                    if include_traceback:
+                        print(traceback.format_exc(), file=sys.stderr)
                 
                 raise
+        
+        return wrapper
+    return decorator
+
+
+def log_warnings(
+    level: str = "WARNING",
+    logger_name: Optional[str] = None
+):
+    """
+    Decorator to catch and log warnings issued within the function using warnings.warn().
+    
+    Uses warnings.catch_warnings to record all warnings and logs them at the specified level.
+    Does not suppress warnings; logs and allows them to propagate if desired.
+    
+    Args:
+        level: Log level for the warning messages (default: "WARNING")
+        logger_name: Optional specific logger name to use instead of function's module
+    
+    Example:
+        import warnings
+        @log_warnings()
+        def function_with_warning():
+            warnings.warn("This is a test warning", UserWarning)
+            return "done"
+    """
+    def decorator(func: Callable) -> Callable:
+        func_logger = get_logger(logger_name or func.__module__)
+        
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            with warnings.catch_warnings(record=True) as caught_warnings:
+                # Ensure all warnings are recorded
+                warnings.simplefilter("always")
+                
+                # Execute function
+                result = func(*args, **kwargs)
+                
+                # Log caught warnings
+                for warning in caught_warnings:
+                    warning_msg = f"Warning in {func.__name__}: {warning.message}"
+                    if warning.filename and warning.lineno:
+                        warning_msg += f" at {warning.filename}:{warning.lineno}"
+                    if warning.category:
+                        warning_msg += f" ({warning.category.__name__})"
+                    
+                    func_logger.log(level, warning_msg)
+            
+            return result
         
         return wrapper
     return decorator

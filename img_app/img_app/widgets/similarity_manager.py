@@ -57,10 +57,15 @@ from src.pk_py_lib.gui.models import FileGroupModel, PoolDirection, SelectionSto
 from src.pk_py_lib.gui.utils.messages import show_selectable_error, show_selectable_info
 from src.pk_py_lib.gui.widgets import FileGroupView, SimilarityPreviewPane
 from src.pk_py_lib.core.logging import get_logger
+from src.pk_py_lib.core.logging.decorators import log_errors, log_warnings
+import sqlite3
 
 import platform
 import os
 import subprocess
+import sys
+import traceback
+import inspect
 from PySide6.QtWidgets import QMenu, QApplication, QMessageBox
 from PySide6.QtGui import QDesktopServices
 from pathlib import Path
@@ -298,17 +303,18 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         splitter.setSizes([780, 420])
         parent_layout.addWidget(splitter)
 
+    @log_errors
     def _on_item_double_clicked(self, item, column):
         """
         Private handler for double-click events on tree items.
-
+    
         Parameters
         ----------
         item : QTreeWidgetItem
             The item that was double-clicked.
         column : int
             The column index of the double-click event.
-
+    
         Notes
         -----
         This method opens the file associated with the item using the default OS application
@@ -317,16 +323,17 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         are handled gracefully without crashing the dialog. The operation uses the system's
         default handler for the file type, supporting images and other files cross-platform
         (primarily Windows 11, but works on Linux/Mac via Qt).
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         if item.parent() is None:
             # Ignore double-clicks on group headers
             return
-
+    
         path_str = item.data(0, Qt.UserRole)
         if not path_str:
             LOGGER.warning("Double-clicked item has no associated file path")
             return
-
+    
         url = QUrl.fromLocalFile(str(path_str))
         success = QDesktopServices.openUrl(url)
         if success:
@@ -343,8 +350,11 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         """Return the immutable :class:`FileGroupModel` backing the dialog."""
         return self._model
 
+    @log_errors
     def apply_settings_profile(self, profile_payload: dict) -> None:
-        """Validate and attach a Settings Profile Option A payload to the dialog."""
+        """Validate and attach a Settings Profile Option A payload to the dialog.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         self._profile_payload = profile_payload or {}
         is_valid, errors = validate_settings_schema(self._profile_payload)
         self._validator_errors = errors or []
@@ -352,7 +362,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             "Settings profile validation for SimilarityManagerDialog",
             variables={"is_valid": is_valid, "error_count": len(self._validator_errors)},
         )
-
+    
         if not is_valid:
             error_message = "\n".join(self._validator_errors) or "Unknown validation issue."
             show_selectable_error(
@@ -365,10 +375,11 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 ),
             )
             return
-
+    
         # Success message box removed per user request. Validation status is logged.
         pass
 
+    @log_errors
     def refresh_groups(
         self,
         groups: Sequence[Group],
@@ -376,7 +387,9 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         pool_map: Optional[Mapping[str, str]] = None,
         direction: Optional[PoolDirection] = None,
     ) -> None:
-        """Replace rendered groups and optionally update pool mapping and direction."""
+        """Replace rendered groups and optionally update pool mapping and direction.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         self._pool_map = dict(pool_map or self._pool_map)
         new_model = replace(
             self._model,
@@ -411,20 +424,31 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
     # ------------------------------------------------------------------#
     # Internal helpers
     # ------------------------------------------------------------------#
+    @log_errors
     def _on_direction_changed(self) -> None:
+        """Update model direction when the combo box selection changes.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         direction = self._direction_combo.currentData()
         if isinstance(direction, PoolDirection):
             LOGGER.debug("Applying pool direction %s", direction)
             new_model = self._model.with_direction(direction)
             self._update_model(new_model)
 
+    @log_errors
     def _on_algorithm_changed(self) -> None:
+        """Update threshold when algorithm changes.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         algorithm = self._algorithm_combo.currentData()
         default = self._DEFAULT_THRESHOLDS.get(str(algorithm), self._threshold_spin.value())
         self._threshold_spin.setValue(default)
 
+    @log_errors
     def _on_quality_changed(self, text: str) -> None:
-        """Handle image quality evaluator selection change."""
+        """Handle image quality evaluator selection change.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         from src.pk_py_lib.core.image.quality.provider import set_active_evaluator
         key = str(self._quality_combo.currentData())
         try:
@@ -439,8 +463,11 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             self._quality_combo.setCurrentIndex(current_index)
             self._quality_combo.blockSignals(False)
 
+    @log_errors
     def _on_compute_clicked(self) -> None:
-        """Compute similarity groups via database hashes."""
+        """Compute similarity groups via database hashes.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         if self._db_manager is None:
             show_selectable_error(
                 self,
@@ -448,7 +475,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 "A DatabaseManager instance is required to compute similarity groups.",
             )
             return
-
+    
         algorithm = str(self._algorithm_combo.currentData() or "phash").lower()
         threshold = int(self._threshold_spin.value())
         LOGGER.info(
@@ -457,6 +484,14 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         )
         try:
             groups, pool_map = self._compute_groups_from_database(algorithm, threshold)
+        except sqlite3.Error as exc:
+            LOGGER.exception("Database error in similarity grouping")
+            show_selectable_error(
+                self,
+                "Database Error",
+                f"Database query failed: {exc}",
+            )
+            return
         except Exception as exc:  # pylint: disable=broad-except
             LOGGER.exception("Similarity grouping failed")
             show_selectable_error(
@@ -465,7 +500,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 f"Failed to compute similarity groups:\n\n{exc}",
             )
             return
-
+    
         if not groups:
             show_selectable_info(
                 self,
@@ -473,30 +508,32 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 "No similarity clusters were found with the current algorithm/threshold.",
             )
             return
-
+    
         direction = self._direction_combo.currentData()
         if not isinstance(direction, PoolDirection):
             direction = PoolDirection.ALL
         self.refresh_groups(groups, pool_map=pool_map, direction=direction)
         self._select_first_group()
 
+    @log_errors
     def _get_pool_for_path(self, path: str, profile: Optional[dict]) -> str:
         """
         Determine the pool (A or B) for a given file path based on profile pool configurations.
-
+    
         Args:
             path: Absolute file path.
             profile: Settings profile payload with "pools" configuration.
-
+    
         Returns:
             Pool label ("A" or "B"), defaults to "A" if undetermined.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         if not profile or "pools" not in profile:
             return "A"
-
+    
         pools = profile["pools"]
         path_obj = Path(path)
-
+    
         # Check Pool A paths
         if "A" in pools:
             a_paths = pools["A"].get("paths", [])
@@ -505,10 +542,11 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 try:
                     if path_obj.is_relative_to(pool_path):
                         return "A"
-                except ValueError:
+                except (ValueError, OSError) as e:
+                    LOGGER.warning(f"Path relative check failed for {p}: {e}")
                     # Not relative, continue
                     pass
-
+    
         # Check Pool B paths
         if "B" in pools:
             b_paths = pools["B"].get("paths", [])
@@ -517,22 +555,26 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 try:
                     if path_obj.is_relative_to(pool_path):
                         return "B"
-                except ValueError:
+                except (ValueError, OSError) as e:
+                    LOGGER.warning(f"Path relative check failed for {p}: {e}")
                     # Not relative, continue
                     pass
-
+    
         # Default to A if no match
         return "A"
 
+    @log_errors
     def _compute_groups_from_database(
         self,
         algorithm: str,
         threshold: int,
     ) -> Tuple[List[Group], Dict[str, str]]:
-        """Fetch perceptual hashes from the cache DB and compute clusters."""
+        """Fetch perceptual hashes from the cache DB and compute clusters.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         hashes: List[Dict[str, str]] = []
         pool_map: Dict[str, str] = {}
-
+    
         # Use FlatCacheManager to get hashes instead of old cache.db
         if not hasattr(self, '_flat_cache_manager'):
             show_selectable_error(
@@ -542,9 +584,13 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             )
             return [], {}
         
-        # For similarity, compute all perceptual hashes + xxh3
-        all_types = ['phash', 'whash', 'xxh3']
-        hashes_dict = self._flat_cache_manager.get_hashes(list(self._flat_cache_manager.get_entries().keys()), all_types, search_type='similarity')
+        try:
+            # For similarity, compute all perceptual hashes + xxh3
+            all_types = ['phash', 'whash', 'xxh3']
+            hashes_dict = self._flat_cache_manager.get_hashes(list(self._flat_cache_manager.get_entries().keys()), all_types, search_type='similarity')
+        except Exception as e:
+            LOGGER.error(f"Failed to get hashes from flat cache: {e}", exception=e)
+            return [], {}
         
         for path, path_hashes in hashes_dict.items():
             # Get the specific algorithm hash
@@ -554,29 +600,44 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 pool = self._get_pool_for_path(path, self._profile_payload)
                 hashes.append({"path": path, "hash": hash_value})
                 pool_map[path] = pool
-
+    
         if not hashes:
             return [], pool_map
-
-        sim_groups = find_similar_images(
-            hashes=hashes,
-            algorithm=algorithm,
-            threshold=threshold,
-            settings=self._profile_payload,
-        )
+    
+        try:
+            sim_groups = find_similar_images(
+                hashes=hashes,
+                algorithm=algorithm,
+                threshold=threshold,
+                settings=self._profile_payload,
+            )
+        except (ValueError, KeyError, TypeError) as e:
+            LOGGER.error(f"Similarity calculation error: {e}", exception=e)
+            return [], pool_map
+        except Exception as e:
+            LOGGER.error(f"Unexpected error in find_similar_images: {e}", exception=e)
+            return [], pool_map
+    
         dialog_groups = self._convert_similarity_groups(sim_groups)
         return dialog_groups, pool_map
 
+    @log_errors
     def _convert_similarity_groups(
         self,
         similarity_groups: Iterable[CoreSimilarityGroup],
     ) -> List[Group]:
-        """Convert core similarity groups into dialog-friendly immutable groups."""
+        """Convert core similarity groups into dialog-friendly immutable groups.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         converted: List[Group] = []
         
         # Determine the active quality evaluator for FileItem creation (Algorithm column removed, but keep for potential future use)
-        evaluator = get_active_image_quality_evaluator()
-        quality_algorithm = evaluator.name if evaluator else None
+        try:
+            evaluator = get_active_image_quality_evaluator()
+            quality_algorithm = evaluator.name if evaluator else None
+        except Exception as e:
+            LOGGER.warning(f"Failed to get active evaluator: {e}")
+            quality_algorithm = None
         
         for index, sim_group in enumerate(similarity_groups, start=1):
             file_items: List[FileItem] = []
@@ -597,18 +658,23 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                         quality_algorithm=quality_algorithm,  # Retained for potential future use, though not displayed
                     )
                 )
-
+    
             if not file_items:
                 continue
-
-            stats = GroupStats(
-                total_size=sum(item.size for item in file_items),
-                savings=0,
-                min_score=sim_group.stats.min_score,
-                max_score=sim_group.stats.max_score,
-                avg_score=sim_group.stats.avg_score,
-                file_count=len(file_items),
-            )
+    
+            try:
+                stats = GroupStats(
+                    total_size=sum(item.size for item in file_items),
+                    savings=0,
+                    min_score=sim_group.stats.min_score,
+                    max_score=sim_group.stats.max_score,
+                    avg_score=sim_group.stats.avg_score,
+                    file_count=len(file_items),
+                )
+            except (AttributeError, TypeError) as e:
+                LOGGER.warning(f"Failed to compute group stats: {e}")
+                continue
+    
             converted.append(
                 Group(
                     id=index,
@@ -619,6 +685,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             )
         return converted
 
+    @log_errors
     def _safe_image_metadata(
         self,
         path: str,
@@ -626,26 +693,35 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         fallback_resolution: str,
         fallback_mod_date: str,
     ) -> Dict[str, any]:
-        """Fetch metadata for preview purposes with fallbacks."""
+        """Fetch metadata for preview purposes with fallbacks.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         try:
             return get_image_metadata(path)
-        except Exception:  # pylint: disable=broad-except
+        except Exception as e:  # pylint: disable=broad-except
+            LOGGER.warning(f"Failed to get image metadata for {path}: {e}")
             return {
                 "size": fallback_size,
                 "resolution": fallback_resolution or "—",
                 "mod_date": fallback_mod_date or "Unknown",
             }
 
+    @log_errors
     def _update_model(self, model: FileGroupModel) -> None:
-        """Persist the model and refresh UI components."""
+        """Persist the model and refresh UI components.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         self._model = model
         self._group_lookup = {group.ref_path: group for group in self._model.groups}
         self._group_view.update_model(model)
         self.update_groups(list(model.groups))
         self._select_first_group()
 
+    @log_errors
     def _select_first_group(self) -> None:
-        """Highlight the first group row to populate the preview pane."""
+        """Highlight the first group row to populate the preview pane.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         tree = self._group_view.tree_widget
         if tree.topLevelItemCount() == 0:
             self._preview_pane.clear()
@@ -658,8 +734,11 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         tree.blockSignals(False)
         self._update_preview_for_item(first_item)
 
+    @log_errors
     def _on_tree_selection_changed(self) -> None:
-        """Update preview when the group tree selection changes."""
+        """Update preview when the group tree selection changes.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         tree = self._group_view.tree_widget
         current = tree.currentItem()
         if current is None:
@@ -667,12 +746,15 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             return
         self._update_preview_for_item(current)
 
+    @log_errors
     def _update_preview_for_item(self, item) -> None:
-        """Populate the preview pane based on the selected tree item."""
+        """Populate the preview pane based on the selected tree item.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         if item is None:
             self._preview_pane.clear()
             return
-
+    
         group_item = item if item.parent() is None else item.parent()
         ref_path = group_item.data(0, Qt.UserRole)
         group = self._group_lookup.get(ref_path)
@@ -681,15 +763,21 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             return
         self._preview_pane.update_preview(group.items)
 
+    @log_errors
     def _on_group_view_selection_changed(self, selection: set) -> None:
-        """Log selection changes relayed from the FileGroupView."""
+        """Log selection changes relayed from the FileGroupView.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         LOGGER.debug(
             "Selection updated in SimilarityManagerDialog",
             extra={"selection_count": len(selection)},
         )
 
+    @log_errors()
     def _apply_direction_to_combo(self, direction: PoolDirection) -> None:
-        """Synchronize the direction combo box with the provided direction."""
+        """Synchronize the direction combo box with the provided direction.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         for index in range(self._direction_combo.count()):
             if self._direction_combo.itemData(index) == direction:
                 self._direction_combo.blockSignals(True)
@@ -697,8 +785,11 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 self._direction_combo.blockSignals(False)
                 return
 
+    @log_errors
     def _extract_similarity_threshold(self) -> Optional[float]:
-        """Best-effort extraction of normalized threshold from the profile payload."""
+        """Best-effort extraction of normalized threshold from the profile payload.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         try:
             criteria = (self._profile_payload or {}).get("criteria") or {}
             threshold = criteria.get("degree_normalized")
@@ -707,47 +798,54 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 if degree_ui is not None:
                     threshold = float(degree_ui) / 100.0
             return float(threshold) if threshold is not None else None
-        except Exception:  # pylint: disable=broad-except
+        except (ValueError, KeyError, TypeError) as e:
+            LOGGER.warning(f"Failed to extract similarity threshold: {e}")
             return None
 
 
+    @log_errors
     def _refresh_quality_scores(self) -> None:
         """
         Refresh the normalized quality scores (0-1 range) in the table based on the current evaluator.
- 
+     
         Iterates over all visible tree items, recomputes quality scores using the active
         evaluator, updates the underlying FileItem data, and refreshes the table display
         for column 7 (Quality). The Algorithm column has been removed; quality scores are
         now displayed with 3 decimal places (e.g., 0.745) for the normalized 0-1 range.
- 
+     
         Raises:
             No explicit raises; errors are logged and cells set to "-".
- 
+     
         Notes:
             This method updates both the visual representation (QTreeWidgetItem) and the
             underlying data (FileItem stored in UserRole + 1) to ensure consistency
             for components like the preview pane. BRISQUE scores are assumed to be pre-normalized
             to 0-1 by the evaluator.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         if not self._model.groups:
             return
- 
+     
         tree = self._group_view.tree_widget
-        evaluator = get_active_image_quality_evaluator()
- 
+        try:
+            evaluator = get_active_image_quality_evaluator()
+        except Exception as e:
+            LOGGER.warning(f"Failed to get evaluator: {e}")
+            evaluator = None
+     
         for i in range(tree.topLevelItemCount()):
             group_item = tree.topLevelItem(i)
             # Set group quality placeholder (Algorithm column removed)
             group_item.setText(7, "—")
- 
+     
             for j in range(group_item.childCount()):
                 child = group_item.child(j)
                 path = child.data(0, Qt.UserRole)
                 file_item: Optional[FileItem] = child.data(0, Qt.UserRole + 1)
- 
+     
                 if not isinstance(path, str) or file_item is None:
                     continue
- 
+     
                 score = None
                 score_display = "—"
                 
@@ -772,6 +870,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 child.setText(7, score_display)
  
  
+    @log_errors
     def _open_file(self, path: Path) -> None:
         """
         Open the file using the default OS application handler, reusing the double-click logic.
@@ -786,6 +885,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         Checks if the file exists before attempting to open; logs a warning if it does not.
         Uses QDesktopServices for cross-platform compatibility, primarily tested on Windows 11.
         Logs success or failure for debugging and user feedback.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         if not os.path.exists(path):
             LOGGER.warning(f"Cannot open file - does not exist: {path}")
@@ -799,6 +899,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             LOGGER.warning(f"Failed to open file with default handler: {path}")
  
  
+    @log_errors
     def _copy_path_to_clipboard(self, path: Path) -> None:
         """
         Copy the absolute file path to the system clipboard.
@@ -812,11 +913,17 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         -----
         Always succeeds as it copies the path string regardless of file existence.
         Logs the action for auditing.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
-        QApplication.clipboard().setText(str(path))
-        LOGGER.info(f"Copied path to clipboard: {path}")
+        try:
+            QApplication.clipboard().setText(str(path))
+            LOGGER.info(f"Copied path to clipboard: {path}")
+        except Exception as e:
+            LOGGER.error(f"Failed to copy path to clipboard: {e}", exception=e)
+            show_selectable_error(self, "Clipboard Error", "Failed to copy path to clipboard.")
  
  
+    @log_errors
     def _open_containing_folder(self, path: Path) -> None:
         """
         Open the containing folder in Windows Explorer, selecting the specific file.
@@ -832,6 +939,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         If the file does not exist, logs a warning and falls back to opening the parent folder.
         Handles subprocess errors with logging; captures output to avoid console spam.
         Permissions issues are handled by the OS (e.g., access denied).
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         if not os.path.exists(path):
             LOGGER.warning(f"Cannot select file in explorer - does not exist: {path}")
@@ -841,7 +949,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         try:
             subprocess.run(['explorer', '/select,', str(path)], check=True, capture_output=True)
             LOGGER.info(f"Opened containing folder selecting file: {path}")
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, OSError, FileNotFoundError) as e:
             LOGGER.warning(f"Failed to open containing folder: {e}")
             self._open_folder(path)
         except Exception as e:
@@ -849,6 +957,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             self._open_folder(path)
  
  
+    @log_errors
     def _show_properties(self, path: Path) -> None:
         """
         Open the Windows file properties dialog for the specified file.
@@ -864,16 +973,18 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         If the file does not exist or access is denied, the subprocess will fail, and an error is logged.
         No fallback; lets the OS handle invalid cases.
         Shell=True is used for compatibility with the rundll32 command.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         try:
             subprocess.run(['rundll32.exe', 'shell32.dll,Control_RunDLL', f'"{path}"'], shell=True, check=True, capture_output=True)
             LOGGER.info(f"Opened properties dialog for: {path}")
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, OSError, FileNotFoundError) as e:
             LOGGER.warning(f"Failed to open properties dialog: {e}")
         except Exception as e:
             LOGGER.warning(f"Unexpected error opening properties: {e}")
  
  
+    @log_errors
     def _open_folder(self, path: Path) -> None:
         """
         Open the parent folder using a cross-platform method (fallback for non-Windows).
@@ -889,6 +1000,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         Does not check file existence as the goal is to open the directory.
         Logs success or failure.
         Serves as fallback for Windows-specific actions when they fail.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         parent_path = path.parent
         url = QUrl.fromLocalFile(str(parent_path))
@@ -899,6 +1011,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             LOGGER.warning(f"Failed to open parent folder: {parent_path}")
  
  
+    @log_errors
     def _show_context_menu(self, position) -> None:
         """
         Display a right-click context menu for file items in the tree widget.
@@ -921,6 +1034,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         Menu position mapped to global coordinates for proper display.
         Logs menu display for debugging.
         Integrates seamlessly with existing double-click, selection, and preview behaviors without modification.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         item = self._group_view.tree_widget.itemAt(position)
         if item is None or item.parent() is None:
@@ -970,6 +1084,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         LOGGER.debug(f"Context menu displayed for file: {path}")
  
  
+    @log_errors
     def _perform_copy(self, path: str) -> None:
         """
         Perform copy operation for the selected file in the similarity manager.
@@ -1011,21 +1126,34 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         - Handles non-existent source files gracefully (logged as failure).
         - Cross-platform compatible, but tested primarily on Windows 11.
         - Does not support directories; assumes path is a file from the tree widget.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
-        target_dir = FileOperations.select_target_directory(parent=self, operation='copy')
-        if target_dir:
-            success = FileOperations.copy_file_to_dir(path, target_dir, logger=LOGGER)
-            if success:
-                self._remove_file_from_model(path)
-                self._preview_pane.clear()
-                LOGGER.info(f"File copied to {target_dir} and removed from similarity view: {path}")
-            else:
-                QMessageBox.warning(
-                    self,
-                    "Copy Failed",
-                    "Failed to copy the file. Please check the application logs for detailed error information."
-                )
+        try:
+            target_dir = FileOperations.select_target_directory(parent=self, operation='copy')
+            if target_dir:
+                success = FileOperations.copy_file_to_dir(path, target_dir, logger=LOGGER)
+                if success:
+                    self._remove_file_from_model(path)
+                    self._preview_pane.clear()
+                    LOGGER.info(f"File copied to {target_dir} and removed from similarity view: {path}")
+                else:
+                    @log_warnings
+                    def warn_partial_copy():
+                        LOGGER.warning("Partial copy operation; some files may remain", variables={"path": path, "target_dir": target_dir})
+                    warn_partial_copy()
+                    QMessageBox.warning(
+                        self,
+                        "Copy Failed",
+                        "Failed to copy the file. Please check the application logs for detailed error information."
+                    )
+        except (OSError, IOError, PermissionError, ValueError) as e:
+            LOGGER.error(f"File operation error in copy: {e}", exception=e)
+            show_selectable_error(self, "Copy Error", f"Copy operation failed: {str(e)}")
+        except Exception as e:
+            LOGGER.error(f"Unexpected error in copy: {e}", exception=e)
+            show_selectable_error(self, "Copy Error", "An unexpected error occurred during copy.")
 
+    @log_errors
     def _perform_move(self, path: str) -> None:
         """
         Perform move operation for the selected file in the similarity manager.
@@ -1069,22 +1197,35 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         - Handles non-existent source files gracefully (logged as failure).
         - Cross-platform, but optimized for Windows 11 file operations.
         - Assumes path is a file; directories not supported in this context.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
-        target_dir = FileOperations.select_target_directory(parent=self, operation='move')
-        if target_dir:
-            success = FileOperations.move_file_to_dir(path, target_dir, logger=LOGGER)
-            if success:
-                self._remove_file_from_model(path)
-                self._preview_pane.clear_previews()
-                LOGGER.info(f"File moved to {target_dir} and removed from similarity view: {path}")
-                # Note: Moving one similar image may affect group scores; consider re-scanning if needed
-            else:
-                QMessageBox.warning(
-                    self,
-                    "Move Failed",
-                    "Failed to move the file. Please check the application logs for detailed error information."
-                )
+        try:
+            target_dir = FileOperations.select_target_directory(parent=self, operation='move')
+            if target_dir:
+                success = FileOperations.move_file_to_dir(path, target_dir, logger=LOGGER)
+                if success:
+                    self._remove_file_from_model(path)
+                    self._preview_pane.clear_previews()
+                    LOGGER.info(f"File moved to {target_dir} and removed from similarity view: {path}")
+                    # Note: Moving one similar image may affect group scores; consider re-scanning if needed
+                else:
+                    @log_warnings
+                    def warn_partial_move():
+                        LOGGER.warning("Partial move operation; some files may remain", variables={"path": path, "target_dir": target_dir})
+                    warn_partial_move()
+                    QMessageBox.warning(
+                        self,
+                        "Move Failed",
+                        "Failed to move the file. Please check the application logs for detailed error information."
+                    )
+        except (OSError, IOError, PermissionError, ValueError) as e:
+            LOGGER.error(f"File operation error in move: {e}", exception=e)
+            show_selectable_error(self, "Move Error", f"Move operation failed: {str(e)}")
+        except Exception as e:
+            LOGGER.error(f"Unexpected error in move: {e}", exception=e)
+            show_selectable_error(self, "Move Error", "An unexpected error occurred during move.")
 
+    @log_errors
     def _remove_file_from_model(self, path: str) -> None:
         """
         Remove a specific file path from the groups model and refresh the dialog view.
@@ -1133,24 +1274,35 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         - Group becomes empty: Skipped, reducing group count.
         - Quality scores: If removing a file with score, the refresh will recompute
           if evaluator active, but for simplicity, just remove and refresh.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
-        updated_groups = []
-        path_found = False
-        for group in self._model.groups:
-            if path in group.items:
-                new_items = tuple(item for item in group.items if item != path)
-                path_found = True
-                if new_items:
-                    new_group = replace(group, items=new_items)
-                    updated_groups.append(new_group)
+        try:
+            updated_groups = []
+            path_found = False
+            for group in self._model.groups:
+                if path in group.items:
+                    new_items = tuple(item for item in group.items if item != path)
+                    path_found = True
+                    if new_items:
+                        new_group = replace(group, items=new_items)
+                        updated_groups.append(new_group)
+                else:
+                    updated_groups.append(group)
+            
+            if path_found:
+                self.refresh_groups(tuple(updated_groups))
+                LOGGER.debug(f"Removed {path} from similarity model and refreshed view")
             else:
-                updated_groups.append(group)
-        
-        if path_found:
-            self.refresh_groups(tuple(updated_groups))
-            LOGGER.debug(f"Removed {path} from similarity model and refreshed view")
-        else:
-            LOGGER.warning(f"Path not found in any group when removing: {path}")
+                @log_warnings
+                def warn_not_found():
+                    LOGGER.warning(f"Path not found in any group when removing: {path}")
+                warn_not_found()
+        except (ValueError, KeyError, AttributeError) as e:
+            LOGGER.error(f"Model update error in remove: {e}", exception=e)
+            show_selectable_error(self, "Model Error", f"Failed to update model: {str(e)}")
+        except Exception as e:
+            LOGGER.error(f"Unexpected error in remove_file_from_model: {e}", exception=e)
+            show_selectable_error(self, "Model Error", "An unexpected error occurred updating the model.")
 # Mapping used for direction combo labels (shared between duplicates/similarity)
 DuplicateDirectionLabels: Mapping[PoolDirection, str] = {
     PoolDirection.ALL: "All Pools",

@@ -41,11 +41,15 @@ from src.pk_py_lib.gui.models import FileGroupModel, PoolDirection, SelectionSto
 from src.pk_py_lib.gui.utils.messages import show_selectable_error, show_selectable_info
 from src.pk_py_lib.gui.widgets import FileGroupView
 from src.pk_py_lib.core.logging import get_logger
+from src.pk_py_lib.core.logging.decorators import log_errors, log_warnings
 
 from pathlib import Path
 import platform
 import os
 import subprocess
+import sys
+import traceback
+import inspect
 from PySide6.QtWidgets import QMenu, QApplication
 from PySide6.QtGui import QDesktopServices
 from src.pk_py_lib.core.filesystem.operations import FileOperations
@@ -188,17 +192,18 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         self._group_view.tree_widget.customContextMenuRequested.connect(self._show_context_menu)
         parent_layout.addWidget(self._group_view)
 
+    @log_errors
     def _on_item_double_clicked(self, item, column):
         """
         Private handler for double-click events on tree items.
-
+    
         Parameters
         ----------
         item : QTreeWidgetItem
             The item that was double-clicked.
         column : int
             The column index of the double-click event.
-
+    
         Notes
         -----
         This method opens the file associated with the item using the default OS application
@@ -207,16 +212,17 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         are handled gracefully without crashing the dialog. The operation uses the system's
         default handler for the file type, supporting images and other files cross-platform
         (primarily Windows 11, but works on Linux/Mac via Qt).
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         if item.parent() is None:
             # Ignore double-clicks on group headers
             return
-
+    
         path_str = item.data(0, Qt.UserRole)
         if not path_str:
             LOGGER.warning("Double-clicked item has no associated file path")
             return
-
+    
         url = QUrl.fromLocalFile(str(path_str))
         success = QDesktopServices.openUrl(url)
         if success:
@@ -233,20 +239,22 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         """Return the immutable **FileGroupModel** backing the dialog."""
         return self._model
 
+    @log_errors
     def apply_settings_profile(self, profile_payload: dict) -> None:
         """Validate and apply Settings Profile metadata to the dialog.
-
+    
         Parameters
         ----------
         profile_payload:
             Candidate profile dictionary following the Option A schema.
-
+    
         Notes
         -----
         * Validation leverages :func:`validate_settings_schema` which performs JSON
           schema checks and custom invariants.
         * Errors are presented through selectable message boxes to comply with
           diagnostics requirements.
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         self._profile_payload = profile_payload or {}
         is_valid, errors = validate_settings_schema(self._profile_payload)
@@ -255,7 +263,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             "Settings profile validation for DuplicateManagerDialog",
             variables={"is_valid": is_valid, "error_count": len(self._validator_errors)},
         )
-
+    
         if not is_valid:
             error_message = "\n".join(self._validator_errors) or "Unknown validation issue."
             show_selectable_error(
@@ -271,6 +279,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             # Validation succeeded; no modal feedback required for duplicate workflow
             LOGGER.debug("DuplicateManagerDialog profile validation succeeded")
 
+    @log_errors
     def refresh_groups(
         self,
         groups: Sequence[Group],
@@ -278,7 +287,9 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         pool_map: Optional[Mapping[str, str]] = None,
         direction: Optional[PoolDirection] = None,
     ) -> None:
-        """Replace the rendered groups and optionally update pool mapping or direction."""
+        """Replace the rendered groups and optionally update pool mapping or direction.
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         self._pool_map = dict(pool_map or self._pool_map)
         new_model = replace(
             self._model,
@@ -313,14 +324,20 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
     # ---------------------------------------------------------------------#
     # Internal helpers
     # ---------------------------------------------------------------------#
+    @log_errors
     def _update_model(self, model: FileGroupModel) -> None:
-        """Persist the supplied model and refresh the view."""
+        """Persist the supplied model and refresh the view.
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         self._model = model
         self._group_view.update_model(model)
         self.update_groups(list(model.groups))
 
+    @log_errors
     def _on_direction_changed(self) -> None:
-        """Update model direction when the combo box selection changes."""
+        """Update model direction when the combo box selection changes.
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         direction = self._direction_combo.currentData()
         if isinstance(direction, PoolDirection):
             LOGGER.debug("Changing pool direction to %s", direction)
@@ -343,8 +360,11 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             extra={"selection_count": len(selection)},
         )
 
+    @log_errors
     def _extract_similarity_threshold(self) -> Optional[float]:
-        """Best-effort extraction of normalized similarity threshold from the profile."""
+        """Best-effort extraction of normalized similarity threshold from the profile.
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
         try:
             similarity = (self._profile_payload or {}).get("criteria") or {}
             threshold = similarity.get("degree_normalized")
@@ -356,10 +376,12 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
                 if degree_ui is not None:
                     threshold = float(degree_ui) / 100.0
             return float(threshold) if threshold is not None else None
-        except Exception:  # pylint: disable=broad-except
+        except (ValueError, KeyError, TypeError) as e:
+            LOGGER.warning(f"Failed to extract similarity threshold: {e}")
             return None
 
 
+    @log_errors
     def _open_file(self, path: Path) -> None:
         """
         Open the file using the default OS application handler, reusing the double-click logic.
@@ -374,6 +396,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         Checks if the file exists before attempting to open; logs a warning if it does not.
         Uses QDesktopServices for cross-platform compatibility, primarily tested on Windows 11.
         Logs success or failure for debugging and user feedback.
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         if not os.path.exists(path):
             LOGGER.warning(f"Cannot open file - does not exist: {path}")
@@ -387,6 +410,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             LOGGER.warning(f"Failed to open file with default handler: {path}")
  
  
+    @log_errors
     def _copy_path_to_clipboard(self, path: Path) -> None:
         """
         Copy the absolute file path to the system clipboard.
@@ -400,11 +424,17 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         -----
         Always succeeds as it copies the path string regardless of file existence.
         Logs the action for auditing.
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
-        QApplication.clipboard().setText(str(path))
-        LOGGER.info(f"Copied path to clipboard: {path}")
+        try:
+            QApplication.clipboard().setText(str(path))
+            LOGGER.info(f"Copied path to clipboard: {path}")
+        except Exception as e:
+            LOGGER.error(f"Failed to copy path to clipboard: {e}", exception=e)
+            show_selectable_error(self, "Clipboard Error", "Failed to copy path to clipboard.")
  
  
+    @log_errors
     def _open_containing_folder(self, path: Path) -> None:
         """
         Open the containing folder in Windows Explorer, selecting the specific file.
@@ -420,6 +450,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         If the file does not exist, logs a warning and falls back to opening the parent folder.
         Handles subprocess errors with logging; captures output to avoid console spam.
         Permissions issues are handled by the OS (e.g., access denied).
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         if not os.path.exists(path):
             LOGGER.warning(f"Cannot select file in explorer - does not exist: {path}")
@@ -429,7 +460,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         try:
             subprocess.run(['explorer', '/select,', str(path)], check=True, capture_output=True)
             LOGGER.info(f"Opened containing folder selecting file: {path}")
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, OSError, FileNotFoundError) as e:
             LOGGER.warning(f"Failed to open containing folder: {e}")
             self._open_folder(path)
         except Exception as e:
@@ -437,6 +468,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             self._open_folder(path)
  
  
+    @log_errors
     def _show_properties(self, path: Path) -> None:
         """
         Open the Windows file properties dialog for the specified file.
@@ -452,16 +484,18 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         If the file does not exist or access is denied, the subprocess will fail, and an error is logged.
         No fallback; lets the OS handle invalid cases.
         Shell=True is used for compatibility with the rundll32 command.
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         try:
             subprocess.run(['rundll32.exe', 'shell32.dll,Control_RunDLL', f'"{path}"'], shell=True, check=True, capture_output=True)
             LOGGER.info(f"Opened properties dialog for: {path}")
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, OSError, FileNotFoundError) as e:
             LOGGER.warning(f"Failed to open properties dialog: {e}")
         except Exception as e:
             LOGGER.warning(f"Unexpected error opening properties: {e}")
  
  
+    @log_errors
     def _open_folder(self, path: Path) -> None:
         """
         Open the parent folder using a cross-platform method (fallback for non-Windows).
@@ -477,6 +511,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         Does not check file existence as the goal is to open the directory.
         Logs success or failure.
         Serves as fallback for Windows-specific actions when they fail.
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         parent_path = path.parent
         url = QUrl.fromLocalFile(str(parent_path))
@@ -487,6 +522,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             LOGGER.warning(f"Failed to open parent folder: {parent_path}")
  
  
+    @log_errors
     def _show_context_menu(self, position) -> None:
         """
         Display a right-click context menu for file items in the tree widget.
@@ -509,6 +545,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         Menu position mapped to global coordinates for proper display.
         Logs menu display for debugging.
         Integrates seamlessly with existing double-click and selection behaviors without modification.
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         item = self._group_view.tree_widget.itemAt(position)
         if item is None or item.parent() is None:
@@ -558,6 +595,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         LOGGER.debug(f"Context menu displayed for file: {path}")
   
   
+        @log_errors
         def _perform_copy(self, path: str) -> None:
             """
             Perform copy operation for the selected file in the duplicate manager.
@@ -598,21 +636,34 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             - Handles non-existent source files gracefully (logged as failure).
             - Cross-platform compatible, but tested primarily on Windows 11.
             - Does not support directories; assumes path is a file from the tree widget.
+            GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
             """
-            target_dir = FileOperations.select_target_directory(parent=self, operation='copy')
-            if target_dir:
-                success = FileOperations.copy_file_to_dir(path, target_dir, logger=LOGGER)
-                if success:
-                    self._remove_file_from_model(path)
-                    LOGGER.info(f"File copied to {target_dir} and removed from duplicate view: {path}")
-                else:
-                    QMessageBox.warning(
-                        self,
-                        "Copy Failed",
-                        "Failed to copy the file. Please check the application logs for detailed error information."
-                    )
+            try:
+                target_dir = FileOperations.select_target_directory(parent=self, operation='copy')
+                if target_dir:
+                    success = FileOperations.copy_file_to_dir(path, target_dir, logger=LOGGER)
+                    if success:
+                        self._remove_file_from_model(path)
+                        LOGGER.info(f"File copied to {target_dir} and removed from duplicate view: {path}")
+                    else:
+                        @log_warnings
+                        def warn_partial_copy():
+                            LOGGER.warning("Partial copy operation; some files may remain", variables={"path": path, "target_dir": target_dir})
+                        warn_partial_copy()
+                        QMessageBox.warning(
+                            self,
+                            "Copy Failed",
+                            "Failed to copy the file. Please check the application logs for detailed error information."
+                        )
+            except (OSError, IOError, PermissionError, ValueError) as e:
+                LOGGER.error(f"File operation error in copy: {e}", exception=e)
+                show_selectable_error(self, "Copy Error", f"Copy operation failed: {str(e)}")
+            except Exception as e:
+                LOGGER.error(f"Unexpected error in copy: {e}", exception=e)
+                show_selectable_error(self, "Copy Error", "An unexpected error occurred during copy.")
   
   
+        @log_errors
         def _perform_move(self, path: str) -> None:
             """
             Perform move operation for the selected file in the duplicate manager.
@@ -655,22 +706,35 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             - Handles non-existent source files gracefully (logged as failure).
             - Cross-platform, but optimized for Windows 11 file operations.
             - Assumes path is a file; directories not supported in this context.
+            GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
             """
-            target_dir = FileOperations.select_target_directory(parent=self, operation='move')
-            if target_dir:
-                success = FileOperations.move_file_to_dir(path, target_dir, logger=LOGGER)
-                if success:
-                    self._remove_file_from_model(path)
-                    LOGGER.info(f"File moved to {target_dir} and removed from duplicate view: {path}")
-                    # Note: Moving one duplicate may break the group; consider re-scanning if needed
-                else:
-                    QMessageBox.warning(
-                        self,
-                        "Move Failed",
-                        "Failed to move the file. Please check the application logs for detailed error information."
-                    )
+            try:
+                target_dir = FileOperations.select_target_directory(parent=self, operation='move')
+                if target_dir:
+                    success = FileOperations.move_file_to_dir(path, target_dir, logger=LOGGER)
+                    if success:
+                        self._remove_file_from_model(path)
+                        LOGGER.info(f"File moved to {target_dir} and removed from duplicate view: {path}")
+                        # Note: Moving one duplicate may break the group; consider re-scanning if needed
+                    else:
+                        @log_warnings
+                        def warn_partial_move():
+                            LOGGER.warning("Partial move operation; some files may remain", variables={"path": path, "target_dir": target_dir})
+                        warn_partial_move()
+                        QMessageBox.warning(
+                            self,
+                            "Move Failed",
+                            "Failed to move the file. Please check the application logs for detailed error information."
+                        )
+            except (OSError, IOError, PermissionError, ValueError) as e:
+                LOGGER.error(f"File operation error in move: {e}", exception=e)
+                show_selectable_error(self, "Move Error", f"Move operation failed: {str(e)}")
+            except Exception as e:
+                LOGGER.error(f"Unexpected error in move: {e}", exception=e)
+                show_selectable_error(self, "Move Error", "An unexpected error occurred during move.")
   
   
+        @log_errors
         def _remove_file_from_model(self, path: str) -> None:
             """
             Remove a specific file path from the groups model and refresh the dialog view.
@@ -716,24 +780,35 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
               remove from first match only (iterative).
             - Empty model: No-op.
             - Group becomes empty: Skipped, reducing group count.
+            GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
             """
-            updated_groups = []
-            path_found = False
-            for group in self._model.groups:
-                if path in group.items:
-                    new_items = tuple(item for item in group.items if item != path)
-                    path_found = True
-                    if new_items:
-                        new_group = replace(group, items=new_items)
-                        updated_groups.append(new_group)
+            try:
+                updated_groups = []
+                path_found = False
+                for group in self._model.groups:
+                    if path in group.items:
+                        new_items = tuple(item for item in group.items if item != path)
+                        path_found = True
+                        if new_items:
+                            new_group = replace(group, items=new_items)
+                            updated_groups.append(new_group)
+                    else:
+                        updated_groups.append(group)
+                
+                if path_found:
+                    self.refresh_groups(tuple(updated_groups))
+                    LOGGER.debug(f"Removed {path} from duplicate model and refreshed view")
                 else:
-                    updated_groups.append(group)
-            
-            if path_found:
-                self.refresh_groups(tuple(updated_groups))
-                LOGGER.debug(f"Removed {path} from duplicate model and refreshed view")
-            else:
-                LOGGER.warning(f"Path not found in any group when removing: {path}")
+                    @log_warnings
+                    def warn_not_found():
+                        LOGGER.warning(f"Path not found in any group when removing: {path}")
+                    warn_not_found()
+            except (ValueError, KeyError, AttributeError) as e:
+                LOGGER.error(f"Model update error in remove: {e}", exception=e)
+                show_selectable_error(self, "Model Error", f"Failed to update model: {str(e)}")
+            except Exception as e:
+                LOGGER.error(f"Unexpected error in remove_file_from_model: {e}", exception=e)
+                show_selectable_error(self, "Model Error", "An unexpected error occurred updating the model.")
   
   
 __all__ = ["DuplicateManagerDialog"]

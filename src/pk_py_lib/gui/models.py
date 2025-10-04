@@ -28,6 +28,7 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QPixmap
 
 from ..core.logging import get_logger
+from ..core.logging.decorators import log_errors, log_warnings
 
 logger = get_logger(__name__)
 
@@ -116,12 +117,28 @@ class SimilarityImage:
     @property
     def basename(self) -> str:
         """Return the filename component of :attr:`path`."""
-        return Path(self.path).name
+        try:
+            return Path(self.path).name
+        except (ValueError, TypeError, OSError) as e:
+            logger.error(
+                f"Error accessing basename for path '{self.path}'",
+                exception=e,
+                variables={'path': self.path}
+            )
+            return "Invalid Path"
 
     @property
     def directory(self) -> str:
         """Return the parent directory containing the image."""
-        return str(Path(self.path).parent)
+        try:
+            return str(Path(self.path).parent)
+        except (ValueError, TypeError, OSError) as e:
+            logger.error(
+                f"Error accessing directory for path '{self.path}'",
+                exception=e,
+                variables={'path': self.path}
+            )
+            return "Invalid Path"
 
 
 @dataclass(frozen=True)
@@ -157,6 +174,7 @@ class SimilarityGroup:
     ref_path: str
 
     @property
+    @log_errors()
     def image_count(self) -> int:
         """Return the number of images bundled in the cluster."""
         return len(self.images)
@@ -212,12 +230,28 @@ class FileItem:
     @property
     def basename(self) -> str:
         """Return the basename of the file."""
-        return Path(self.path).name
+        try:
+            return Path(self.path).name
+        except (ValueError, TypeError, OSError) as e:
+            logger.error(
+                f"Error accessing basename for path '{self.path}'",
+                exception=e,
+                variables={'path': self.path}
+            )
+            return "Invalid Path"
 
     @property
     def directory(self) -> str:
         """Return the parent directory path."""
-        return str(Path(self.path).parent)
+        try:
+            return str(Path(self.path).parent)
+        except (ValueError, TypeError, OSError) as e:
+            logger.error(
+                f"Error accessing directory for path '{self.path}'",
+                exception=e,
+                variables={'path': self.path}
+            )
+            return "Invalid Path"
 
 
 @dataclass(frozen=True)
@@ -310,6 +344,7 @@ class SelectionStore(QObject):
     selection_cleared = Signal()             # Fires when selection is emptied
     selection_count_changed = Signal(int)    # Emits the selection count
 
+    @log_errors()
     def __init__(self, normalizer: Optional[Callable[[str], str]] = None) -> None:
         """
         Parameters
@@ -323,53 +358,95 @@ class SelectionStore(QObject):
         self._selected_paths: Set[str] = set()
         self._lock = RLock()
 
+    @log_errors()
     def add_selection(self, path: str) -> bool:
         """Add a path to the selection; returns ``True`` if newly inserted."""
-        normalised = self._normalize(path)
-        with self._lock:
-            if normalised in self._selected_paths:
-                return False
-            self._selected_paths.add(normalised)
+        try:
+            normalised = self._normalize(path)
+            with self._lock:
+                if normalised in self._selected_paths:
+                    return False
+                self._selected_paths.add(normalised)
 
-        self.item_added.emit(normalised)
-        self.selection_changed.emit(set(self._selected_paths))
-        self.selection_count_changed.emit(len(self._selected_paths))
-        return True
+            self.item_added.emit(normalised)
+            self.selection_changed.emit(set(self._selected_paths))
+            self.selection_count_changed.emit(len(self._selected_paths))
+            return True
+        except (OSError, ValueError, TypeError) as e:
+            logger.error(
+                f"Error adding selection for path '{path}'",
+                exception=e,
+                variables={'path': path}
+            )
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Selection Error", f"Failed to add path to selection: {str(e)}")
+            return False
 
+    @log_errors()
     def remove_selection(self, path: str) -> bool:
         """Remove a path from the selection; returns ``True`` if removed."""
-        normalised = self._normalize(path)
-        with self._lock:
-            if normalised not in self._selected_paths:
-                return False
-            self._selected_paths.remove(normalised)
-            empty = not self._selected_paths
+        try:
+            normalised = self._normalize(path)
+            with self._lock:
+                if normalised not in self._selected_paths:
+                    return False
+                self._selected_paths.remove(normalised)
+                empty = not self._selected_paths
 
-        self.item_removed.emit(normalised)
-        self.selection_changed.emit(set(self._selected_paths))
-        self.selection_count_changed.emit(len(self._selected_paths))
-        if empty:
-            self.selection_cleared.emit()
-        return True
+            self.item_removed.emit(normalised)
+            self.selection_changed.emit(set(self._selected_paths))
+            self.selection_count_changed.emit(len(self._selected_paths))
+            if empty:
+                self.selection_cleared.emit()
+            return True
+        except (OSError, ValueError, TypeError, KeyError) as e:
+            logger.error(
+                f"Error removing selection for path '{path}'",
+                exception=e,
+                variables={'path': path}
+            )
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Selection Error", f"Failed to remove path from selection: {str(e)}")
+            return False
 
+    @log_errors()
     def toggle_selection(self, path: str) -> bool:
         """Toggle the selection state of *path* returning the new state."""
-        if self.is_selected(path):
-            self.remove_selection(path)
+        try:
+            if self.is_selected(path):
+                self.remove_selection(path)
+                return False
+            self.add_selection(path)
+            return True
+        except Exception as e:
+            logger.error(
+                f"Error toggling selection for path '{path}'",
+                exception=e,
+                variables={'path': path}
+            )
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Selection Error", f"Failed to toggle path selection: {str(e)}")
             return False
-        self.add_selection(path)
-        return True
 
+    @log_errors()
     def clear_selection(self) -> None:
         """Clear the selection set and emit the relevant signals."""
-        with self._lock:
-            if not self._selected_paths:
-                return
-            self._selected_paths.clear()
+        try:
+            with self._lock:
+                if not self._selected_paths:
+                    return
+                self._selected_paths.clear()
 
-        self.selection_cleared.emit()
-        self.selection_changed.emit(set())
-        self.selection_count_changed.emit(0)
+            self.selection_cleared.emit()
+            self.selection_changed.emit(set())
+            self.selection_count_changed.emit(0)
+        except Exception as e:
+            logger.error(
+                "Error clearing selection",
+                exception=e
+            )
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Selection Error", f"Failed to clear selection: {str(e)}")
 
     def get_selection_count(self) -> int:
         """Return the number of selected paths."""
@@ -421,8 +498,17 @@ class SelectionStore(QObject):
         return self._normalizer(path)
 
     @staticmethod
+    @log_errors()
     def _default_normalizer(path: str) -> str:
-        return str(Path(path).resolve())
+        try:
+            return str(Path(path).resolve())
+        except OSError as e:
+            logger.error(
+                f"Error normalizing path '{path}'",
+                exception=e,
+                variables={'path': path}
+            )
+            return path  # Return original if resolution fails
 
 
 # --------------------------------------------------------------------------- #
@@ -473,33 +559,77 @@ class FileGroupModel:
     # Public API
     # ------------------------------------------------------------------ #
 
+    @log_errors()
     def with_direction(self, direction: PoolDirection) -> "FileGroupModel":
         """Return a new model instance using *direction* for filtering."""
-        return replace(self, direction=direction)
+        try:
+            return replace(self, direction=direction)
+        except Exception as e:
+            logger.error(
+                f"Error updating direction to {direction}",
+                exception=e,
+                variables={'direction': direction}
+            )
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Model Error", f"Failed to update model direction: {str(e)}")
+            return self
 
+    @log_errors()
     def with_groups(self, groups: Iterable[FileGroup]) -> "FileGroupModel":
         """Return a new model carrying *groups* as the canonical dataset."""
-        return replace(self, groups=tuple(groups))
+        try:
+            return replace(self, groups=tuple(groups))
+        except (TypeError, ValueError) as e:
+            logger.error(
+                f"Error updating groups (count: {len(groups) if groups else 0})",
+                exception=e,
+                variables={'groups_count': len(groups) if groups else 0}
+            )
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Model Error", f"Failed to update model groups: {str(e)}")
+            return self
 
+    @log_errors()
     def with_pool_map(self, pool_map: Mapping[str, str]) -> "FileGroupModel":
         """Return a new model with an updated path → pool mapping."""
-        return replace(self, pool_map=dict(pool_map))
+        try:
+            return replace(self, pool_map=dict(pool_map))
+        except (TypeError, ValueError) as e:
+            logger.error(
+                f"Error updating pool map (size: {len(pool_map)})",
+                exception=e,
+                variables={'pool_map_size': len(pool_map)}
+            )
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Model Error", f"Failed to update pool map: {str(e)}")
+            return self
 
+    @log_errors()
     def filtered_groups(self) -> Tuple[FileGroup, ...]:
         """Return groups filtered according to the active direction setting."""
-        if self.direction is PoolDirection.ALL:
+        try:
+            if self.direction is PoolDirection.ALL:
+                return self.groups
+            if self.direction is PoolDirection.A_TO_B:
+                return self._extract_cross_pool(self.source_label, self.target_label)
+            if self.direction is PoolDirection.B_TO_A:
+                return self._extract_cross_pool(self.target_label, self.source_label)
+            if self.direction is PoolDirection.A_WITHOUT_IN_B:
+                return self._extract_without_counterpart(self.source_label, self.target_label)
+            if self.direction is PoolDirection.B_WITHOUT_IN_A:
+                return self._extract_without_counterpart(self.target_label, self.source_label)
+            # Fallback: unknown direction behaves as ALL
+            logger.warning("Unhandled pool direction %s; returning canonical groups", self.direction)
             return self.groups
-        if self.direction is PoolDirection.A_TO_B:
-            return self._extract_cross_pool(self.source_label, self.target_label)
-        if self.direction is PoolDirection.B_TO_A:
-            return self._extract_cross_pool(self.target_label, self.source_label)
-        if self.direction is PoolDirection.A_WITHOUT_IN_B:
-            return self._extract_without_counterpart(self.source_label, self.target_label)
-        if self.direction is PoolDirection.B_WITHOUT_IN_A:
-            return self._extract_without_counterpart(self.target_label, self.source_label)
-        # Fallback: unknown direction behaves as ALL
-        logger.warning("Unhandled pool direction %s; returning canonical groups", self.direction)
-        return self.groups
+        except Exception as e:
+            logger.error(
+                f"Error filtering groups by direction '{self.direction}'",
+                exception=e,
+                variables={'direction': self.direction, 'groups_count': len(self.groups)}
+            )
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Filtering Error", f"Failed to filter groups: {str(e)}")
+            return self.groups
 
     def iter_groups(self) -> Iterable[FileGroup]:
         """Yield groups complying with the active direction setting."""
@@ -513,86 +643,130 @@ class FileGroupModel:
     # Internal helpers
     # ------------------------------------------------------------------ #
 
+    @log_errors()
     def _extract_cross_pool(self, source: str, target: str) -> Tuple[FileGroup, ...]:
-        extracted: List[FileGroup] = []
-        next_id = 1
-        for group in self.groups:
-            partition = self._partition_group(group)
-            if source not in partition or target not in partition:
-                continue
-            target_items = partition[target]
-            if not target_items:
-                continue
-            stats = self._recalculate_stats(target_items)
-            extracted.append(
-                FileGroup(
-                    id=next_id,
-                    items=tuple(target_items),
-                    stats=stats,
-                    ref_path=target_items[0].path,
+        try:
+            extracted: List[FileGroup] = []
+            next_id = 1
+            for group in self.groups:
+                partition = self._partition_group(group)
+                if source not in partition or target not in partition:
+                    continue
+                target_items = partition[target]
+                if not target_items:
+                    continue
+                stats = self._recalculate_stats(target_items)
+                extracted.append(
+                    FileGroup(
+                        id=next_id,
+                        items=tuple(target_items),
+                        stats=stats,
+                        ref_path=target_items[0].path,
+                    )
                 )
+                next_id += 1
+            return tuple(extracted)
+        except (IndexError, KeyError, ValueError) as e:
+            logger.error(
+                f"Error extracting cross-pool groups (source: {source}, target: {target})",
+                exception=e,
+                variables={'source': source, 'target': target, 'groups_count': len(self.groups)}
             )
-            next_id += 1
-        return tuple(extracted)
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Filtering Error", f"Failed to extract cross-pool groups: {str(e)}")
+            return tuple()
 
+    @log_errors()
     def _extract_without_counterpart(self, primary: str, counterpart: str) -> Tuple[FileGroup, ...]:
-        extracted: List[FileGroup] = []
-        next_id = 1
-        for group in self.groups:
-            partition = self._partition_group(group)
-            if counterpart in partition:
-                continue
-            primary_items = partition.get(primary, [])
-            if not primary_items:
-                continue
-            stats = self._recalculate_stats(primary_items)
-            extracted.append(
-                FileGroup(
-                    id=next_id,
-                    items=tuple(primary_items),
-                    stats=stats,
-                    ref_path=primary_items[0].path,
+        try:
+            extracted: List[FileGroup] = []
+            next_id = 1
+            for group in self.groups:
+                partition = self._partition_group(group)
+                if counterpart in partition:
+                    continue
+                primary_items = partition.get(primary, [])
+                if not primary_items:
+                    continue
+                stats = self._recalculate_stats(primary_items)
+                extracted.append(
+                    FileGroup(
+                        id=next_id,
+                        items=tuple(primary_items),
+                        stats=stats,
+                        ref_path=primary_items[0].path,
+                    )
                 )
+                next_id += 1
+            return tuple(extracted)
+        except (IndexError, KeyError, ValueError) as e:
+            logger.error(
+                f"Error extracting without counterpart (primary: {primary}, counterpart: {counterpart})",
+                exception=e,
+                variables={'primary': primary, 'counterpart': counterpart, 'groups_count': len(self.groups)}
             )
-            next_id += 1
-        return tuple(extracted)
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Filtering Error", f"Failed to extract without counterpart groups: {str(e)}")
+            return tuple()
 
+    @log_errors()
     def _partition_group(self, group: FileGroup) -> Dict[str, List[FileItem]]:
-        partition: Dict[str, List[FileItem]] = {}
-        for item in group.items:
-            pool = self.pool_map.get(item.path, self.source_label)
-            pool_label = pool.upper()
-            partition.setdefault(pool_label, []).append(item)
-        return partition
+        try:
+            partition: Dict[str, List[FileItem]] = {}
+            for item in group.items:
+                pool = self.pool_map.get(item.path, self.source_label)
+                pool_label = pool.upper()
+                partition.setdefault(pool_label, []).append(item)
+            return partition
+        except (KeyError, AttributeError, ValueError) as e:
+            logger.error(
+                f"Error partitioning group {group.id}",
+                exception=e,
+                variables={'group_id': group.id, 'items_count': len(group.items), 'pool_map_size': len(self.pool_map)}
+            )
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Partition Error", f"Failed to partition group: {str(e)}")
+            return {}
 
     @staticmethod
+    @log_errors()
     def _recalculate_stats(items: Sequence[FileItem]) -> GroupStats:
-        if not items:
+        try:
+            if not items:
+                return GroupStats(
+                    total_size=0,
+                    savings=0,
+                    min_score=0.0,
+                    max_score=0.0,
+                    avg_score=0.0,
+                    file_count=0,
+                )
+
+            total_size = sum(item.size for item in items)
+            total_savings = sum(item.savings for item in items)
+            scores = [item.score for item in items if item.score is not None]
+
+            if scores:
+                min_score = float(min(scores))
+                max_score = float(max(scores))
+                avg_score = float(sum(scores) / len(scores))
+            else:
+                min_score = max_score = avg_score = 0.0
+
             return GroupStats(
-                total_size=0,
-                savings=0,
-                min_score=0.0,
-                max_score=0.0,
-                avg_score=0.0,
-                file_count=0,
+                total_size=total_size,
+                savings=total_savings,
+                min_score=min_score,
+                max_score=max_score,
+                avg_score=avg_score,
+                file_count=len(items),
             )
-
-        total_size = sum(item.size for item in items)
-        total_savings = sum(item.savings for item in items)
-        scores = [item.score for item in items if item.score is not None]
-
-        if scores:
-            min_score = float(min(scores))
-            max_score = float(max(scores))
-            avg_score = float(sum(scores) / len(scores))
-        else:
-            min_score = max_score = avg_score = 0.0
-
-        return GroupStats(
-            total_size=total_size,
-            savings=total_savings,
-            min_score=min_score,
-            max_score=max_score,
-            avg_score=avg_score,
-            file_count=len(items),
-        )
+        except (ValueError, ZeroDivisionError, TypeError) as e:
+            logger.error(
+                f"Error recalculating stats for {len(items)} items",
+                exception=e,
+                variables={'items_count': len(items)}
+            )
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Stats Error", f"Failed to recalculate group stats: {str(e)}")
+            return GroupStats(0, 0, 0.0, 0.0, 0.0, len(items))

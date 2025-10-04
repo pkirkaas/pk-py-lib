@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -36,49 +37,68 @@ from PySide6.QtWidgets import (
 
 from .models import FileGroup, FileGroupModel, FileItem, PoolDirection, SelectionStore
 from ..core.logging import get_logger
+from ..core.logging.decorators import log_errors, log_warnings
 
 logger = get_logger(__name__)
 
 THUMBNAIL_SIZE = QSize(160, 160)
 
 
+@log_errors()
 def _format_bytes(size: Optional[int]) -> str:
     """
     Convert a byte count into a human friendly string.
-
+ 
     Args:
         size: Raw byte value that may be ``None`` or negative.
-
+ 
     Returns:
         Human readable string (e.g. ``"1.5 MB"``) or ``"—"`` when unavailable.
     """
-    if size is None:
+    try:
+        if size is None:
+            return "—"
+        value = max(int(size), 0)
+        units = ["B", "KB", "MB", "GB", "TB", "PB"]
+        index = 0
+        scaled = float(value)
+        while scaled >= 1024 and index < len(units) - 1:
+            scaled /= 1024
+            index += 1
+        return f"{scaled:.1f} {units[index]}" if value else "0 B"
+    except (ValueError, TypeError) as e:
+        logger.error(
+            f"Error formatting bytes for size '{size}'",
+            exception=e,
+            variables={'size': size}
+        )
         return "—"
-    value = max(int(size), 0)
-    units = ["B", "KB", "MB", "GB", "TB", "PB"]
-    index = 0
-    scaled = float(value)
-    while scaled >= 1024 and index < len(units) - 1:
-        scaled /= 1024
-        index += 1
-    return f"{scaled:.1f} {units[index]}" if value else "0 B"
 
 
+@log_errors()
 def _normalise_path(selection_store: SelectionStore, path: str) -> str:
     """
     Produce a normalised path compatible with the supplied SelectionStore.
-
+ 
     Args:
         selection_store: The selection store providing the normalisation strategy.
         path: Absolute or relative filesystem path.
-
+ 
     Returns:
         Normalised absolute path string.
     """
-    normalizer = getattr(selection_store, "_normalize", None)
-    if callable(normalizer):
-        return normalizer(path)
-    return str(Path(path).resolve())
+    try:
+        normalizer = getattr(selection_store, "_normalize", None)
+        if callable(normalizer):
+            return normalizer(path)
+        return str(Path(path).resolve())
+    except (OSError, ValueError, AttributeError) as e:
+        logger.error(
+            f"Error normalizing path '{path}'",
+            exception=e,
+            variables={'path': path}
+        )
+        return path  # Return original path on error
 
 
 class FileGroupView(QWidget):
@@ -110,6 +130,7 @@ class FileGroupView(QWidget):
     selection_changed = Signal(set)
     item_double_clicked = Signal(str)
 
+    @log_errors()
     def __init__(
         self,
         selection_store: SelectionStore,
@@ -123,165 +144,258 @@ class FileGroupView(QWidget):
         self._item_index: Dict[str, QTreeWidgetItem] = {}
         self._suppress_tree_signal: bool = False
 
-        self._setup_ui()
-        self._connect_signals()
+        try:
+            self._setup_ui()
+            self._connect_signals()
+        except Exception as e:
+            logger.error(
+                f"Error initializing FileGroupView (mode: {display_mode})",
+                exception=e,
+                variables={'display_mode': display_mode}
+            )
+            QMessageBox.critical(parent, "Initialization Error", f"Failed to initialize file group view: {str(e)}")
 
     @property
     def display_mode(self) -> Literal["duplicates", "similarity"]:
         """Return the active display mode."""
         return self._display_mode
 
+    @log_errors()
     def set_display_mode(self, mode: Literal["duplicates", "similarity"]) -> None:
         """
         Update the display mode and refresh the rendered groups.
-
+ 
         Args:
             mode: Desired visual mode (``"duplicates"`` or ``"similarity"``).
         """
-        if mode not in ("duplicates", "similarity"):
-            raise ValueError(f"Unsupported display mode: {mode}")
-        if mode == self._display_mode:
-            return
-        self._display_mode = mode
-        self._apply_column_configuration()
-        self._populate_tree(self._model.filtered_groups())
+        try:
+            if mode not in ("duplicates", "similarity"):
+                raise ValueError(f"Unsupported display mode: {mode}")
+            if mode == self._display_mode:
+                return
+            self._display_mode = mode
+            self._apply_column_configuration()
+            self._populate_tree(self._model.filtered_groups())
+        except ValueError as e:
+            logger.error(
+                f"Invalid display mode '{mode}'",
+                exception=e,
+                variables={'mode': mode}
+            )
+            QMessageBox.warning(self, "Display Mode Error", str(e))
+        except Exception as e:
+            logger.error(
+                f"Error setting display mode to '{mode}'",
+                exception=e,
+                variables={'mode': mode}
+            )
+            QMessageBox.critical(self, "Display Mode Error", f"Failed to set display mode: {str(e)}")
 
+    @log_errors()
     def update_model(self, model: FileGroupModel) -> None:
         """
         Render a new :class:`FileGroupModel`.
-
+ 
         Args:
             model: Immutable view-model containing groups, pool map and direction.
         """
-        if not isinstance(model, FileGroupModel):
-            raise TypeError("model must be an instance of FileGroupModel")
-        self._model = model
-        self._populate_tree(model.filtered_groups())
+        try:
+            if not isinstance(model, FileGroupModel):
+                raise TypeError("model must be an instance of FileGroupModel")
+            self._model = model
+            self._populate_tree(model.filtered_groups())
+        except TypeError as e:
+            logger.error(
+                f"Invalid model type: {type(model)}",
+                exception=e,
+                variables={'model_type': type(model)}
+            )
+            QMessageBox.warning(self, "Model Error", str(e))
+        except Exception as e:
+            logger.error(
+                f"Error updating model (groups: {len(model.groups) if hasattr(model, 'groups') else 'unknown'})",
+                exception=e,
+                variables={'model_groups_count': len(model.groups) if hasattr(model, 'groups') else 0}
+            )
+            QMessageBox.critical(self, "Model Update Error", f"Failed to update model: {str(e)}")
 
+    @log_errors()
     def set_pool_direction(self, direction: PoolDirection) -> None:
         """
         Apply a new pool direction filter and refresh the view.
-
+ 
         Args:
             direction: Direction enum describing which pools should be visible.
         """
-        self.update_model(self._model.with_direction(direction))
+        try:
+            self.update_model(self._model.with_direction(direction))
+        except Exception as e:
+            logger.error(
+                f"Error setting pool direction '{direction}'",
+                exception=e,
+                variables={'direction': direction}
+            )
+            QMessageBox.warning(self, "Direction Error", f"Failed to set pool direction: {str(e)}")
 
+    @log_errors()
     def clear(self) -> None:
         """Remove all rows and reset internal indices."""
-        self._item_index.clear()
-        self._model = FileGroupModel()
-        self.tree_widget.clear()
+        try:
+            self._item_index.clear()
+            self._model = FileGroupModel()
+            self.tree_widget.clear()
+        except Exception as e:
+            logger.error(
+                "Error clearing FileGroupView",
+                exception=e
+            )
+            QMessageBox.warning(self, "Clear Error", f"Failed to clear view: {str(e)}")
 
+    @log_errors()
     def get_selected_files(self, apply_filter: bool = False) -> List[FileItem]:
         """
         Collect the :class:`FileItem` objects currently marked as selected.
-
+ 
         Args:
             apply_filter: When ``True``, respects the model's active pool direction;
                 otherwise scans the canonical group list.
-
+ 
         Returns:
             Ordered list of file items corresponding to the selected paths.
         """
-        selected_paths = set(self.selection_store.get_selected_paths())
-        groups: Sequence[FileGroup] = (
-            self._model.filtered_groups() if apply_filter else self._model.groups
-        )
-        selected_items: List[FileItem] = []
-        for group in groups:
-            for file_item in group.items:
-                normalised = _normalise_path(self.selection_store, file_item.path)
-                if normalised in selected_paths:
-                    selected_items.append(file_item)
-        return selected_items
+        try:
+            selected_paths = set(self.selection_store.get_selected_paths())
+            groups: Sequence[FileGroup] = (
+                self._model.filtered_groups() if apply_filter else self._model.groups
+            )
+            selected_items: List[FileItem] = []
+            for group in groups:
+                for file_item in group.items:
+                    normalised = _normalise_path(self.selection_store, file_item.path)
+                    if normalised in selected_paths:
+                        selected_items.append(file_item)
+            return selected_items
+        except Exception as e:
+            logger.error(
+                f"Error getting selected files (apply_filter: {apply_filter})",
+                exception=e,
+                variables={'apply_filter': apply_filter, 'selected_count': self.selection_store.get_selection_count()}
+            )
+            QMessageBox.warning(self, "Selection Error", f"Failed to get selected files: {str(e)}")
+            return []
 
+    @log_errors()
     def _setup_ui(self) -> None:
         """Initialise the tree widget and associated layout."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        try:
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(6)
 
-        self.tree_widget = QTreeWidget(self)
-        self.tree_widget.setUniformRowHeights(True)
-        self.tree_widget.setAllColumnsShowFocus(True)
-        self.tree_widget.setRootIsDecorated(True)
-        self.tree_widget.setAlternatingRowColors(True)
-        self.tree_widget.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.tree_widget.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.tree_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tree_widget.setTextElideMode(Qt.ElideRight)
+            self.tree_widget = QTreeWidget(self)
+            self.tree_widget.setUniformRowHeights(True)
+            self.tree_widget.setAllColumnsShowFocus(True)
+            self.tree_widget.setRootIsDecorated(True)
+            self.tree_widget.setAlternatingRowColors(True)
+            self.tree_widget.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.tree_widget.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.tree_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.tree_widget.setTextElideMode(Qt.ElideRight)
 
-        header = self.tree_widget.header()
-        header.setStretchLastSection(False)
-        header.setSectionsClickable(True)
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+            header = self.tree_widget.header()
+            header.setStretchLastSection(False)
+            header.setSectionsClickable(True)
+            header.setSectionResizeMode(QHeaderView.ResizeToContents)
 
-        layout.addWidget(self.tree_widget)
-        self._apply_column_configuration()
+            layout.addWidget(self.tree_widget)
+            self._apply_column_configuration()
 
-        self.tree_widget.setStyleSheet("""
-            QTreeView::item:selected {
-                background: #4a90e2;
-                color: #ffffff;
-            }
-            QTreeView::item:selected:!active {
-                background: #4a90e2;
-                color: #ffffff;
-            }
-            QTreeView::item:hover {
-                background: #e3f2fd;
-                color: #333333;
-            }
-            QTreeView::item:hover:selected {
-                background: #4a90e2;
-                color: #ffffff;
-            }
-        """)
+            self.tree_widget.setStyleSheet("""
+                QTreeView::item:selected {
+                    background: #4a90e2;
+                    color: #ffffff;
+                }
+                QTreeView::item:selected:!active {
+                    background: #4a90e2;
+                    color: #ffffff;
+                }
+                QTreeView::item:hover {
+                    background: #e3f2fd;
+                    color: #333333;
+                }
+                QTreeView::item:hover:selected {
+                    background: #4a90e2;
+                    color: #ffffff;
+                }
+            """)
+        except Exception as e:
+            logger.error(
+                "Error setting up UI for FileGroupView",
+                exception=e
+            )
+            QMessageBox.critical(self, "UI Setup Error", f"Failed to setup UI: {str(e)}")
 
+    @log_errors()
     def _connect_signals(self) -> None:
         """Wire Qt signals between the tree widget and the selection store."""
-        self.tree_widget.itemChanged.connect(self._on_tree_item_changed)
-        self.tree_widget.itemDoubleClicked.connect(self._emit_item_double_clicked)
-        self.selection_store.selection_changed.connect(self._on_selection_store_changed)
-        self.selection_store.selection_changed.connect(self._relay_selection_changed)
-        self.selection_store.selection_cleared.connect(self._on_selection_store_cleared)
+        try:
+            self.tree_widget.itemChanged.connect(self._on_tree_item_changed)
+            self.tree_widget.itemDoubleClicked.connect(self._emit_item_double_clicked)
+            self.selection_store.selection_changed.connect(self._on_selection_store_changed)
+            self.selection_store.selection_changed.connect(self._relay_selection_changed)
+            self.selection_store.selection_cleared.connect(self._on_selection_store_cleared)
+        except Exception as e:
+            logger.error(
+                "Error connecting signals in FileGroupView",
+                exception=e
+            )
+            QMessageBox.critical(self, "Signal Connection Error", f"Failed to connect signals: {str(e)}")
 
+    @log_errors()
     def _apply_column_configuration(self) -> None:
         """Configure the tree columns according to the current display mode."""
-        if self._display_mode == "duplicates":
-            headers = [
-                "Select",
-                "Name",
-                "Directory",
-                "Size",
-                "File Type",
-                "Potential Savings",
-                "Score",
-            ]
-            hidden_columns = {6}
-        else:
-            headers = [
-                "Select",
-                "Name",
-                "Directory",
-                "Size",
-                "Resolution",
-                "Modified",
-                "Score",
-                "Quality",
-            ]
-            hidden_columns = set()
+        try:
+            if self._display_mode == "duplicates":
+                headers = [
+                    "Select",
+                    "Name",
+                    "Directory",
+                    "Size",
+                    "File Type",
+                    "Potential Savings",
+                    "Score",
+                ]
+                hidden_columns = {6}
+            else:
+                headers = [
+                    "Select",
+                    "Name",
+                    "Directory",
+                    "Size",
+                    "Resolution",
+                    "Modified",
+                    "Score",
+                    "Quality",
+                ]
+                hidden_columns = set()
 
-        self.tree_widget.setColumnCount(len(headers))
-        self.tree_widget.setHeaderLabels(headers)
-        for column in range(self.tree_widget.columnCount()):
-            self.tree_widget.setColumnHidden(column, column in hidden_columns)
+            self.tree_widget.setColumnCount(len(headers))
+            self.tree_widget.setHeaderLabels(headers)
+            for column in range(self.tree_widget.columnCount()):
+                self.tree_widget.setColumnHidden(column, column in hidden_columns)
+        except Exception as e:
+            logger.error(
+                f"Error applying column configuration for mode '{self._display_mode}'",
+                exception=e,
+                variables={'display_mode': self._display_mode}
+            )
+            QMessageBox.warning(self, "Column Config Error", f"Failed to configure columns: {str(e)}")
 
+    @log_errors()
     def _populate_tree(self, groups: Sequence[FileGroup]) -> None:
         """
         Populate the tree widget with the supplied groups.
-
+ 
         Args:
             groups: Sequence of immutable file groups to render.
         """
@@ -302,152 +416,209 @@ class FileGroupView(QWidget):
 
             for column in range(self.tree_widget.columnCount()):
                 self.tree_widget.resizeColumnToContents(column)
+        except Exception as e:
+            logger.error(
+                f"Error populating tree with {len(groups)} groups",
+                exception=e,
+                variables={'groups_count': len(groups)}
+            )
+            QMessageBox.critical(self, "Populate Error", f"Failed to populate tree: {str(e)}")
         finally:
             self._suppress_tree_signal = False
             self._on_selection_store_changed(self.selection_store.get_selected_paths())
 
+    @log_errors()
     def _build_group_item(self, group: FileGroup, font: QFont) -> QTreeWidgetItem:
         """
         Create the top-level tree row representing a file group.
-
+ 
         Args:
             group: The immutable group being visualised.
             font: Pre-constructed bold font for emphasis.
-
+ 
         Returns:
             Configured :class:`QTreeWidgetItem` instance.
         """
-        group_item = QTreeWidgetItem()
-        anchor_path = Path(group.ref_path)
-        descriptor = f"Group {group.id} · {group.stats.file_count} files"
-        group_item.setText(1, descriptor)
-        group_item.setText(2, str(anchor_path.parent))
-        group_item.setText(3, _format_bytes(group.stats.total_size))
-        if self._display_mode == "duplicates":
-            group_item.setText(5, _format_bytes(group.stats.savings))
-            group_item.setText(6, "—")
-            group_item.setText(7, "—")
-        else:
-            if group.stats.avg_score:
-                group_item.setText(6, f"{group.stats.avg_score * 100:.1f}%")
-            else:
+        try:
+            group_item = QTreeWidgetItem()
+            anchor_path = Path(group.ref_path)
+            descriptor = f"Group {group.id} · {group.stats.file_count} files"
+            group_item.setText(1, descriptor)
+            group_item.setText(2, str(anchor_path.parent))
+            group_item.setText(3, _format_bytes(group.stats.total_size))
+            if self._display_mode == "duplicates":
+                group_item.setText(5, _format_bytes(group.stats.savings))
                 group_item.setText(6, "—")
-            group_item.setText(7, "—")  # Quality placeholder for group
-
-        group_item.setData(0, Qt.UserRole, group.ref_path)
-        group_item.setFlags(Qt.ItemIsEnabled)
-        for column in range(self.tree_widget.columnCount()):
-            group_item.setFont(column, font)
-            if column in (3, 5, 6, 7):
-                group_item.setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
+                group_item.setText(7, "—")
             else:
-                group_item.setTextAlignment(column, Qt.AlignLeft | Qt.AlignVCenter)
-        return group_item
+                if group.stats.avg_score:
+                    group_item.setText(6, f"{group.stats.avg_score * 100:.1f}%")
+                else:
+                    group_item.setText(6, "—")
+                group_item.setText(7, "—")  # Quality placeholder for group
 
+            group_item.setData(0, Qt.UserRole, group.ref_path)
+            group_item.setFlags(Qt.ItemIsEnabled)
+            for column in range(self.tree_widget.columnCount()):
+                group_item.setFont(column, font)
+                if column in (3, 5, 6, 7):
+                    group_item.setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
+                else:
+                    group_item.setTextAlignment(column, Qt.AlignLeft | Qt.AlignVCenter)
+            return group_item
+        except (ValueError, AttributeError, OSError) as e:
+            logger.error(
+                f"Error building group item for group {group.id}",
+                exception=e,
+                variables={'group_id': group.id, 'ref_path': group.ref_path}
+            )
+            # Return a basic item on error
+            basic_item = QTreeWidgetItem()
+            basic_item.setText(1, f"Group {group.id} (Error)")
+            return basic_item
+
+    @log_errors()
     def _build_file_item(self, file_item: FileItem) -> QTreeWidgetItem:
         """
         Create a child row for the provided file.
-
+ 
         In similarity mode, displays the normalized quality score (0-1 range, e.g., "0.745") from the FileItem in column 7, or "-" if unavailable. Aligns quality right for numeric display.
-
+ 
         Args:
             file_item: Immutable file metadata used to populate the row.
-
+ 
         Returns:
             Configured :class:`QTreeWidgetItem` instance.
         """
-        tree_item = QTreeWidgetItem()
-        normalised = _normalise_path(self.selection_store, file_item.path)
-        self._item_index[normalised] = tree_item
+        try:
+            tree_item = QTreeWidgetItem()
+            normalised = _normalise_path(self.selection_store, file_item.path)
+            self._item_index[normalised] = tree_item
 
-        tree_item.setText(1, file_item.basename)
-        tree_item.setText(2, file_item.directory)
-        tree_item.setText(3, _format_bytes(file_item.size))
+            tree_item.setText(1, file_item.basename)
+            tree_item.setText(2, file_item.directory)
+            tree_item.setText(3, _format_bytes(file_item.size))
 
-        if self._display_mode == "duplicates":
-            file_type_value = file_item.file_type or Path(file_item.path).suffix.lstrip(".")
-            tree_item.setText(4, file_type_value.upper() if file_type_value else "—")
-            tree_item.setText(5, _format_bytes(file_item.savings))
-            tree_item.setText(6, "100.0%")
-            tree_item.setText(7, "—")
-        else:
-            tree_item.setText(4, file_item.resolution or "—")
-            tree_item.setText(5, file_item.mod_date or "—")
-            if file_item.score is not None:
-                tree_item.setText(6, f"{file_item.score * 100:.1f}%")
+            if self._display_mode == "duplicates":
+                file_type_value = file_item.file_type or Path(file_item.path).suffix.lstrip(".")
+                tree_item.setText(4, file_type_value.upper() if file_type_value else "—")
+                tree_item.setText(5, _format_bytes(file_item.savings))
+                tree_item.setText(6, "100.0%")
+                tree_item.setText(7, "—")
             else:
-                tree_item.setText(6, "—")
+                tree_item.setText(4, file_item.resolution or "—")
+                tree_item.setText(5, file_item.mod_date or "—")
+                if file_item.score is not None:
+                    tree_item.setText(6, f"{file_item.score * 100:.1f}%")
+                else:
+                    tree_item.setText(6, "—")
 
-            # Display normalized quality score (0-1) from FileItem (populated by dialog); Algorithm column removed
-            quality_text = "—"
-            if file_item.quality_score is not None:
-                quality_text = f"{file_item.quality_score:.3f}"
-            
-            tree_item.setText(7, quality_text)
+                # Display normalized quality score (0-1) from FileItem (populated by dialog); Algorithm column removed
+                quality_text = "—"
+                if file_item.quality_score is not None:
+                    quality_text = f"{file_item.quality_score:.3f}"
+                
+                tree_item.setText(7, quality_text)
 
-        tooltip = f"{file_item.path}\nSize: {_format_bytes(file_item.size)}"
-        for column in range(self.tree_widget.columnCount()):
-            tree_item.setTextAlignment(column, Qt.AlignLeft | Qt.AlignVCenter)
-            if column == 7:
-                tree_item.setTextAlignment(7, Qt.AlignRight | Qt.AlignVCenter)
-            tree_item.setToolTip(column, tooltip)
+            tooltip = f"{file_item.path}\nSize: {_format_bytes(file_item.size)}"
+            for column in range(self.tree_widget.columnCount()):
+                tree_item.setTextAlignment(column, Qt.AlignLeft | Qt.AlignVCenter)
+                if column == 7:
+                    tree_item.setTextAlignment(7, Qt.AlignRight | Qt.AlignVCenter)
+                tree_item.setToolTip(column, tooltip)
 
-        tree_item.setFlags(
-            Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable
-        )
-        tree_item.setCheckState(
-            0,
-            Qt.Checked if self.selection_store.is_selected(file_item.path) else Qt.Unchecked,
-        )
-        tree_item.setData(0, Qt.UserRole, file_item.path)
-        tree_item.setData(0, Qt.UserRole + 1, file_item)
-        return tree_item
+            tree_item.setFlags(
+                Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable
+            )
+            tree_item.setCheckState(
+                0,
+                Qt.Checked if self.selection_store.is_selected(file_item.path) else Qt.Unchecked,
+            )
+            tree_item.setData(0, Qt.UserRole, file_item.path)
+            tree_item.setData(0, Qt.UserRole + 1, file_item)
+            return tree_item
+        except (ValueError, AttributeError, OSError) as e:
+            logger.error(
+                f"Error building file item for '{file_item.path}'",
+                exception=e,
+                variables={'path': file_item.path}
+            )
+            # Return a basic item on error
+            basic_item = QTreeWidgetItem()
+            basic_item.setText(1, "File (Error)")
+            return basic_item
 
+    @log_errors()
     def _on_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         """
         React to user toggles of the checkbox column.
-
+ 
         Args:
             item: The tree item that changed.
             column: Column index that triggered the change.
         """
-        if self._suppress_tree_signal or column != 0:
-            return
-        path = item.data(0, Qt.UserRole)
-        if not isinstance(path, str):
-            return
-        checked = item.checkState(0) == Qt.Checked
-        if checked:
-            self.selection_store.add_selection(path)
-        else:
-            self.selection_store.remove_selection(path)
+        try:
+            if self._suppress_tree_signal or column != 0:
+                return
+            path = item.data(0, Qt.UserRole)
+            if not isinstance(path, str):
+                return
+            checked = item.checkState(0) == Qt.Checked
+            if checked:
+                self.selection_store.add_selection(path)
+            else:
+                self.selection_store.remove_selection(path)
+        except Exception as e:
+            logger.error(
+                f"Error handling tree item change (column: {column})",
+                exception=e,
+                variables={'column': column}
+            )
+            QMessageBox.warning(self, "Item Change Error", f"Failed to handle item change: {str(e)}")
 
+    @log_errors()
     def _emit_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         """
         Forward double-click events with the associated file path.
-
+ 
         Args:
             item: Tree item that was double-clicked.
             column: Column index (unused, present for Qt signal compatibility).
         """
-        path = item.data(0, Qt.UserRole)
-        if isinstance(path, str):
-            self.item_double_clicked.emit(path)
+        try:
+            path = item.data(0, Qt.UserRole)
+            if isinstance(path, str):
+                self.item_double_clicked.emit(path)
+        except Exception as e:
+            logger.error(
+                f"Error emitting double-click for item (column: {column})",
+                exception=e,
+                variables={'column': column}
+            )
+            QMessageBox.warning(self, "Double-Click Error", f"Failed to handle double-click: {str(e)}")
 
+    @log_errors()
     def _on_selection_store_changed(self, selection: Iterable[str]) -> None:
         """
         Synchronise checkbox state when the SelectionStore mutates.
-
+ 
         Args:
             selection: Iterable of normalised paths currently selected.
         """
-        selected = set(selection)
-        self._suppress_tree_signal = True
         try:
+            selected = set(selection)
+            self._suppress_tree_signal = True
             for normalised, tree_item in self._item_index.items():
                 desired = Qt.Checked if normalised in selected else Qt.Unchecked
                 if tree_item.checkState(0) != desired:
                     tree_item.setCheckState(0, desired)
+        except Exception as e:
+            logger.error(
+                f"Error updating selection from store (selection size: {len(selection)})",
+                exception=e,
+                variables={'selection_size': len(selection)}
+            )
+            QMessageBox.warning(self, "Selection Update Error", f"Failed to update selection: {str(e)}")
         finally:
             self._suppress_tree_signal = False
 
@@ -486,6 +657,7 @@ class SimilarityPreviewPane(QWidget):
 
     item_double_clicked = Signal(str)
 
+    @log_errors()
     def __init__(
         self,
         selection_store: SelectionStore,
@@ -502,17 +674,33 @@ class SimilarityPreviewPane(QWidget):
         self._current_items: Tuple[FileItem, ...] = tuple()
         self._suppress_table_signal: bool = False
 
-        self._setup_ui()
-        self._connect_signals()
+        try:
+            self._setup_ui()
+            self._connect_signals()
+        except Exception as e:
+            logger.error(
+                "Error initializing SimilarityPreviewPane",
+                exception=e
+            )
+            QMessageBox.critical(parent, "Initialization Error", f"Failed to initialize preview pane: {str(e)}")
 
+    @log_errors()
     def clear(self) -> None:
         """Reset the table to an empty state and restore the placeholder."""
-        self.preview_table.setRowCount(0)
-        self.preview_table.hide()
-        self._placeholder.show()
-        self._rows_by_path.clear()
-        self._current_items = tuple()
+        try:
+            self.preview_table.setRowCount(0)
+            self.preview_table.hide()
+            self._placeholder.show()
+            self._rows_by_path.clear()
+            self._current_items = tuple()
+        except Exception as e:
+            logger.error(
+                "Error clearing SimilarityPreviewPane",
+                exception=e
+            )
+            QMessageBox.warning(self, "Clear Error", f"Failed to clear preview: {str(e)}")
 
+    @log_errors()
     def update_preview(
         self,
         file_items: Sequence[FileItem],
@@ -520,20 +708,20 @@ class SimilarityPreviewPane(QWidget):
     ) -> None:
         """
         Populate the preview table with the supplied file items.
-
+ 
         Args:
             file_items: Sequence of file entries derived from the active group.
             generate_thumbnails: When ``True``, attempts to render scaled previews.
         """
-        self._current_items = tuple(file_items)
-        if not file_items:
-            self.clear()
-            return
-
-        self._placeholder.hide()
-        self.preview_table.show()
         self._suppress_table_signal = True
         try:
+            self._current_items = tuple(file_items)
+            if not file_items:
+                self.clear()
+                return
+
+            self._placeholder.hide()
+            self.preview_table.show()
             self.preview_table.setRowCount(len(file_items))
             self._rows_by_path.clear()
             selected_paths = set(self.selection_store.get_selected_paths())
@@ -577,74 +765,98 @@ class SimilarityPreviewPane(QWidget):
 
                 row_height = max(THUMBNAIL_SIZE.height() + 12, 48)
                 self.preview_table.setRowHeight(row, row_height)
+        except Exception as e:
+            logger.error(
+                f"Error updating preview for {len(file_items)} items (thumbnails: {generate_thumbnails})",
+                exception=e,
+                variables={'items_count': len(file_items), 'generate_thumbnails': generate_thumbnails}
+            )
+            QMessageBox.critical(self, "Preview Update Error", f"Failed to update preview: {str(e)}")
         finally:
             self._suppress_table_signal = False
 
+    @log_errors()
     def _setup_ui(self) -> None:
         """Construct table layout and placeholder messaging."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        try:
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(6)
 
-        self._placeholder.setAlignment(Qt.AlignCenter)
-        self._placeholder.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self._placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(self._placeholder)
+            self._placeholder.setAlignment(Qt.AlignCenter)
+            self._placeholder.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self._placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            layout.addWidget(self._placeholder)
 
-        self.preview_table.setColumnCount(5)
-        self.preview_table.setHorizontalHeaderLabels(
-            ["Select", "Preview", "Dimensions", "Size", "Path"]
-        )
-        self.preview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.preview_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.preview_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.preview_table.setAlternatingRowColors(True)
-        self.preview_table.verticalHeader().setVisible(False)
+            self.preview_table.setColumnCount(5)
+            self.preview_table.setHorizontalHeaderLabels(
+                ["Select", "Preview", "Dimensions", "Size", "Path"]
+            )
+            self.preview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.preview_table.setSelectionMode(QAbstractItemView.SingleSelection)
+            self.preview_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.preview_table.setAlternatingRowColors(True)
+            self.preview_table.verticalHeader().setVisible(False)
 
-        header = self.preview_table.horizontalHeader()
-        header.setSectionsClickable(True)
-        header.setStretchLastSection(True)
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.Stretch)
+            header = self.preview_table.horizontalHeader()
+            header.setSectionsClickable(True)
+            header.setStretchLastSection(True)
+            header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(4, QHeaderView.Stretch)
 
-        self.preview_table.setStyleSheet("""
-            QTableView::item:selected {
-                background: #4a90e2;
-                color: #ffffff;
-            }
-            QTableView::item:selected:!active {
-                background: #4a90e2;
-                color: #ffffff;
-            }
-            QTableView::item:hover {
-                background: #e3f2fd;
-                color: #333333;
-            }
-            QTableView::item:hover:selected {
-                background: #4a90e2;
-                color: #ffffff;
-            }
-        """)
+            self.preview_table.setStyleSheet("""
+                QTableView::item:selected {
+                    background: #4a90e2;
+                    color: #ffffff;
+                }
+                QTableView::item:selected:!active {
+                    background: #4a90e2;
+                    color: #ffffff;
+                }
+                QTableView::item:hover {
+                    background: #e3f2fd;
+                    color: #333333;
+                }
+                QTableView::item:hover:selected {
+                    background: #4a90e2;
+                    color: #ffffff;
+                }
+            """)
 
-        layout.addWidget(self.preview_table)
-        self.preview_table.hide()
+            layout.addWidget(self.preview_table)
+            self.preview_table.hide()
+        except Exception as e:
+            logger.error(
+                "Error setting up UI for SimilarityPreviewPane",
+                exception=e
+            )
+            QMessageBox.critical(self, "UI Setup Error", f"Failed to setup preview UI: {str(e)}")
 
+    @log_errors()
     def _connect_signals(self) -> None:
         """Connect table-level interactions and selection store updates."""
-        self.preview_table.itemChanged.connect(self._on_table_item_changed)
-        self.preview_table.cellDoubleClicked.connect(self._on_cell_double_clicked)
-        self.selection_store.selection_changed.connect(self._on_selection_store_changed)
+        try:
+            self.preview_table.itemChanged.connect(self._on_table_item_changed)
+            self.preview_table.cellDoubleClicked.connect(self._on_cell_double_clicked)
+            self.selection_store.selection_changed.connect(self._on_selection_store_changed)
+        except Exception as e:
+            logger.error(
+                "Error connecting signals in SimilarityPreviewPane",
+                exception=e
+            )
+            QMessageBox.critical(self, "Signal Connection Error", f"Failed to connect preview signals: {str(e)}")
 
+    @log_errors()
     def _create_thumbnail_label(self, file_item: FileItem) -> QLabel:
         """
         Create a QLabel that renders a scaled thumbnail for the provided file.
-
+ 
         Args:
             file_item: File metadata used to locate the image on disk.
-
+ 
         Returns:
             QLabel configured with the scaled pixmap or a diagnostic message.
         """
@@ -674,55 +886,76 @@ class SimilarityPreviewPane(QWidget):
                 self._thumb_cache[file_item.path] = cached
             label.setPixmap(cached)
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning(
-                f"Failed to render preview for {file_item.path}: {exc}", exc_info=exc
+            logger.error(  # Changed to error for consistency
+                f"Failed to render preview for {file_item.path}: {exc}",
+                exception=exc,
+                variables={'path': file_item.path}
             )
             label.setText("Preview error")
         return label
 
+    @log_errors()
     def _on_table_item_changed(self, item: QTableWidgetItem) -> None:
         """
         Synchronise SelectionStore when the preview checkbox toggles.
-
+ 
         Args:
             item: Table item that changed (expected column 0).
         """
-        if self._suppress_table_signal or item.column() != 0:
-            return
-        path = item.data(Qt.UserRole)
-        if not isinstance(path, str):
-            return
-        checked = item.checkState() == Qt.Checked
-        if checked:
-            self.selection_store.add_selection(path)
-        else:
-            self.selection_store.remove_selection(path)
+        try:
+            if self._suppress_table_signal or item.column() != 0:
+                return
+            path = item.data(Qt.UserRole)
+            if not isinstance(path, str):
+                return
+            checked = item.checkState() == Qt.Checked
+            if checked:
+                self.selection_store.add_selection(path)
+            else:
+                self.selection_store.remove_selection(path)
+        except Exception as e:
+            logger.error(
+                f"Error handling table item change (column: {item.column()})",
+                exception=e,
+                variables={'column': item.column()}
+            )
+            QMessageBox.warning(self, "Item Change Error", f"Failed to handle preview item change: {str(e)}")
 
+    @log_errors()
     def _on_cell_double_clicked(self, row: int, column: int) -> None:
         """
         Emit the file path when a table row is activated.
-
+ 
         Args:
             row: The row index that was double-clicked.
             column: Column index (unused but kept for Qt compatibility).
         """
-        checkbox_item = self.preview_table.item(row, 0)
-        if checkbox_item is None:
-            return
-        path = checkbox_item.data(Qt.UserRole)
-        if isinstance(path, str):
-            self.item_double_clicked.emit(path)
+        try:
+            checkbox_item = self.preview_table.item(row, 0)
+            if checkbox_item is None:
+                return
+            path = checkbox_item.data(Qt.UserRole)
+            if isinstance(path, str):
+                self.item_double_clicked.emit(path)
+        except Exception as e:
+            logger.error(
+                f"Error handling cell double-click (row: {row}, column: {column})",
+                exception=e,
+                variables={'row': row, 'column': column}
+            )
+            QMessageBox.warning(self, "Double-Click Error", f"Failed to handle preview double-click: {str(e)}")
 
+    @log_errors()
     def _on_selection_store_changed(self, selection: Iterable[str]) -> None:
         """
         Mirror selection store updates within the preview table.
-
+ 
         Args:
             selection: Iterable of normalised file paths currently selected.
         """
-        selected = set(selection)
         self._suppress_table_signal = True
         try:
+            selected = set(selection)
             for normalised, row in self._rows_by_path.items():
                 checkbox_item = self.preview_table.item(row, 0)
                 if checkbox_item is None:
@@ -730,6 +963,13 @@ class SimilarityPreviewPane(QWidget):
                 desired = Qt.Checked if normalised in selected else Qt.Unchecked
                 if checkbox_item.checkState() != desired:
                     checkbox_item.setCheckState(desired)
+        except Exception as e:
+            logger.error(
+                f"Error updating preview selection (selection size: {len(selection)})",
+                exception=e,
+                variables={'selection_size': len(selection)}
+            )
+            QMessageBox.warning(self, "Selection Update Error", f"Failed to update preview selection: {str(e)}")
         finally:
             self._suppress_table_signal = False
 

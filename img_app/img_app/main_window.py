@@ -19,6 +19,8 @@ Syntax validation: This file has been reviewed for Python syntax correctness.
 from __future__ import annotations
 
 import sys
+import inspect
+import traceback
 import argparse # Added for CLI argument type hinting
 
 from PySide6.QtGui import QAction, QIcon, QPalette, QColor
@@ -38,8 +40,8 @@ from src.pk_py_lib.core.filesystem.paths import PathOperations
 from src.pk_py_lib.core.filesystem.traversal import DirectoryTraversal, IMAGE_EXTENSIONS
 from src.pk_py_lib.core.filesystem.identity import get_inode_device, compute_xxh3
 from datetime import datetime
-import traceback
-from src.pk_py_lib.core.logging.logger import get_logger
+from src.pk_py_lib.core.logging.logger import get_logger, PKLogger
+from src.pk_py_lib.core.logging.decorators import log_errors, log_warnings
 from src.pk_py_lib.core.image.similarity import (
     get_image_metadata,
     format_timestamp,
@@ -626,6 +628,7 @@ class MainWindow(QMainWindow):
     """
 
     @staticmethod
+    @log_errors()
     def _to_int_timestamp(val) -> int:
         """
         Best-effort string/number/None -> integer epoch seconds converter.
@@ -682,6 +685,7 @@ class MainWindow(QMainWindow):
         action.setEnabled(False)
         return action
 
+    @log_errors()
     def _on_clear_cache(self) -> None:
         """
         Handles the 'Clear Cache' menu action.
@@ -1175,6 +1179,7 @@ class MainWindow(QMainWindow):
         self.start_time = time.time()
         self.logger = get_logger(__name__)
 
+    @log_errors()
     def _setup_profile_toolbar(self) -> None:
         """
         Create the profile management toolbar with combobox and buttons.
@@ -1261,11 +1266,13 @@ class MainWindow(QMainWindow):
         self.addToolBar(Qt.TopToolBarArea, toolbar)
 
 
+    @log_errors()
     def _setup_window(self) -> None:
         """Configure basic window properties."""
         self.setWindowTitle("KDC Image Organizer")
         self.resize(1024, 720)
 
+    @log_errors()
     def _apply_app_palette_hack(self) -> None:
         """
         Apply an application-wide palette adjustment to guarantee dark text color
@@ -1304,6 +1311,7 @@ class MainWindow(QMainWindow):
             # Palette hacks should never crash the app; silently ignore on failure
             pass
 
+    @log_errors()
     def _setup_menu_bar(self) -> None:
         """Create a standard application menu bar with File, Cache, View, Help."""
         menubar = self.menuBar() if self.menuBar() else QMenuBar(self)
@@ -1344,6 +1352,7 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
         
+    @log_errors()
     def _setup_status_bar(self) -> None:
         """Attach a status bar with selectable text for feedback."""
         status = self.statusBar() if self.statusBar() else QStatusBar(self)
@@ -1364,6 +1373,7 @@ class MainWindow(QMainWindow):
             # Fallback to default message if any unexpected structure
             pass
 
+    @log_errors()
     def _setup_central_widget(self) -> None:
         """
         Create the central widget with progress section and main content.
@@ -1422,6 +1432,7 @@ class MainWindow(QMainWindow):
         # Set the container as the central widget
         self.setCentralWidget(container)
 
+    @log_errors()
     def load_profiles(self) -> None:
         """
         Load available profiles from the database and populate the combobox.
@@ -1472,6 +1483,7 @@ class MainWindow(QMainWindow):
             import logging
             logging.getLogger("img_app.main_window").exception("Error in _load_profiles")
 
+    @log_errors()
     def _on_profile_selected(self, index: int) -> None:
         """
         Handle profile selection change from combobox.
@@ -1507,6 +1519,7 @@ class MainWindow(QMainWindow):
             # Load the profile into the structured editor
             self._load_profile_into_editor(profile_id)
 
+    @log_errors()
     def _load_profile_into_editor(self, profile_id: str) -> None:
         """
         Fetch the full profile data and load it into the StructuredProfileEditorWidget.
@@ -1558,6 +1571,7 @@ class MainWindow(QMainWindow):
             import logging
             logging.getLogger("img_app.main_window").exception("Error in _load_profile_into_editor")
 
+    @log_errors()
     def _on_editor_dirty_changed(self, is_dirty: bool) -> None:
         """
         Handle the dirty state change from the structured editor.
@@ -1571,6 +1585,7 @@ class MainWindow(QMainWindow):
             # Restore status bar text to active profile name
             name = self.active_profile.get("name") if self.active_profile else "Ready"
             self.status_label.setText(f"Active profile: {name}")
+    @log_errors()
     def _on_create_profile(self) -> None:
         """
         Handle create new profile button click.
@@ -1619,6 +1634,7 @@ class MainWindow(QMainWindow):
             import logging
             logging.getLogger("img_app.main_window").exception("Error in _on_create_profile")
 
+    @log_errors()
     def _on_copy_profile(self) -> None:
         """
         Handle copy profile button click.
@@ -1675,6 +1691,7 @@ class MainWindow(QMainWindow):
             import logging
             logging.getLogger("img_app.main_window").exception("Error in _on_copy_profile")
 
+    @log_errors()
     def start_default_operation(self) -> None:
         """
         Public method to initiate the default operation (scan/comparison)
@@ -1685,7 +1702,7 @@ class MainWindow(QMainWindow):
         """
         self._on_start()
 
-    @gui_error_handler(component_name="MainWindow", operation="start_scan")
+    @log_errors()
     def _on_start(self) -> None:
         """
         Handle start button click to begin the operation.
@@ -1813,6 +1830,7 @@ class MainWindow(QMainWindow):
         # Show the modal dialog (blocks until accepted/rejected/closed)
         self._progress_dialog.exec()
 
+    @log_errors()
     def _on_scan_error(self, message: str) -> None:
         """
         Record a non-fatal error reported by the worker and reflect in status.
@@ -1824,6 +1842,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Error: {message}")
 
     @gui_error_handler(component_name="MainWindow", operation="cancellation_request")
+    @log_errors()
     def _on_cancellation_requested(self) -> None:
         """
         Handles the cancellation signal from the ProgressDialog.
@@ -1839,6 +1858,7 @@ class MainWindow(QMainWindow):
             self.logger.info("Stopping ComparisonWorker.")
             self._comparison_worker.stop()
 
+    @log_errors()
     def _update_progress_dialog(self, processed: int, total: int, current_path: str = "", message: str = "") -> None:
         """
         Update the ProgressDialog UI from worker signals.
@@ -1895,6 +1915,7 @@ class MainWindow(QMainWindow):
             # Indeterminate state or initial phase
             self._progress_dialog.set_indeterminate(message)
 
+    @log_errors()
     def _on_scan_finished_with_comparison_start(self, profile_name: str, summary: dict) -> None:
         """
         Handles ScanWorker completion. Checks for cancellation and, if successful,
@@ -2414,6 +2435,7 @@ class MainWindow(QMainWindow):
         return
 
     @gui_error_handler(component_name="MainWindow", operation="comparison_finished")
+    @log_errors()
     def _on_comparison_finished(self, results: dict) -> None:
         """
         Handles ComparisonWorker completion. Closes the progress dialog and displays

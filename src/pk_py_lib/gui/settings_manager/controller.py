@@ -20,12 +20,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Generic, Iterable, List, Optional, Sequence, Tuple, TypeVar
 
+import inspect
+import traceback
+
 from pk_py_lib.api import ApiResponse, ErrorCodes
 from pk_py_lib.api.settings_profiles import SettingsProfilesAPI
 
 from pk_py_lib.core.logging.logger import get_logger
+from pk_py_lib.core.logging.decorators import log_errors
 logger = get_logger(__name__)
-
  
 
 T = TypeVar("T")
@@ -80,18 +83,22 @@ class SettingsManagerController:
     # Bootstrap / listing / retrieval
     # -------------------------------------------------------------------------
 
+    @log_errors(include_args=True, include_traceback=True)
     def ensure_default(self) -> OpResult[Dict[str, Any]]:
         """Ensure one active profile exists (creates 'Default' if needed)."""
         return OpResult.from_api(self.api.ensure_default_profile())
 
+    @log_errors(include_args=True, include_traceback=True)
     def list_profiles(self) -> OpResult[List[Dict[str, Any]]]:
         """List profiles with item_count included."""
         return OpResult.from_api(self.api.list_profiles())
 
+    @log_errors(include_args=True, include_traceback=True)
     def get_profile(self, profile_id: str) -> OpResult[Dict[str, Any]]:
         """Get a profile by id, enriched with item_count."""
         return OpResult.from_api(self.api.get_profile(profile_id))
 
+    @log_errors(include_args=True, include_traceback=True)
     def get_profile_with_values(self, profile_id: str) -> OpResult[Dict[str, Any]]:
         """
         Fetch a profile and its key/value items.
@@ -109,6 +116,7 @@ class SettingsManagerController:
             return OpResult.from_api(vals)
         return OpResult(success=True, data={"profile": p.data, "values": vals.data or {}})
 
+    @log_errors(include_args=True, include_traceback=True)
     def get_active(self) -> OpResult[Optional[Dict[str, Any]]]:
         """Get the active profile (or None)."""
         return OpResult.from_api(self.api.get_active())
@@ -117,10 +125,12 @@ class SettingsManagerController:
     # Validation helpers
     # -------------------------------------------------------------------------
 
+    @log_errors(include_args=True, include_traceback=True)
     def validate_name(self, name: str) -> OpResult[bool]:
         """Validate a profile name (syntax/length)."""
         return OpResult.from_api(self.api.validate_name(name))
 
+    @log_errors(include_args=True, include_traceback=True)
     def validate_keys(self, keys: Iterable[str]) -> OpResult[bool]:
         """Validate a set of keys."""
         return OpResult.from_api(self.api.validate_keys(keys))
@@ -129,32 +139,39 @@ class SettingsManagerController:
     # Mutations — profiles
     # -------------------------------------------------------------------------
 
+    @log_errors(include_args=True, include_traceback=True)
     def create_profile(self, name: str, description: Optional[str] = None, make_active: bool = False) -> OpResult[Dict[str, Any]]:
         """Create a new profile."""
         return OpResult.from_api(self.api.create(name=name, description=description, make_active=make_active))
 
+    @log_errors(include_args=True, include_traceback=True)
     def rename_profile(self, profile_id: str, new_name: str) -> OpResult[Dict[str, Any]]:
         """Rename an existing profile (update name only)."""
         return OpResult.from_api(self.api.update(profile_id=profile_id, name=new_name, description=None))
 
+    @log_errors(include_args=True, include_traceback=True)
     def update_description(self, profile_id: str, description: Optional[str]) -> OpResult[Dict[str, Any]]:
         """Update description only."""
         return OpResult.from_api(self.api.update(profile_id=profile_id, name=None, description=description))
 
+    @log_errors(include_args=True, include_traceback=True)
     def update_profile(self, profile_id: str, name: Optional[str] = None, description: Optional[str] = None) -> OpResult[Dict[str, Any]]:
         """Update name and/or description."""
         return OpResult.from_api(self.api.update(profile_id=profile_id, name=name, description=description))
 
+    @log_errors(include_args=True, include_traceback=True)
     def duplicate_profile(self, source_profile_id: str, new_name: str, description: Optional[str] = None, make_active: bool = False) -> OpResult[Dict[str, Any]]:
         """Duplicate a profile (including items)."""
         return OpResult.from_api(
             self.api.duplicate(source_profile_id=source_profile_id, new_name=new_name, description=description, make_active=make_active)
         )
 
+    @log_errors(include_args=True, include_traceback=True)
     def delete_profile(self, profile_id: str) -> OpResult[bool]:
         """Delete a profile (invariant: another becomes active or default created)."""
         return OpResult.from_api(self.api.delete(profile_id))
 
+    @log_errors(include_args=True, include_traceback=True)
     def set_active(self, profile_id: str) -> OpResult[Dict[str, Any]]:
         """Set a profile active."""
         return OpResult.from_api(self.api.set_active(profile_id))
@@ -163,10 +180,12 @@ class SettingsManagerController:
     # Mutations — key/value
     # -------------------------------------------------------------------------
 
+    @log_errors(include_args=True, include_traceback=True)
     def set_values(self, profile_id: str, values: Dict[str, Any]) -> OpResult[Dict[str, Any]]:
         """Upsert key/value pairs."""
         return OpResult.from_api(self.api.set_values(profile_id, values))
 
+    @log_errors(include_args=True, include_traceback=True)
     def remove_values(self, profile_id: str, keys: Sequence[str]) -> OpResult[Dict[str, Any]]:
         """Remove a set of keys for a profile."""
         return OpResult.from_api(self.api.remove_values(profile_id, list(keys)))
@@ -175,6 +194,7 @@ class SettingsManagerController:
     # Suggestions / Utilities
     # -------------------------------------------------------------------------
 
+    @log_errors(include_args=True, include_traceback=True)
     def suggest_unique_name(self, base: str) -> OpResult[str]:
         """
         Suggest a non-conflicting profile name by appending " (copy)" or numbered suffixes.
@@ -213,6 +233,7 @@ class SettingsManagerController:
                 return OpResult(success=False, message="Unable to construct a unique name", code=ErrorCodes.INVALID_CONFIG.value)
         return OpResult(success=True, data=candidate)
 
+    @log_errors(include_args=True, include_traceback=True)
     def apply_changes(
         self,
         profile_id: str,
@@ -260,6 +281,7 @@ class SettingsManagerController:
     # -------------------------------------------------------------------------
     # Structured (JSON) profile helpers for the GUI (Option A)
     # -------------------------------------------------------------------------
+    @log_errors(include_args=True, include_traceback=True)
     def create_structured_profile(self, profile_json: Dict[str, Any], make_active: bool = False) -> OpResult[Dict[str, Any]]:
         """
         Create a new JSON-format (structured) profile.
@@ -319,13 +341,30 @@ class SettingsManagerController:
                         # Non-fatal; return the created profile
                         return OpResult.from_api(resp)
                     return OpResult.from_api(upd)
-            except Exception:
+            except Exception as align_e:
+                logger.error(
+                    f"Alignment failed in create_structured_profile: {align_e}",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno,
+                    function_name="create_structured_profile",
+                    parameters={"profile_json": profile_json, "make_active": make_active},
+                    stack_trace=traceback.format_exc()
+                )
                 # Non-fatal alignment failure
                 return OpResult.from_api(resp)
             return OpResult.from_api(resp)
         except Exception as e:
+            logger.error(
+                f"Exception in create_structured_profile: {type(e).__name__}: {e}",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno,
+                function_name="create_structured_profile",
+                parameters={"profile_json": profile_json, "make_active": make_active},
+                stack_trace=traceback.format_exc()
+            )
             return OpResult(success=False, message=str(e), code=ErrorCodes.UNKNOWN_ERROR.value)
 
+    @log_errors(include_args=True, include_traceback=True)
     def update_structured_profile(self, profile_id: str, profile_json: Dict[str, Any]) -> OpResult[Dict[str, Any]]:
         """
         Update an existing JSON-format (structured) profile.
@@ -374,8 +413,17 @@ class SettingsManagerController:
                 logger.info(f"After update: loaded similarity_hash_algorithm={loaded}")
             return OpResult.from_api(resp)
         except Exception as e:
+            logger.error(
+                f"Exception in update_structured_profile: {type(e).__name__}: {e}",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno,
+                function_name="update_structured_profile",
+                parameters={"profile_id": profile_id, "profile_json": profile_json},
+                stack_trace=traceback.format_exc()
+            )
             return OpResult(success=False, message=str(e), code=ErrorCodes.UNKNOWN_ERROR.value)
 
+    @log_errors(include_args=True, include_traceback=True)
     def duplicate_structured_profile(
         self,
         source_profile_id: str,
@@ -412,4 +460,12 @@ class SettingsManagerController:
                 dup = self.api.duplicate(source_profile_id=source_profile_id, new_name=new_name, description=description, make_active=make_active)
                 return OpResult.from_api(dup)
         except Exception as e:
+            logger.error(
+                f"Exception in duplicate_structured_profile: {type(e).__name__}: {e}",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno,
+                function_name="duplicate_structured_profile",
+                parameters={"source_profile_id": source_profile_id, "new_name": new_name, "description": description, "make_active": make_active},
+                stack_trace=traceback.format_exc()
+            )
             return OpResult(success=False, message=str(e), code=ErrorCodes.UNKNOWN_ERROR.value)

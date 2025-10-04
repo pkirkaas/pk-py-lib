@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import inspect
+import traceback
 import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -32,7 +34,8 @@ from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerControl
 
 from src.pk_py_lib.core.database import DatabaseManager
 from src.pk_py_lib.core.configuration import ConfigurationManager
-from src.pk_py_lib.core.logging.logger import configure_logging, LogLevel
+from src.pk_py_lib.core.logging.logger import configure_logging, LogLevel, PKLogger
+from src.pk_py_lib.core.logging.decorators import log_errors
 from src.pk_py_lib.core import get_data_dir # Unified data directory function
 from src.pk_py_lib.core.flat_cache import FlatCacheManager
 
