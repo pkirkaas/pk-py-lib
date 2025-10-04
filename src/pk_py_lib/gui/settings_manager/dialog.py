@@ -59,11 +59,11 @@ except Exception:  # pragma: no cover
     QApplication = QDialog = QWidget = QVBoxLayout = QHBoxLayout = QSplitter = QLineEdit = QListView = QAbstractItemView = QLabel = QPushButton = QDialogButtonBox = QMessageBox = QToolBar = QStyle = QAction = QFormLayout = QGridLayout = QFrame = QSortFilterProxyModel = QModelIndex = QRegularExpression = QKeySequence = Qt = _Missing()  # type: ignore
 
 
-from .models import ProfilesListModel
-from .editor_widget import SettingsProfileEditorWidget
-from .controller import SettingsManagerController
-from ...api import ErrorCodes
-from ..utils.messages import show_selectable_error, show_selectable_info, handle_gui_error, gui_error_handler, gui_error_context
+from pk_py_lib.gui.settings_manager.models import ProfilesListModel
+from pk_py_lib.gui.settings_manager.editor_widget import SettingsProfileEditorWidget
+from pk_py_lib.gui.settings_manager.controller import SettingsManagerController
+from pk_py_lib.api import ErrorCodes
+from pk_py_lib.gui.utils.messages import show_selectable_error, show_selectable_info, handle_gui_error, gui_error_handler, gui_error_context
 
 
 class _NamePromptDialog(QDialog):

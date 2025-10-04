@@ -98,7 +98,7 @@ SETTINGS_PROFILE_SCHEMA = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "algorithm": {"type": "string", "enum": ["blake3", "pHash", "xxh3"], "default": "pHash"},
+                "algorithm": {"type": "string", "enum": ["blake3", "phash", "xxh3", "whash"], "default": "phash"},
                 "degree_ui": {"type": "integer", "minimum": 0, "maximum": 100, "default": 90},
                 "phash": {
                     "type": "object",
@@ -106,6 +106,12 @@ SETTINGS_PROFILE_SCHEMA = {
                     "properties": {
                         "hash_size": {"type": "integer", "minimum": 4, "maximum": 64, "default": 8}
                     }
+                },
+                "similarity_hash_algorithm": {
+                    "type": "string",
+                    "enum": ["phash", "whash"],
+                    "default": "phash",
+                    "description": "The hash algorithm to use for similarity comparisons: 'phash' (DCT-based) or 'whash' (wavelet-based)."
                 }
             }
         },
@@ -212,7 +218,8 @@ SETTINGS_PROFILE_SCHEMA = {
                         "properties": {
                             "algorithm": {"enum": ["blake3", "xxh3"]},
                             "degree_ui": {"not": {}},
-                            "phash": {"not": {}}
+                            "phash": {"not": {}},
+                            "similarity_hash_algorithm": {"not": {}}
                         }
                     }
                 }
@@ -224,10 +231,11 @@ SETTINGS_PROFILE_SCHEMA = {
                 "properties": {
                     "criteria": {
                         "properties": {
-                            "algorithm": {"const": "pHash"},
-                            "degree_ui": {"type": "integer", "minimum": 0, "maximum": 100}
+                            "algorithm": {"enum": ["phash", "whash"]},
+                            "degree_ui": {"type": "integer", "minimum": 0, "maximum": 100},
+                            "similarity_hash_algorithm": {"type": "string", "enum": ["phash", "whash"], "default": "phash"}
                         },
-                        "required": ["degree_ui"]
+                        "required": ["degree_ui", "similarity_hash_algorithm"]
                     }
                 }
             }
@@ -376,8 +384,8 @@ def _validate_custom_rules(profile_data: Dict[str, Any]) -> List[str]:
     if mode == "duplicates" and criteria.get("algorithm") not in ["blake3", "xxh3"]:
         errors.append("Duplicates mode requires algorithm 'blake3' or 'xxh3'")
     
-    if mode == "similarity" and criteria.get("algorithm") != "pHash":
-        errors.append("Similarity mode requires algorithm 'pHash'")
+    if mode == "similarity" and criteria.get("algorithm") not in ["phash", "whash"]:
+        errors.append("Similarity mode requires algorithm 'phash' or 'whash'")
     
     return errors
 
@@ -403,13 +411,39 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     normalized.setdefault("schema_version", "1.0")
     normalized.setdefault("mode", "duplicates")
     
+    # Ensure criteria exist
+    criteria = normalized.setdefault("criteria", {})
+    # For duplicates mode, default to xxh3; for similarity, default to phash
+    if normalized["mode"] == "duplicates":
+        criteria.setdefault("algorithm", "xxh3")
+    else:
+        sim_hash = criteria.setdefault("similarity_hash_algorithm", "phash")
+        criteria["algorithm"] = sim_hash
+        logger.info(f"normalize_settings: mode={normalized['mode']}, set similarity_hash_algorithm={sim_hash}, algorithm={criteria['algorithm']}")
+    
+    if normalized["mode"] == "similarity":
+        criteria.setdefault("degree_ui", 90)
+        phash = criteria.setdefault("phash", {})
+        phash.setdefault("hash_size", 8)
+    
     # Ensure similarity section
     similarity = normalized.setdefault("similarity", {})
     similarity.setdefault("phash_threshold", 10)
     similarity.setdefault("whash_threshold", 12)
     similarity.setdefault("lsh_num_perm", 128)
     similarity.setdefault("lsh_threshold", None)
-    similarity.setdefault("enabled_algorithms", ["phash"])
+    
+    if normalized["mode"] == "similarity":
+        similarity_hash_algorithm = criteria.get("similarity_hash_algorithm")
+        if similarity_hash_algorithm:
+            similarity["enabled_algorithms"] = [similarity_hash_algorithm]
+            logger.info(f"Set enabled_algorithms to [{similarity_hash_algorithm}] based on similarity_hash_algorithm")
+        else:
+            similarity["enabled_algorithms"] = ["phash"]
+            logger.warning("Missing 'similarity_hash_algorithm' in criteria for similarity mode, defaulting enabled_algorithms to ['phash']")
+    else:
+        similarity["enabled_algorithms"] = ["phash"]
+    
     similarity.setdefault("max_distance", 15)
     
     # Ensure pools exist
@@ -424,19 +458,6 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     pool_a.setdefault("follow_symlinks", False)
     pool_a.setdefault("include_hidden", False)
     pool_a.setdefault("type_filters", [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"])
-    
-    # Ensure criteria exist
-    criteria = normalized.setdefault("criteria", {})
-    # For duplicates mode, default to blake3; for similarity, default to pHash
-    if normalized["mode"] == "duplicates":
-        criteria.setdefault("algorithm", "xxh3")
-    else:
-        criteria.setdefault("algorithm", "pHash")
-    
-    if normalized["mode"] == "similarity":
-        criteria.setdefault("degree_ui", 90)
-        phash = criteria.setdefault("phash", {})
-        phash.setdefault("hash_size", 8)
     
     # Ensure scope exists
     scope = normalized.setdefault("scope", {})

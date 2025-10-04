@@ -13,6 +13,9 @@ Features:
 - Integration with path selector dialog
 
 Note: Syntax validation was performed using Python's ast module per project rules.
+
+from pk_py_lib.core.logging.logger import get_logger
+logger = get_logger(__name__)
 """
 from __future__ import annotations
 
@@ -54,8 +57,8 @@ except Exception:  # pragma: no cover
     QWidget = QVBoxLayout = QHBoxLayout = QLabel = QLineEdit = QPlainTextEdit = QPushButton = QComboBox = QCheckBox = QSpinBox = QSlider = QGroupBox = QFormLayout = QGridLayout = QMessageBox = QSizePolicy = QDialog = Signal = Qt = QIcon = QDoubleValidator = _Missing()  # type: ignore
 
 
-from ...api.settings_profiles import SettingsProfilesAPI
-from ...core.settings_schema import (
+from pk_py_lib.api.settings_profiles import SettingsProfilesAPI
+from pk_py_lib.core.settings_schema import (
     validate_settings_schema,
     normalize_settings,
     is_valid_for_save,
@@ -281,6 +284,11 @@ class StructuredProfileEditorWidget(QWidget):
         degree_layout.addWidget(self.lbl_degree)
         # Add row to form layout
         criteria_layout.addRow(self.lbl_degree_label, self.degree_widget)
+        
+        self.lbl_hash_label = QLabel("Hash Algorithm:")
+        self.cmb_hash_algorithm = QComboBox()
+        self.cmb_hash_algorithm.addItems(["phash", "whash"])
+        criteria_layout.addRow(self.lbl_hash_label, self.cmb_hash_algorithm)
 
         mode_layout.addRow(criteria_group)
         layout.addWidget(mode_group)
@@ -324,6 +332,8 @@ class StructuredProfileEditorWidget(QWidget):
         self.cmb_mode.currentTextChanged.connect(self._on_mode_changed)
         self.cmb_algorithm.currentTextChanged.connect(self._on_change)
         self.sld_degree.valueChanged.connect(self._on_degree_changed)
+        
+        self.cmb_hash_algorithm.currentTextChanged.connect(self._on_hash_algorithm_changed)
 
         # Scope
         self.cmb_scope_kind.currentTextChanged.connect(self._on_scope_changed)
@@ -341,6 +351,14 @@ class StructuredProfileEditorWidget(QWidget):
         self._update_ui_state()  # Update UI first to ensure consistent state
         self._on_change()        # Then update profile and validate to ensure algorithm is set correctly
 
+    def _on_hash_algorithm_changed(self, algo: str) -> None:
+        """Sync hash algorithm combo with main algorithm combo when changed."""
+        if self.cmb_mode.currentText() == "similarity":
+            self.cmb_algorithm.blockSignals(True)
+            self.cmb_algorithm.setCurrentText(algo)
+            self.cmb_algorithm.blockSignals(False)
+        self._on_change()
+
     def _on_scope_changed(self, scope_kind: str) -> None:
         """Handle scope kind change with conditional UI updates."""
         self._update_ui_state()  # Update UI state
@@ -353,6 +371,14 @@ class StructuredProfileEditorWidget(QWidget):
 
     def _on_change(self) -> None:
         """Handle any change in the UI and update dirty state."""
+        # Sync algorithm combos if in similarity mode
+        if self.cmb_mode.currentText() == "similarity":
+            hash_algo = self.cmb_hash_algorithm.currentText()
+            main_algo = self.cmb_algorithm.currentText()
+            if hash_algo != main_algo:
+                self.cmb_algorithm.blockSignals(True)
+                self.cmb_algorithm.setCurrentText(hash_algo)
+                self.cmb_algorithm.blockSignals(False)
         self._update_current_profile_from_ui()
         self._validate_profile()
         self._set_dirty(self._is_dirty())
@@ -392,9 +418,10 @@ class StructuredProfileEditorWidget(QWidget):
                 "include_hidden": True,
             }
 
-        # For similarity mode, add degree_ui
+        # For similarity mode, add degree_ui and similarity_hash_algorithm
         if profile["mode"] == "similarity":
             profile["criteria"]["degree_ui"] = self.sld_degree.value()
+            profile["criteria"]["similarity_hash_algorithm"] = self.cmb_hash_algorithm.currentText()
 
         # For two_pool scope, add direction
         if profile["scope"]["kind"] == "two_pool":
@@ -503,12 +530,17 @@ class StructuredProfileEditorWidget(QWidget):
         self.degree_widget.setVisible(is_similarity)
         self.sld_degree.setEnabled(is_similarity)
         self.lbl_degree.setEnabled(is_similarity)
+        
+        self.lbl_hash_label.setVisible(is_similarity)
+        self.cmb_hash_algorithm.setVisible(is_similarity)
+        self.lbl_hash_label.setEnabled(is_similarity)
+        self.cmb_hash_algorithm.setEnabled(is_similarity)
 
         # Update algorithm options based on mode
         if mode == "duplicates":
             desired_algos = ["blake3", "xxh3"]
         elif mode == "similarity":
-            desired_algos = ["pHash"]
+            desired_algos = ["phash", "whash"]
         else:
             desired_algos = []
         
@@ -624,7 +656,7 @@ class StructuredProfileEditorWidget(QWidget):
         if mode == "duplicates":
             desired_algos = ["blake3", "xxh3"]
         elif mode == "similarity":
-            desired_algos = ["pHash"]
+            desired_algos = ["phash", "whash"]
         else:
             desired_algos = []
 
@@ -643,10 +675,15 @@ class StructuredProfileEditorWidget(QWidget):
         if mode == "duplicates":
             default_algo = "blake3"
         else:
-            default_algo = "pHash"
+            default_algo = "phash"
         algorithm = criteria.get("algorithm", default_algo)
         self.cmb_algorithm.setCurrentText(algorithm)
         self.sld_degree.setValue(criteria.get("degree_ui", 90))
+        
+        # Sync both algorithm combos to similarity_hash_algorithm for consistency
+        sim_hash = criteria.get("similarity_hash_algorithm", "phash")
+        self.cmb_hash_algorithm.setCurrentText(sim_hash)
+        self.cmb_algorithm.setCurrentText(sim_hash)
 
         # Unblock signals
         self.cmb_algorithm.blockSignals(False)

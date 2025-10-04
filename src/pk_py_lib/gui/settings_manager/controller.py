@@ -20,12 +20,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Generic, Iterable, List, Optional, Sequence, Tuple, TypeVar
 
-from ...api import ApiResponse, ErrorCodes
-from ...api.settings_profiles import SettingsProfilesAPI
+from pk_py_lib.api import ApiResponse, ErrorCodes
+from pk_py_lib.api.settings_profiles import SettingsProfilesAPI
 
+from pk_py_lib.core.logging.logger import get_logger
+logger = get_logger(__name__)
+
+ 
 
 T = TypeVar("T")
-
 
 @dataclass
 class OpResult(Generic[T]):
@@ -291,6 +294,10 @@ class SettingsManagerController:
             payload.setdefault("profile_version", "1.0.0")
             payload.setdefault("schema_version", "1.0")
 
+            from pk_py_lib.core.settings_schema import normalize_settings
+            logger.info(f"create_structured_profile before normalize: similarity_hash_algorithm={payload.get('criteria', {}).get('similarity_hash_algorithm')}, algorithm={payload.get('criteria', {}).get('algorithm')}")
+            payload = normalize_settings(payload)
+            logger.info(f"create_structured_profile after normalize: similarity_hash_algorithm={payload.get('criteria', {}).get('similarity_hash_algorithm')}, algorithm={payload.get('criteria', {}).get('algorithm')}")
             # Initial create
             resp = self.api.create(name=name, description=desc, make_active=make_active, json_data=payload)
             if not resp.success or not resp.data:
@@ -357,7 +364,14 @@ class SettingsManagerController:
             payload.setdefault("profile_version", cur_json.get("profile_version") or "1.0.0")
             payload.setdefault("schema_version", cur_json.get("schema_version") or "1.0")
 
+            from pk_py_lib.core.settings_schema import normalize_settings
+            logger.info(f"update_structured_profile before normalize: similarity_hash_algorithm={payload.get('criteria', {}).get('similarity_hash_algorithm')}, algorithm={payload.get('criteria', {}).get('algorithm')}")
+            payload = normalize_settings(payload)
+            logger.info(f"update_structured_profile after normalize: similarity_hash_algorithm={payload.get('criteria', {}).get('similarity_hash_algorithm')}, algorithm={payload.get('criteria', {}).get('algorithm')}")
             resp = self.api.update(profile_id=profile_id, name=name, description=desc, json_data=payload)
+            if resp.success and resp.data:
+                loaded = resp.data.get('json_data', {}).get('criteria', {}).get('similarity_hash_algorithm')
+                logger.info(f"After update: loaded similarity_hash_algorithm={loaded}")
             return OpResult.from_api(resp)
         except Exception as e:
             return OpResult(success=False, message=str(e), code=ErrorCodes.UNKNOWN_ERROR.value)

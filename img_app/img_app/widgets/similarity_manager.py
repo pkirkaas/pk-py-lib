@@ -48,6 +48,7 @@ from src.pk_py_lib.core.image.similarity import (
     find_similar_images,
     get_image_metadata,
 )
+from src.pk_py_lib.core.settings_profiles import get_active_profile_settings
 from src.pk_py_lib.core.settings_schema import validate_settings_schema
 from src.pk_py_lib.core.utils.thresholds import internal_to_ui_percent
 from src.pk_py_lib.gui.dialog_models import FileItem, Group, GroupStats
@@ -162,6 +163,26 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         if profile_payload:
             self.apply_settings_profile(profile_payload)
 
+        # Retrieve algorithm from profile or active settings for reporting
+        if self._profile_payload:
+            settings = self._profile_payload
+        else:
+            try:
+                settings = get_active_profile_settings()
+            except Exception:
+                settings = {}
+
+        algorithm = settings.get('criteria', {}).get('similarity_hash_algorithm', 'phash')
+        algorithm_display = algorithm.upper()
+        algorithm_info = f"Hash Algorithm Used: {algorithm_display}"
+
+        # Append to or set summary text
+        if summary_text:
+            updated_summary = f"{summary_text}\n\n{algorithm_info}"
+            self.set_summary_text(updated_summary)
+        else:
+            self.set_summary_text(algorithm_info)
+
     # ------------------------------------------------------------------#
     # UI construction hooks (override BaseFileManagerDialog)
     # ------------------------------------------------------------------#
@@ -236,7 +257,6 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         self._apply_direction_to_combo(PoolDirection.ALL)
 
         # Load initial quality evaluator selection
-        from src.pk_py_lib.core.settings_profiles import get_active_profile_settings
         
         # Map registered keys to their display names (e.g., 'brisque' -> 'BRISQUE')
         key_to_display = {k: k.upper() for k in ImageQualityEvaluatorRegistry.get_registered_keys()}

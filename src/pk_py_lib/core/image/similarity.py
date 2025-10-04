@@ -1455,6 +1455,97 @@ def compute_whash_batch(
 
     return results
 
+def get_similarity_hash(
+    image_path: str,
+    algorithm: Optional[str] = None,
+    settings: Optional[Dict] = None,
+    flat_cache_manager: Optional[FlatCacheManager] = None
+) -> Optional[str]:
+    """
+    Compute similarity hash (pHash or wHash) for an image based on the selected algorithm.
+
+    Dynamically selects the algorithm from settings if not provided. Dispatches to
+    the appropriate compute function. Supports caching via FlatCacheManager.
+
+    Args:
+        image_path (str): Path to the image file.
+        algorithm (Optional[str]): 'phash' or 'whash'. If None, retrieves from settings['criteria']['similarity_hash_algorithm'] or defaults to 'phash'.
+        settings (Optional[Dict]): Settings dictionary for overrides and algorithm selection.
+        flat_cache_manager (Optional[FlatCacheManager]): Cache manager for storing/retrieving hashes.
+
+    Returns:
+        Optional[str]: Computed hash string or None for non-image files or errors.
+
+    Raises:
+        ValueError: For unsupported algorithm.
+        SimilarityError: For computation failures.
+        InvalidImageError: For invalid images.
+
+    Example:
+        >>> hash_val = get_similarity_hash('/path/to/img.jpg', settings=my_settings)
+        >>> print(hash_val)  # 'a1b2c3d4e5f67890'
+    """
+    if algorithm is None:
+        if settings and 'criteria' in settings and 'similarity_hash_algorithm' in settings['criteria']:
+            algorithm = settings['criteria']['similarity_hash_algorithm']
+        else:
+            algorithm = 'phash'
+
+    if algorithm == 'phash':
+        return compute_phash(image_path, settings=settings, flat_cache_manager=flat_cache_manager)
+    elif algorithm == 'whash':
+        return compute_whash(image_path, settings=settings, flat_cache_manager=flat_cache_manager)
+    else:
+        raise ValueError(f"Unsupported similarity hash algorithm: {algorithm}. Supported: 'phash', 'whash'")
+
+
+def compute_similarity_hash_batch(
+    paths: List[str],
+    algorithm: Optional[str] = None,
+    settings: Optional[Dict] = None,
+    flat_cache_manager: Optional[FlatCacheManager] = None,
+    search_type: str = 'similarity'
+) -> Dict[str, Optional[str]]:
+    """
+    Batch compute similarity hashes (pHash or wHash) for a list of image paths.
+
+    Dynamically selects the algorithm from settings if not provided. Dispatches to
+    the appropriate batch compute function. Supports caching.
+
+    Args:
+        paths (List[str]): List of image paths.
+        algorithm (Optional[str]): 'phash' or 'whash'. If None, retrieves from settings or defaults to 'phash'.
+        settings (Optional[Dict]): Settings for overrides and algorithm selection.
+        flat_cache_manager (Optional[FlatCacheManager]): Cache manager.
+        search_type (str): 'similarity' or 'duplicate' (skips for 'duplicate' in wHash).
+
+    Returns:
+        Dict[str, Optional[str]]: {path: hash or None}.
+
+    Raises:
+        ValueError: For unsupported algorithm or empty paths.
+
+    Example:
+        >>> results = compute_similarity_hash_batch(['/img1.jpg', '/img2.jpg'], settings=my_settings)
+        >>> print(results)
+        {'/img1.jpg': 'a1b2c3d4e5f67890', '/img2.jpg': None}
+    """
+    if not paths:
+        raise ValueError("paths list cannot be empty")
+
+    if algorithm is None:
+        if settings and 'criteria' in settings and 'similarity_hash_algorithm' in settings['criteria']:
+            algorithm = settings['criteria']['similarity_hash_algorithm']
+        else:
+            algorithm = 'phash'
+
+    if algorithm == 'phash':
+        return compute_phash_batch(paths, settings=settings, flat_cache_manager=flat_cache_manager)
+    elif algorithm == 'whash':
+        return compute_whash_batch(paths, settings=settings, flat_cache_manager=flat_cache_manager, search_type=search_type)
+    else:
+        raise ValueError(f"Unsupported similarity hash algorithm: {algorithm}. Supported: 'phash', 'whash'")
+
 
 def find_exact_duplicates(
     hashes: List[Dict[str, str]],
@@ -1568,7 +1659,7 @@ def find_exact_duplicates(
 
 def find_similar_images(
     hashes: List[Dict[str, str]],
-    algorithm: str = "phash",
+    algorithm: Optional[str] = None,
     threshold: Optional[int] = None,
     settings: Optional[Dict] = None,
     flat_cache_manager: Optional[FlatCacheManager] = None,
@@ -1584,9 +1675,9 @@ def find_similar_images(
     Args:
         hashes (List[Dict[str, str]]): List of {'path': str, 'hash': str} records.
             For 'exact': content hash (BLAKE3/SHA-256). For perceptual: phash/whash.
-        algorithm (str): 'exact', 'phash', or 'whash' (default 'phash').
+        algorithm (Optional[str]): 'exact', 'phash', or 'whash' (default None; falls back to 'phash' from settings or default).
         threshold (Optional[int]): Max distance for perceptual (ignored for 'exact').
-        settings (Optional[Dict]): For perceptual threshold override.
+        settings (Optional[Dict]): For perceptual threshold override and algorithm selection.
         flat_cache_manager (Optional[FlatCacheManager]): Optional FlatCacheManager instance
             to pass to underlying grouping functions for quality caching.
         search_type (str): 'duplicate' to skip perceptual computations, use exact duplicates.
@@ -1598,18 +1689,26 @@ def find_similar_images(
         ValueError: Unsupported algorithm or invalid input.
 
     Example:
-        >>> groups = find_similar_images(hashes=sample_hashes, algorithm='exact')
+        >>> groups = find_similar_images(hashes=sample_hashes, settings=my_settings)
         >>> print(len(groups))
         1
     """
+    # Determine algorithm if not provided
+    if algorithm is None:
+        if settings is not None and 'criteria' in settings and 'similarity_hash_algorithm' in settings['criteria']:
+            algorithm = settings['criteria']['similarity_hash_algorithm']
+        else:
+            algorithm = 'phash'
+
+    if algorithm not in ['exact', 'phash', 'whash']:
+        raise ValueError(f"Unsupported algorithm: {algorithm}. Supported: 'exact', 'phash', 'whash'")
+
     if algorithm == "exact":
         return find_exact_duplicates(hashes, flat_cache_manager, search_type=search_type)
     elif algorithm == "phash":
         return find_similar_phash(hashes, threshold, settings, flat_cache_manager, search_type=search_type)
     elif algorithm == "whash":
         return find_similar_whash(hashes, threshold, settings, flat_cache_manager, search_type=search_type)
-    else:
-        raise ValueError(f"Unsupported algorithm: {algorithm}")
 
 
 if __name__ == "__main__":
