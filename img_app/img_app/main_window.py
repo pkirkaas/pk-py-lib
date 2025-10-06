@@ -18,7 +18,6 @@ Syntax validation: This file has been reviewed for Python syntax correctness.
 
 from __future__ import annotations
 
-import sys
 import inspect
 import traceback
 import argparse # Added for CLI argument type hinting
@@ -556,6 +555,9 @@ class ComparisonWorker(QThread):
 
         # Fetch groups using MainWindow's method (which relies on self._last_run_paths being set)
         raw_duplicate_groups = self.main_window._get_duplicate_groups_single_pool()
+        
+        # Cache summary printed in main handler after processing
+        total_files = len(self.scan_results.get('run_paths', []))
         
         # Convert raw dicts to immutable Group objects and extract pool map
         dialog_groups, pool_map = self.main_window._convert_raw_groups_to_dialog_groups(raw_duplicate_groups, search_type='duplicate')
@@ -1757,7 +1759,7 @@ class MainWindow(QMainWindow):
  
             # Attempt synchronous save using existing handler; it validates and persists
             self._on_save_profile()
- 
+
             # Re-check dirty state; failure → abort with error
             if _editor_is_dirty(editor):
                 show_selectable_error(
@@ -1767,7 +1769,11 @@ class MainWindow(QMainWindow):
                 )
                 self.start_btn.setEnabled(True)
                 return
- 
+
+            # Reset cache counters before processing to track this scan
+            if self.flat_cache_manager:
+                self.flat_cache_manager.reset_counters()
+
         # 2) Create and show modal ProgressDialog
         self._progress_dialog = ProgressDialog(self, title="Image Organizer Operation")
         self._progress_dialog.set_indeterminate("Starting operation...")
@@ -1944,6 +1950,8 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(False) # Keep disabled until final result
         self._last_run_file_map = {}
         self._metadata_cache = {}
+
+        # Cache summary printing consolidated to post-processing in _on_scan_finished_with_comparison_start
 
         # Extract counters
         found = int(summary.get("found", 0) or 0)
@@ -2331,6 +2339,20 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        # Consolidated cache summary print after all processing (scan + duplicate/similarity logic)
+        # This ensures a single print per operation, using numeric values from the counters dict.
+        # Format: Displays hits, misses, invalid_entries, and total files processed.
+        if self.flat_cache_manager:
+            counters = self.flat_cache_manager.get_counters()
+            total_files = len(run_paths)
+            print("Cache Summary:")
+            print(f" - Hits: {counters['hits']}")
+            print(f" - Misses: {counters['misses']}")
+            print(f" - Invalid Entries: {counters['invalid_entries']}")
+            print(f"Total Files Processed: {total_files}")
+            # Reset counters for potential future use
+            self.flat_cache_manager.reset_counters()
+
         LOGGER.debug("Final groups data state", variables={
             "is_single_pool": is_single_pool,
             "two_pool": two_pool,
@@ -2540,6 +2562,7 @@ class MainWindow(QMainWindow):
                     pool_map=pool_map,
                     selection_store=self.dialog_selection_store,
                     db_manager=getattr(self, "database_manager", None),
+                    flat_cache_manager=self.flat_cache_manager,
                     summary_text=text,
                     report_text=report_text,
                     profile_payload=payload_for_mode,
@@ -2577,6 +2600,7 @@ class MainWindow(QMainWindow):
                     report_text=report_text,
                     initial_direction=initial_direction,
                     profile_payload=payload_for_mode,
+                    flat_cache_manager=self.flat_cache_manager,
                     parent=self,
                 )
 

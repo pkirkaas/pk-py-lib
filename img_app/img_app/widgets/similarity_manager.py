@@ -483,7 +483,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             variables={"algorithm": algorithm, "threshold": threshold},
         )
         try:
-            groups, pool_map = self._compute_groups_from_database(algorithm, threshold)
+            groups, pool_map, total_files = self._compute_groups_from_database(algorithm, threshold)
         except sqlite3.Error as exc:
             LOGGER.exception("Database error in similarity grouping")
             show_selectable_error(
@@ -568,7 +568,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         self,
         algorithm: str,
         threshold: int,
-    ) -> Tuple[List[Group], Dict[str, str]]:
+    ) -> Tuple[List[Group], Dict[str, str], int]:
         """Fetch perceptual hashes from the cache DB and compute clusters.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
@@ -582,15 +582,18 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 "Cache Unavailable",
                 "FlatCacheManager instance is required to compute similarity groups.",
             )
-            return [], {}
+            return [], {}, 0
         
+        # Reset counters before processing
+        self._flat_cache_manager.reset_counters()
+    
         try:
             # For similarity, compute all perceptual hashes + xxh3
             all_types = ['phash', 'whash', 'xxh3']
             hashes_dict = self._flat_cache_manager.get_hashes(list(self._flat_cache_manager.get_entries().keys()), all_types, search_type='similarity')
         except Exception as e:
             LOGGER.error(f"Failed to get hashes from flat cache: {e}", exception=e)
-            return [], {}
+            return [], {}, 0
         
         for path, path_hashes in hashes_dict.items():
             # Get the specific algorithm hash
@@ -600,9 +603,15 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 pool = self._get_pool_for_path(path, self._profile_payload)
                 hashes.append({"path": path, "hash": hash_value})
                 pool_map[path] = pool
+        
+        # Print cache summary after processing
+        cache_hits, cache_misses, invalid_entries = self._flat_cache_manager.get_counters()
+        total_files = len(hashes_dict)
+        print(f"Cache Summary:\n - Hits: {cache_hits}\n - Misses: {cache_misses}\n - Invalid Entries: {invalid_entries}\nTotal Files Processed: {total_files}")
+        self._flat_cache_manager.reset_counters()
     
         if not hashes:
-            return [], pool_map
+            return [], pool_map, total_files
     
         try:
             sim_groups = find_similar_images(
@@ -613,13 +622,13 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             )
         except (ValueError, KeyError, TypeError) as e:
             LOGGER.error(f"Similarity calculation error: {e}", exception=e)
-            return [], pool_map
+            return [], pool_map, total_files
         except Exception as e:
             LOGGER.error(f"Unexpected error in find_similar_images: {e}", exception=e)
-            return [], pool_map
+            return [], pool_map, total_files
     
         dialog_groups = self._convert_similarity_groups(sim_groups)
-        return dialog_groups, pool_map
+        return dialog_groups, pool_map, total_files
 
     @log_errors()
     def _convert_similarity_groups(

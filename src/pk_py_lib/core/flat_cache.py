@@ -233,6 +233,12 @@ class FlatCacheManager:
         self.logger = logger or get_cache_logger()  # Use dedicated cache logger
         self.table_name = TABLE_NAME
 
+        # Cache interaction counters for hit/miss/invalid tracking
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._invalid_entries = 0
+        # Initialize counters for tracking cache interactions during file processing.
+
         self._migrate_from_legacy_cache_if_needed()
         self._validate_schema_or_recreate()
         self._initialize_db()
@@ -806,6 +812,7 @@ class FlatCacheManager:
                 row = cursor.fetchone()
 
                 if row is None:
+                    self._cache_misses += 1
                     self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: found=False")  # Log miss
                     return None
 
@@ -813,7 +820,16 @@ class FlatCacheManager:
                 self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: found=True")  # Log found
 
                 # Validate the retrieved entry against the current file system state
-                self._validate_entry(entry, strict=True)
+                try:
+                    self._validate_entry(entry, strict=True)
+                    self._cache_hits += 1
+                    # Increment hit for valid cache retrieval
+                    self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: valid=True")  # Log successful get
+                except FlatCacheValidationError:
+                    self._invalid_entries += 1
+                    self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: valid=False")  # Log validation fail
+                    # Validation failed (file changed or missing). Logged inside _validate_entry.
+                    return None
 
                 # Migrate legacy BRISQUE scores (0-100) to new 0-1 scale if detected
                 if entry.brisque is not None and entry.brisque > 1.0:
@@ -826,13 +842,8 @@ class FlatCacheManager:
                     else:
                         self.logger.warning(f"Failed to persist normalized BRISQUE score for {normalized_path}")
 
-                self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: valid=True")  # Log successful get
                 return entry
 
-        except FlatCacheValidationError:
-            self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: valid=False")  # Log validation fail
-            # Validation failed (file changed or missing). Logged inside _validate_entry.
-            return None
         except FlatCacheDBError as e:
             self.logger.debug(f"Cache get for {normalized_path}, field: entry, result: db_error")  # Log DB error
             self.logger.error(f"DB error retrieving entry for {normalized_path}: {e}")
@@ -1478,16 +1489,16 @@ class FlatCacheManager:
     def get_hashes(self, file_paths: List[str], hash_types: List[str] = ['phash'], search_type: Optional[str] = None) -> Dict[str, Dict[str, str]]:
         """
         Batch processes a list of files to get or compute hashes efficiently, respecting search_type.
-
+        
         For each file, checks cache, validates, computes missing hashes if needed (skipping perceptual
         hashes in 'duplicate' mode), logs progress and errors. In 'duplicate' mode, only ensures xxh3
         is available without touching image metadata or perceptual hashes.
-
+        
         This method always performs file stat validation on cached entries to ensure freshness.
         Specify hash_types to retrieve only required hashes, avoiding unnecessary computations.
         Use search_type to control scope: 'duplicate' for file-only hashing (e.g., xxh3, no image loading);
         'similarity' for perceptual hashes (phash, whash) and quality metrics (brisque) on images.
-
+        
         Parameters:
             file_paths (List[str]): List of file paths to process.
             hash_types (List[str]): List of hash types to retrieve/compute. Defaults to ['phash'].
@@ -1500,7 +1511,7 @@ class FlatCacheManager:
         
         Raises:
             FileNotFoundError, PermissionError, CacheComputeError: For individual files; continues for others.
-
+        
         Example:
             >>> results = manager.get_hashes(['/img.jpg'], ['phash', 'xxh3'], search_type='similarity')
             >>> # Computes both
@@ -1539,14 +1550,17 @@ class FlatCacheManager:
                     successful += 1
                 self.logger.debug(f"Cache get_hashes [{i}/{total}] for {path}, result: success")  # Log per file success
             except (FileNotFoundError, PermissionError) as e:
+                self._cache_misses += 1
                 self.logger.debug(f"Cache get_hashes [{i}/{total}] for {path}, result: skip, reason: {type(e).__name__}")  # Log skip
                 self.logger.warning(f"[{i}/{total}] Skipped {path}: {e}")
                 results[path] = {ht: None for ht in hash_types}
             except CacheComputeError as e:
+                self._cache_misses += 1
                 self.logger.debug(f"Cache get_hashes [{i}/{total}] for {path}, result: error_compute")  # Log compute error
                 self.logger.error(f"[{i}/{total}] Failed to compute hashes for {path}: {e}")
                 results[path] = {ht: None for ht in hash_types}
             except Exception as e:
+                self._cache_misses += 1
                 self.logger.debug(f"Cache get_hashes [{i}/{total}] for {path}, result: unexpected_error")  # Log unexpected
                 self.logger.error(f"[{i}/{total}] Unexpected error for {path}: {e}", exc_info=True)
                 results[path] = {ht: None for ht in hash_types}
@@ -1586,13 +1600,17 @@ class FlatCacheManager:
                     try:
                         self._validate_entry(entry)
                         results[path] = entry
+                        self._cache_hits += 1
+                        # Increment hit for valid cache retrieval
                     except FlatCacheValidationError:
                         if include_invalid:
                             results[path] = entry
                         else:
                             results[path] = None
+                        self._invalid_entries += 1
                 else:
                     results[path] = None
+                    self._cache_misses += 1
 
             return results
         except FlatCacheDBError as e:
@@ -1850,7 +1868,66 @@ class FlatCacheManager:
             self.logger.error(f"Unexpected error fetching cache view data: {e}", exc_info=True)
             raise FlatCacheDBError(f"Unexpected error: {e}", original_error=e)
 
-    # Syntax validation: This file has been reviewed for Python syntax correctness.
+    def reset_counters(self) -> None:
+        """
+        Resets the cache interaction counters to zero for a new processing session.
+        
+        This method is used before starting a new scan or comparison to track fresh cache interactions.
+        
+        Parameters:
+            None
+        
+        Returns:
+            None
+        
+        Raises:
+            None
+        
+        Example:
+            manager.reset_counters()  # Counters now 0 for new duplicate scan
+        """
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._invalid_entries = 0
+
+    def get_counters(self) -> dict[str, int]:
+        """
+        Returns the current values of cache interaction counters.
+        
+        This method provides a snapshot of hits, misses, and invalid entries for reporting, e.g., terminal summary.
+        
+        Parameters:
+            None
+        
+        Returns:
+            dict[str, int]: Dictionary with keys 'hits', 'misses', 'invalid_entries' and integer values.
+        
+        Raises:
+            ValueError: If any counter is negative (unexpected, for debugging).
+        
+        Example:
+            counters = manager.get_counters()
+            # {'hits': 10, 'misses': 5, 'invalid_entries': 2}
+            if any(v < 0 for v in counters.values()):
+                raise ValueError(f"Negative counters detected: {counters}")
+        """
+        counters = {
+            'hits': self._cache_hits,
+            'misses': self._cache_misses,
+            'invalid_entries': self._invalid_entries
+        }
+        if any(v < 0 for v in counters.values()):
+            import traceback
+            error_details = {
+                'file': __file__,
+                'counters': counters,
+                'stack': traceback.format_stack()
+            }
+            self.logger.error(f"Negative counters in FlatCacheManager: {error_details}", exc_info=True)
+            raise ValueError(f"Negative counters in FlatCacheManager: {error_details}")
+        return counters
+
+# Syntax validation: This file has been reviewed for Python syntax correctness.
 # Example Usage (for documentation/testing purposes)
 if __name__ == '__main__':
     # Setup basic logging for standalone test

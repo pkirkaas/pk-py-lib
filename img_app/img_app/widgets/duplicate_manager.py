@@ -33,6 +33,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from pathlib import Path
+import os
+from src.pk_py_lib.core.utils import format_timestamp
+from src.pk_py_lib.gui.dialog_models import Group, GroupStats, FileItem
+from collections import defaultdict
+
 from src.pk_py_lib.core.settings_schema import validate_settings_schema
 from src.pk_py_lib.core.utils.thresholds import internal_to_ui_percent
 from src.pk_py_lib.gui.dialog_models import Group
@@ -111,6 +117,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         report_text: str = "",
         initial_direction: PoolDirection = PoolDirection.ALL,
         profile_payload: Optional[dict] = None,
+        flat_cache_manager=None,
         parent: Optional[QWidget] = None,
     ) -> None:
         self._selection_store = selection_store or SelectionStore()
@@ -118,6 +125,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         self._pool_map: Dict[str, str] = dict(pool_map or {})
         self._profile_payload: Optional[dict] = None
         self._validator_errors: list[str] = []
+        self._flat_cache_manager = flat_cache_manager
 
         super().__init__(
             groups=list(groups or []),
@@ -379,6 +387,146 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         except (ValueError, KeyError, TypeError) as e:
             LOGGER.warning(f"Failed to extract similarity threshold: {e}")
             return None
+
+    @log_errors()
+    def _get_pool_for_path(self, path: str, profile: Optional[dict]) -> str:
+        """
+        Determine the pool (A or B) for a given file path based on profile pool configurations.
+    
+        Args:
+            path: Absolute file path.
+            profile: Settings profile payload with "pools" configuration.
+    
+        Returns:
+            Pool label ("A" or "B"), defaults to "A" if undetermined.
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
+        if not profile or "pools" not in profile:
+            return "A"
+    
+        pools = profile["pools"]
+        path_obj = Path(path)
+    
+        # Check Pool A paths
+        if "A" in pools:
+            a_paths = pools["A"].get("paths", [])
+            for p in a_paths:
+                pool_path = Path(p)
+                try:
+                    if path_obj.is_relative_to(pool_path):
+                        return "A"
+                except (ValueError, OSError) as e:
+                    LOGGER.warning(f"Path relative check failed for {p}: {e}")
+                    # Not relative, continue
+                    pass
+    
+        # Check Pool B paths
+        if "B" in pools:
+            b_paths = pools["B"].get("paths", [])
+            for p in b_paths:
+                pool_path = Path(p)
+                try:
+                    if path_obj.is_relative_to(pool_path):
+                        return "B"
+                except (ValueError, OSError) as e:
+                    LOGGER.warning(f"Path relative check failed for {p}: {e}")
+                    # Not relative, continue
+                    pass
+    
+        # Default to A if no match
+        return "A"
+
+    @log_errors()
+    def _compute_groups_from_database(
+        self,
+        algorithm: str = "xxh3",
+    ) -> Tuple[List[Group], Dict[str, str], int]:
+        """Fetch file hashes from the cache DB and compute duplicate clusters.
+        GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
+        hashes_dict: Dict[str, Dict[str, str]] = {}
+        pool_map: Dict[str, str] = {}
+    
+        if not hasattr(self, '_flat_cache_manager') or self._flat_cache_manager is None:
+            show_selectable_error(
+                self,
+                "Cache Unavailable",
+                "FlatCacheManager instance is required to compute duplicate groups.",
+            )
+            return [], {}, 0
+        
+        # Reset counters before processing
+        self._flat_cache_manager.reset_counters()
+    
+        try:
+            # For duplicate, compute only xxh3
+            all_types = ['xxh3']
+            hashes_dict = self._flat_cache_manager.get_hashes(list(self._flat_cache_manager.get_entries().keys()), all_types, search_type='duplicate')
+        except Exception as e:
+            LOGGER.error(f"Failed to get hashes from flat cache: {e}", exception=e)
+            return [], {}, 0
+        
+        # Group by hash for exact duplicates
+        from collections import defaultdict
+        groups_map: defaultdict[str, list[str]] = defaultdict(list)
+        for path, path_hashes in hashes_dict.items():
+            hash_value = path_hashes.get(algorithm)
+            if hash_value:
+                groups_map[hash_value].append(path)
+                # Compute pool based on profile paths
+                pool = self._get_pool_for_path(path, self._profile_payload)
+                pool_map[path] = pool
+        
+        # Print cache summary after processing
+        cache_hits, cache_misses, invalid_entries = self._flat_cache_manager.get_counters()
+        total_files = len(hashes_dict)
+        print(f"Cache Summary:\n - Hits: {cache_hits}\n - Misses: {cache_misses}\n - Invalid Entries: {invalid_entries}\nTotal Files Processed: {total_files}")
+        self._flat_cache_manager.reset_counters()
+    
+        if not groups_map:
+            return [], pool_map, total_files
+    
+        dialog_groups = []
+        index = 1
+        for hash_value, paths in groups_map.items():
+            if len(paths) >= 2:
+                group_files = []
+                total_size = 0
+                for path in paths:
+                    stat = os.stat(path)
+                    size = stat.st_size
+                    mod_date = format_timestamp(stat.st_mtime)
+                    file_type = Path(path).suffix.lstrip(".").upper() or ""
+                    file_item = FileItem(
+                        path=path,
+                        size=size,
+                        resolution="—",
+                        mod_date=mod_date,
+                        score=1.0,
+                        file_type=file_type,
+                        savings=0,
+                    )
+                    group_files.append(file_item)
+                    total_size += size
+                if group_files:
+                    stats = GroupStats(
+                        total_size=total_size,
+                        savings=total_size - group_files[0].size,
+                        min_score=1.0,
+                        max_score=1.0,
+                        avg_score=1.0,
+                        file_count=len(group_files),
+                    )
+                    dialog_groups.append(
+                        Group(
+                            id=index,
+                            items=tuple(group_files),
+                            stats=stats,
+                            ref_path=paths[0],
+                        )
+                    )
+                    index += 1
+        return dialog_groups, pool_map, total_files
 
 
     @log_errors()
