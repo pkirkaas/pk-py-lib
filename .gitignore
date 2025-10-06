@@ -32,3 +32,5 @@ htmlcov/
 !.vscode/extensions.json
 
 
+
+test_images/

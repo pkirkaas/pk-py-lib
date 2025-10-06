@@ -35,11 +35,11 @@ class DialogView(Enum):
 class FileItem:
     """
     Immutable representation of a file item in dialogs.
-    
+
     Frozen dataclass ensures thread safety and prevents accidental mutation.
     This class represents a single file with metadata used in both duplicate
     and similarity management dialogs.
-    
+
     Args:
         path: Absolute file path
         size: File size in bytes
@@ -50,7 +50,7 @@ class FileItem:
         savings: Potential savings in bytes for duplicate mode
         quality_score: Optional image quality score (normalized, higher is better)
         quality_algorithm: Name of the quality algorithm used (e.g., 'brisque')
-    
+
     Example:
         >>> item = FileItem(
         ...     path="/path/to/image.jpg",
@@ -66,7 +66,7 @@ class FileItem:
         >>> item.directory
         '/path/to'
     """
-    
+
     path: str
     size: int
     resolution: str
@@ -76,7 +76,8 @@ class FileItem:
     savings: int = 0
     quality_score: Optional[float] = None
     quality_algorithm: Optional[str] = None
-    
+    exact_set_id: Optional[int] = None
+
     @property
     def basename(self) -> str:
         """Return file basename."""
@@ -108,10 +109,10 @@ class FileItem:
 class GroupStats:
     """
     Statistics for a group of files.
-    
+
     Provides aggregated statistics for a group of duplicate or similar files.
     Used for display purposes and group management operations.
-    
+
     Args:
         total_size: Combined size of all files in the group
         savings: Potential savings if duplicates are removed
@@ -132,17 +133,17 @@ class GroupStats:
 class Group:
     """
     Immutable representation of a file group.
-    
+
     Groups can represent duplicates or similarity clusters.
     Each group has a reference path (typically the first file) and
     contains a list of FileItem objects with their metadata.
-    
+
     Args:
         id: Unique group identifier
         items: List of FileItem objects in the group
         stats: GroupStats object with aggregated statistics
         ref_path: Reference path for the group (typically first file)
-    
+
     Example:
         >>> group = Group(
         ...     id=1,
@@ -153,12 +154,12 @@ class Group:
         >>> group.item_count
         2
     """
-    
+
     id: int
     items: List[FileItem]
     stats: GroupStats
     ref_path: str
-    
+
     @property
     @log_errors()
     def item_count(self) -> int:
@@ -170,18 +171,18 @@ class Group:
 class DialogState:
     """
     Complete state of a management dialog.
-    
+
     Mutable container for immutable data structures. This class holds
     the complete state of a dialog including groups, selection store,
     settings profile, and UI state.
-    
+
     Args:
         groups: List of Group objects to display
         selection_store: SelectionStore instance for selection management
         settings_profile: Optional settings profile dictionary
         current_view: Current view mode (tree, preview, report)
         filter_text: Current filter text for searching
-    
+
     Example:
         >>> state = DialogState(
         ...     groups=[group1, group2],
@@ -192,23 +193,23 @@ class DialogState:
         ... )
         >>> filtered = state.get_filtered_groups()
     """
-    
+
     groups: List[Group]
     selection_store: SelectionStore
     settings_profile: Optional[Dict[str, Any]] = None
     current_view: DialogView = DialogView.TREE
     filter_text: str = ""
-    
+
     @log_errors()
     def get_filtered_groups(self) -> List[Group]:
         """Return groups filtered by current filter text."""
         if not self.filter_text:
             return self.groups
-        
+
         try:
             filter_lower = self.filter_text.lower()
             filtered_groups = []
-            
+
             for group in self.groups:
                 # Filter group items
                 filtered_items = [
@@ -216,7 +217,7 @@ class DialogState:
                     if filter_lower in item.path.lower() or
                        filter_lower in item.basename.lower()
                 ]
-                
+
                 if filtered_items:
                     # Create new group with filtered items
                     # Note: stats may need recalculation in actual implementation
@@ -226,7 +227,7 @@ class DialogState:
                         stats=group.stats,  # Simplified - stats may need recalculation
                         ref_path=group.ref_path
                     ))
-            
+
             return filtered_groups
         except (ValueError, AttributeError, TypeError) as e:
             logger.error(

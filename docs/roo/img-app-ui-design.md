@@ -9,7 +9,7 @@
 flowchart TD
     subgraph Dialog[Settings Manager Dialog]
         direction TB
-        
+
         subgraph LeftPane[Left Pane - Profiles List]
             Search[Search Box]
             ProfilesList[Profiles List View]
@@ -18,7 +18,7 @@ flowchart TD
 
         subgraph RightPane[Right Pane - Structured Editor]
             direction TB
-            
+
             subgraph Metadata[Profile Metadata]
                 Name[Name Input]
                 Description[Description Text Area]
@@ -26,7 +26,7 @@ flowchart TD
 
             subgraph Pools[Pools Configuration]
                 direction TB
-                
+
                 subgraph PoolA[Pool A (Required)]
                     PoolAPath[Path Input + Browse Button]
                     PoolAOptions[Options: Recurse, Follow Symlinks, Include Hidden]
@@ -40,9 +40,9 @@ flowchart TD
 
             subgraph ModeCriteria[Mode & Criteria]
                 direction TB
-                
+
                 Mode[Mode Dropdown: duplicates/similarity]
-                
+
                 subgraph Criteria[Criteria]
                     Algorithm[Algorithm Dropdown: pHash/blake3]
                     Degree[Similarity Degree Slider 0-100%]
@@ -101,7 +101,7 @@ flowchart TD
 - **Kind Dropdown**: "single_pool" or "two_pool"
 - **Direction Dropdown** (enabled only for two_pool):
   - "A_TO_B": Find items in B that match A
-  - "B_TO_A": Find items in A that match B  
+  - "B_TO_A": Find items in A that match B
   - "A_WITHOUT_IN_B": Items in A with no match in B
   - "B_WITHOUT_IN_A": Items in B with no match in A
 
@@ -265,6 +265,18 @@ Acceptance checklist (UI)
 - Keeps the dual-pane experience: left tree + right preview table with thumbnails for perceptual comparison.
 - Controls row includes algorithm combo, threshold spin box, and “Compute Groups”.
 - Child rows retain preview, dimensions, similarity score columns in the preview table.
+
+#### New "Exact" Column in SimilarityManager
+
+- **Position**: Inserted after the "Quality" column in both the tree (left pane) and preview table (right pane).
+- **Values**:
+  - Blank (empty string) for unique files or files not part of an exact duplicate set.
+  - Integer (e.g., "1", "2") representing the `exact_set_id` for files belonging to an exact duplicate set.
+- **Purpose**: Provides visual indication of exact duplicate sets within perceptual similarity groups. Users can quickly identify and manage bitwise identical files as cohesive units (e.g., for bulk deletion), even when they form part of a larger similar group.
+- **Behavior with Multiple Sets**: In a single perceptual group, multiple exact sets receive unique integers (assigned sequentially starting from 1 per scan). For example, a group might show Set 1 (two exact JPGs) and Set 2 (three exact PNG variants), all visually linked by their shared perceptual similarity to the group's reference.
+- **Implementation Notes**: The column is populated from `FileItem.exact_set_id` during tree/table population. Tooltips explain: "Exact duplicate set ID (blank if unique)". Sorting by this column groups exact sets together for easier review.
+- **UX Enhancement**: Supports set-level selections (e.g., check one file in a set to select all); integrates with existing checkbox tri-state logic for partial group selections.
+
 
 ### Implementation References
 - [`similarity_manager.py`](img_app/img_app/widgets/similarity_manager.py): Inherits the base preview-enabled layout; no structural changes required beyond the existing similarity controls.

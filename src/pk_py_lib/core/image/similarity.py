@@ -18,6 +18,36 @@ from pathlib import Path
 from typing import Optional, List, Dict
 from PIL import Image
 import imagehash
+from ..filesystem.identity import compute_xxh3
+from collections import defaultdict
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class ExactDuplicateSet:
+    """
+    Immutable representation of a set of exact duplicate files based on content hash equality.
+
+    This dataclass groups files that are byte-for-byte identical, identified by matching XXH3 hashes.
+    Used in the two-phase similarity detection process to deduplicate before perceptual hashing.
+    The representative_path is selected as the lexicographically smallest path in the set for consistency.
+
+    Args:
+        id: Unique integer identifier for the exact duplicate set.
+        paths: Sorted list of absolute file paths in the set.
+        representative_path: The path used as representative for perceptual hashing (smallest path).
+
+    Example:
+        >>> exact_set = ExactDuplicateSet(
+        ...     id=1,
+        ...     paths=["/path/to/dup1.jpg", "/path/to/dup2.jpg"],
+        ...     representative_path="/path/to/dup1.jpg"
+        ... )
+        >>> len(exact_set.paths)
+        2
+    """
+    id: int
+    paths: List[str]
+    representative_path: str
 from pk_py_lib.core.flat_cache import FlatCacheManager, FlatCacheDBError
 from pk_py_lib.core.logging.logger import get_logger
 from pk_py_lib.gui.dialog_models import FileItem, Group, GroupStats
@@ -89,10 +119,10 @@ def format_timestamp(ts: float) -> str:
 def is_image_extension(path: str) -> bool:
     """
     Check if the file has an image extension.
-    
+
     Args:
         path (str): File path to check.
-    
+
     Returns:
         bool: True if the extension is a known image format.
     """
@@ -102,17 +132,17 @@ def is_image_extension(path: str) -> bool:
 def get_resolution(path: str, search_type: str = 'similarity') -> str:
     """
     Get image resolution (width x height) using PIL.
-    
+
     Args:
         path (str): Path to the image file.
         search_type (str): 'duplicate' to skip image loading and return "Unknown".
-    
+
     Returns:
         str: Resolution string (e.g., "1920x1080") or "Unknown" on failure or skip.
-    
+
     Raises:
         InvalidImageError: If image cannot be loaded (non-duplicate mode).
-    
+
     Example:
         >>> res = get_resolution("/path/to/img.jpg")
         >>> print(res)
@@ -136,18 +166,18 @@ def get_resolution(path: str, search_type: str = 'similarity') -> str:
 def get_image_metadata(path: str, search_type: str = 'similarity') -> Dict[str, any]:
     """
     Fetch basic metadata for an image: size, resolution, modification date.
-    
+
     Args:
         path (str): Path to the image file.
         search_type (str): 'duplicate' to skip image loading, return "Unknown" for resolution.
-    
+
     Returns:
         Dict[str, any]: {'size': int, 'resolution': str, 'mod_date': str}
-    
+
     Raises:
         IOError: For file access errors.
         InvalidImageError: For image loading issues.
-    
+
     Example:
         >>> meta = get_image_metadata("/path/to/img.jpg")
         >>> print(meta['size'])
@@ -159,11 +189,11 @@ def get_image_metadata(path: str, search_type: str = 'similarity') -> Dict[str, 
         size = stat.st_size
         mod_ts = stat.st_mtime
         mod_date = format_timestamp(mod_ts)
-        
+
         # Skip image operations for non-images regardless of search_type
         if not is_image_extension(path):
             return {'size': size, 'resolution': 'Unknown', 'mod_date': mod_date}
-        
+
         if search_type == 'duplicate':
             return {'size': size, 'resolution': "Unknown", 'mod_date': mod_date}
         resolution = get_resolution(path, search_type)
@@ -181,23 +211,23 @@ def get_image_quality_score(
 ) -> tuple[Optional[float], Optional[str]]:
     """
     Compute the image quality score using the provided evaluator, preferring cached value if available.
-    
+
     If the evaluator is None (quality evaluation disabled), returns (None, None).
     If flat_cache_manager is provided, checks for cached brisque score first.
     If evaluation fails, logs an error and returns (None, evaluator.name).
-    
+
     Args:
         path (str): Path to the image file.
         evaluator (Optional[ImageQualityEvaluator]): Instantiated quality evaluator or None.
         flat_cache_manager (Optional[FlatCacheManager]): Optional FlatCacheManager instance
             to check for cached score and store new computation.
         search_type (str): 'duplicate' to skip computation, return (None, None); else pass to evaluator.
-    
+
     Returns:
         tuple[Optional[float], Optional[str]]: (quality_score, algorithm_name)
             quality_score is normalized (higher is better).
             algorithm_name is the evaluator's name (e.g., 'brisque').
-    
+
     Example:
         >>> evaluator = get_active_image_quality_evaluator()
         >>> flat_cache = FlatCacheManager()
@@ -210,10 +240,10 @@ def get_image_quality_score(
         return None, None
     if evaluator is None:
         return None, None
-    
+
     if not is_image_extension(path):
         return None, None
-    
+
     # Prefer cached value if available
     if flat_cache_manager:
         try:
@@ -223,7 +253,7 @@ def get_image_quality_score(
                 return entry.brisque, evaluator.name
         except Exception as e:
             logger.warning(f"Failed to retrieve cached brisque for {path}: {e}")
-    
+
     try:
         score = evaluator.evaluate(path, flat_cache_manager=flat_cache_manager)
         # Store in cache if manager provided and computation succeeded
@@ -267,7 +297,7 @@ def compute_group_stats(images: List[FileItem]) -> GroupStats:
 
     scores = [img.score for img in images if img.score is not None]
     sizes = [img.size for img in images]
-    
+
     if not scores:
         # Handle case where scores are None for all items (e.g., exact duplicates)
         min_score = 1.0
@@ -483,7 +513,7 @@ def compute_color_phash(
 
     # Note: Custom color_phash is not cached in the simplified flat_cache schema
     # It will be computed on demand each time
-    
+
     # --- Compute Hash ---
     hash_str = None
     try:
@@ -665,7 +695,7 @@ def find_similar_phash(
         raise ValueError("hashes list cannot be empty")
 
     n = len(hashes)
-    
+
     # Retrieve the active quality evaluator once for the entire batch
     quality_evaluator = get_active_image_quality_evaluator()
 
@@ -781,7 +811,7 @@ def find_similar_phash(
                 # Fixed duplicate mode skips
                 meta = get_image_metadata(h_dict['path'], search_type=search_type)
                 quality_score, quality_algorithm = get_image_quality_score(h_dict['path'], quality_evaluator, flat_cache_manager, search_type=search_type)
-                
+
                 file_item = FileItem(
                     path=h_dict['path'],
                     size=meta['size'],
@@ -1081,7 +1111,7 @@ def compute_color_whash(
 
     # Note: Custom color_whash is not cached in the simplified flat_cache schema
     # It will be computed on demand each time
-    
+
     # --- Compute Hash ---
     hash_str = None
     try:
@@ -1225,7 +1255,7 @@ def find_similar_whash(
         raise ValueError("hashes list cannot be empty")
 
     n = len(hashes)
-    
+
     # Retrieve the active quality evaluator once for the entire batch
     quality_evaluator = get_active_image_quality_evaluator()
 
@@ -1346,7 +1376,7 @@ def find_similar_whash(
                 mod_date = format_timestamp(mod_ts)
                 resolution = "Unknown"  # No image loading for duplicates
                 quality_score, quality_algorithm = get_image_quality_score(h_dict['path'], quality_evaluator, flat_cache_manager, search_type=search_type)
-                
+
                 file_item = FileItem(
                     path=h_dict['path'],
                     size=size,
@@ -1547,6 +1577,103 @@ def compute_similarity_hash_batch(
         raise ValueError(f"Unsupported similarity hash algorithm: {algorithm}. Supported: 'phash', 'whash'")
 
 
+def detect_exact_duplicates(
+    paths: List[str],
+    flat_cache_manager: Optional[FlatCacheManager] = None
+) -> Tuple[List[ExactDuplicateSet], Dict[str, Optional[int]]]:
+    """
+    Detect exact duplicate sets using XXH3 content hashes, with caching support.
+
+    Computes XXH3 hashes for all provided paths (using FlatCacheManager if available,
+    falling back to direct computation). Groups paths by identical hashes into sets
+    of size >=2. Singletons (unique hashes or uncomputable) are mapped to None.
+
+    Args:
+        paths: List of absolute file paths to process.
+        flat_cache_manager: Optional FlatCacheManager for caching XXH3 computations.
+            If provided, uses get_hashes to compute/retrieve 'xxh3' for all paths.
+
+    Returns:
+        Tuple[List[ExactDuplicateSet], Dict[str, Optional[int]]]:
+            - exact_sets: List of ExactDuplicateSet objects (only groups with >=2 files).
+            - path_to_set_id_map: Mapping of each path to its set ID (int for duplicates, None for uniques/uncomputable).
+
+    Raises:
+        ValueError: If paths is empty.
+        SimilarityError: If XXH3 computation fails for all paths (partial failures logged, paths mapped to None).
+
+    Example:
+        >>> paths = ["/img1.jpg", "/img2.jpg", "/unique.jpg"]
+        >>> sets, mapping = detect_exact_duplicates(paths)
+        >>> # If img1 and img2 match: sets = [ExactDuplicateSet(id=1, paths=["/img1.jpg", "/img2.jpg"], rep="/img1.jpg")]
+        >>> # mapping = {"/img1.jpg": 1, "/img2.jpg": 1, "/unique.jpg": None}
+    """
+    if not paths:
+        raise ValueError("paths list cannot be empty")
+
+    logger.info(f"Detecting exact duplicates for {len(paths)} paths using XXH3 (cache: {flat_cache_manager is not None})")
+
+    # Compute XXH3 hashes for all paths (use cache if available)
+    path_to_hash: Dict[str, Optional[str]] = {}
+    if flat_cache_manager:
+        try:
+            hashes = flat_cache_manager.get_hashes(paths, ['xxh3'])
+            path_to_hash = {p: h.get('xxh3') for p, h in hashes.items()}
+            logger.debug(f"Retrieved {sum(1 for h in path_to_hash.values() if h is not None)}/{len(paths)} XXH3 hashes from cache")
+        except Exception as e:
+            logger.warning(f"Cache failure for XXH3; falling back to direct computation: {e}")
+            path_to_hash = {}
+    else:
+        path_to_hash = {}
+
+    # Direct computation for misses or no cache
+    for path in paths:
+        if path not in path_to_hash or path_to_hash[path] is None:
+            try:
+                hash_val = compute_xxh3(Path(path))
+                path_to_hash[path] = hash_val
+                logger.debug(f"Computed XXH3 for {path}: {hash_val[:8]}...")
+            except Exception as e:
+                logger.warning(f"Failed to compute XXH3 for {path}: {e}")
+                path_to_hash[path] = None
+
+    # Group by hash
+    from collections import defaultdict
+    hash_to_paths_map: Dict[str, List[str]] = defaultdict(list)
+    for path, h in path_to_hash.items():
+        if h is not None:
+            hash_to_paths_map[h].append(path)
+        else:
+            # Uncomputable: treat as unique
+            hash_to_paths_map[path].append(path)  # Use path as "hash" for singletons
+
+    # Build exact sets (only groups >=2) and mapping
+    exact_sets: List[ExactDuplicateSet] = []
+    path_to_set_id_map: Dict[str, Optional[int]] = {}
+    set_id = 1
+
+    for h, group_paths in hash_to_paths_map.items():
+        if len(group_paths) < 2:
+            # Singleton: map to None
+            for p in group_paths:
+                path_to_set_id_map[p] = None
+        else:
+            # Exact duplicate set
+            sorted_paths = sorted(group_paths)
+            rep_path = sorted_paths[0]  # Lex smallest as representative
+            exact_set = ExactDuplicateSet(id=set_id, paths=sorted_paths, representative_path=rep_path)
+            exact_sets.append(exact_set)
+            # Map all paths in set to set_id
+            for p in sorted_paths:
+                path_to_set_id_map[p] = set_id
+            set_id += 1
+            logger.debug(f"Exact duplicate set {set_id-1}: {len(sorted_paths)} files, rep: {rep_path}")
+
+    logger.info(f"Detected {len(exact_sets)} exact duplicate sets from {len(paths)} paths "
+                f"({sum(len(s.paths) for s in exact_sets)} duplicates total)")
+    return exact_sets, path_to_set_id_map
+
+
 def find_exact_duplicates(
     hashes: List[Dict[str, str]],
     flat_cache_manager: Optional[FlatCacheManager] = None,
@@ -1567,7 +1694,7 @@ def find_exact_duplicates(
 
     Returns:
         List[Group]: List of duplicate groups with FileItem (score=1.0), stats.
- 
+
     Raises:
         ValueError: If hashes empty or invalid.
         InvalidImageError: For metadata fetch failures.
@@ -1618,7 +1745,7 @@ def find_exact_duplicates(
                     quality_algorithm = None
                 else:
                     quality_score, quality_algorithm = get_image_quality_score(path, quality_evaluator, flat_cache_manager, search_type=search_type)
-                
+
                 file_item = FileItem(
                     path=path,
                     size=meta['size'],
@@ -1658,44 +1785,50 @@ def find_exact_duplicates(
 
 
 def find_similar_images(
-    hashes: List[Dict[str, str]],
+    paths: List[str],
     algorithm: Optional[str] = None,
     threshold: Optional[int] = None,
     settings: Optional[Dict] = None,
     flat_cache_manager: Optional[FlatCacheManager] = None,
     search_type: str = 'similarity'
 ) -> List[Group]:
-    # Fixed duplicate mode skips
     """
-    Dispatcher for finding similar or exact duplicate image groups.
+    Dispatcher for finding similar or exact duplicate image groups using paths.
 
-    Routes to exact, pHash, or wHash. For 'exact', ignores threshold/settings.
-    Returns enriched Group objects with metadata and normalized scores.
+    For 'exact': Computes content hashes (XXH3), groups identical files.
+    For perceptual ('phash', 'whash'): Two-phase process:
+    1. Detect exact duplicates via XXH3 to identify sets and representatives.
+    2. Compute perceptual hashes only on unique representatives.
+    3. Cluster representatives by perceptual similarity.
+    4. Expand each cluster by including all exact duplicates of its representatives.
+    5. Create FileItem objects with exact_set_id set accordingly.
 
     Args:
-        hashes (List[Dict[str, str]]): List of {'path': str, 'hash': str} records.
-            For 'exact': content hash (BLAKE3/SHA-256). For perceptual: phash/whash.
-        algorithm (Optional[str]): 'exact', 'phash', or 'whash' (default None; falls back to 'phash' from settings or default).
-        threshold (Optional[int]): Max distance for perceptual (ignored for 'exact').
-        settings (Optional[Dict]): For perceptual threshold override and algorithm selection.
-        flat_cache_manager (Optional[FlatCacheManager]): Optional FlatCacheManager instance
-            to pass to underlying grouping functions for quality caching.
-        search_type (str): 'duplicate' to skip perceptual computations, use exact duplicates.
+        paths: List of absolute file paths to process.
+        algorithm: 'exact', 'phash', or 'whash' (default from settings or 'phash').
+        threshold: Max Hamming distance for perceptual clustering (ignored for 'exact').
+        settings: For algorithm selection and threshold overrides.
+        flat_cache_manager: For caching all hash computations and metadata.
+        search_type: 'similarity' or 'duplicate' (affects computations, e.g., skips perceptual in duplicate mode).
 
     Returns:
-        List[Group]: List of groups.
+        List[Group]: Enriched groups with FileItem (scores normalized, exact_set_id set).
 
     Raises:
-        ValueError: Unsupported algorithm or invalid input.
+        ValueError: Invalid algorithm, empty paths, or computation failures.
+        SimilarityError: For hash or clustering errors.
 
     Example:
-        >>> groups = find_similar_images(hashes=sample_hashes, settings=my_settings)
-        >>> print(len(groups))
-        1
+        >>> paths = ["/img1.jpg", "/img2.jpg", "/unique.jpg"]
+        >>> groups = find_similar_images(paths, algorithm='phash', threshold=10)
+        >>> # Groups expanded with exact dups, exact_set_id set
     """
-    # Determine algorithm if not provided
+    if not paths:
+        raise ValueError("paths list cannot be empty")
+
+    # Determine algorithm
     if algorithm is None:
-        if settings is not None and 'criteria' in settings and 'similarity_hash_algorithm' in settings['criteria']:
+        if settings and 'criteria' in settings and 'similarity_hash_algorithm' in settings['criteria']:
             algorithm = settings['criteria']['similarity_hash_algorithm']
         else:
             algorithm = 'phash'
@@ -1703,12 +1836,177 @@ def find_similar_images(
     if algorithm not in ['exact', 'phash', 'whash']:
         raise ValueError(f"Unsupported algorithm: {algorithm}. Supported: 'exact', 'phash', 'whash'")
 
-    if algorithm == "exact":
-        return find_exact_duplicates(hashes, flat_cache_manager, search_type=search_type)
-    elif algorithm == "phash":
-        return find_similar_phash(hashes, threshold, settings, flat_cache_manager, search_type=search_type)
-    elif algorithm == "whash":
-        return find_similar_whash(hashes, threshold, settings, flat_cache_manager, search_type=search_type)
+    logger.info(f"Finding {algorithm} groups for {len(paths)} paths (search_type={search_type})")
+
+    if algorithm == 'exact':
+        # For exact: use detect_exact_duplicates, then create Groups from sets
+        exact_sets, _ = detect_exact_duplicates(paths, flat_cache_manager)
+        groups = []
+        group_id = 1
+        quality_evaluator = get_active_image_quality_evaluator() if search_type != 'duplicate' else None
+        for exact_set in exact_sets:
+            images = []
+            for path in exact_set.paths:
+                try:
+                    meta = get_image_metadata(path, search_type=search_type)
+                    score = 1.0
+                    quality_score, quality_algorithm = (
+                        (1.0, None) if search_type == 'duplicate' else
+                        get_image_quality_score(path, quality_evaluator, flat_cache_manager, search_type=search_type)
+                    )
+                    file_item = FileItem(
+                        path=path,
+                        size=meta['size'],
+                        resolution=meta['resolution'],
+                        mod_date=meta['mod_date'],
+                        score=score,
+                        file_type="",
+                        savings=0,
+                        quality_score=quality_score,
+                        quality_algorithm=quality_algorithm,
+                        exact_set_id=exact_set.id  # Set to set ID for exact groups
+                    )
+                    images.append(file_item)
+                except Exception as e:
+                    logger.error(f"Failed to create FileItem for exact dup {path}: {e}")
+                    continue
+            if len(images) >= 2:
+                stats = compute_group_stats(images)
+                stats.min_score = 1.0
+                stats.max_score = 1.0
+                stats.avg_score = 1.0
+                group = Group(
+                    id=group_id,
+                    items=images,
+                    stats=stats,
+                    ref_path=exact_set.representative_path
+                )
+                groups.append(group)
+                group_id += 1
+        logger.info(f"Exact mode: Found {len(groups)} groups from {len(exact_sets)} sets")
+        return groups
+
+    # Perceptual similarity: Two-phase integration
+    # Phase 1: Detect exact duplicates
+    exact_sets, path_to_set_id_map = detect_exact_duplicates(paths, flat_cache_manager)
+
+    # Identify unique representatives
+    rep_paths = set()
+    for path in paths:
+        set_id = path_to_set_id_map.get(path)
+        if set_id is None:
+            # Singleton: use itself
+            rep_paths.add(path)
+        else:
+            # Duplicate: use rep from its set
+            for s in exact_sets:
+                if s.id == set_id:
+                    rep_paths.add(s.representative_path)
+                    break
+
+    all_reps = list(rep_paths)
+    logger.debug(f"Phase 1 complete: {len(exact_sets)} exact sets, {len([p for p in paths if path_to_set_id_map.get(p) is None])} singletons, {len(all_reps)} unique reps")
+
+    # Phase 2: Compute perceptual hashes only for representatives
+    perceptual_hashes = compute_similarity_hash_batch(
+        all_reps, algorithm=algorithm, settings=settings, flat_cache_manager=flat_cache_manager, search_type=search_type
+    )
+
+    # Filter valid reps (skip if hash computation failed)
+    valid_reps = [rep for rep in all_reps if perceptual_hashes.get(rep) is not None]
+    rep_hashes = [{'path': rep, 'hash': perceptual_hashes[rep]} for rep in valid_reps]
+
+    if not rep_hashes:
+        logger.warning("No valid perceptual hashes computed for representatives; returning empty groups")
+        return []
+
+    # Phase 3: Perform similarity clustering on representatives
+    if algorithm == 'phash':
+        rep_groups = find_similar_phash(rep_hashes, threshold, settings, flat_cache_manager, search_type=search_type)
+    elif algorithm == 'whash':
+        rep_groups = find_similar_whash(rep_hashes, threshold, settings, flat_cache_manager, search_type=search_type)
+    else:
+        raise ValueError(f"Unexpected perceptual algorithm: {algorithm}")
+
+    logger.debug(f"Phase 3: Clustered {len(valid_reps)} reps into {len(rep_groups)} perceptual groups")
+
+    # Phase 4: Expand groups with exact duplicates
+    final_groups = []
+    perceptual_group_id = 1
+    quality_evaluator = get_active_image_quality_evaluator() if search_type != 'duplicate' else None
+
+    for rep_group in rep_groups:
+        expanded_items = []
+        ref_path = rep_group.ref_path  # Keep original ref (a rep)
+
+        # For each rep in the perceptual group, create FileItem with exact_set_id from map
+        for rep_item in rep_group.items:
+            # Recreate rep_item with exact_set_id
+            rep_set_id = path_to_set_id_map.get(rep_item.path)
+            rep_item_with_id = FileItem(
+                path=rep_item.path,
+                size=rep_item.size,
+                resolution=rep_item.resolution,
+                mod_date=rep_item.mod_date,
+                score=rep_item.score,
+                file_type=rep_item.file_type,
+                savings=rep_item.savings,
+                quality_score=rep_item.quality_score,
+                quality_algorithm=rep_item.quality_algorithm,
+                exact_set_id=rep_set_id  # None for singletons, id for reps from sets
+            )
+            expanded_items.append(rep_item_with_id)
+
+            # Expand with exact dups of this rep if any (other members of its set)
+            if rep_set_id is not None:
+                for exact_set in exact_sets:
+                    if exact_set.id == rep_set_id:
+                        # Add all other paths in the set (excluding the rep itself)
+                        for dup_path in exact_set.paths:
+                            if dup_path != rep_item.path:
+                                try:
+                                    meta = get_image_metadata(dup_path, search_type=search_type)
+                                    # Score same as rep's score (exact dup, same perceptual)
+                                    dup_score = rep_item.score
+                                    quality_score, quality_algorithm = (
+                                        (1.0, None) if search_type == 'duplicate' else
+                                        get_image_quality_score(dup_path, quality_evaluator, flat_cache_manager, search_type=search_type)
+                                    )
+                                    dup_item = FileItem(
+                                        path=dup_path,
+                                        size=meta['size'],
+                                        resolution=meta['resolution'],
+                                        mod_date=meta['mod_date'],
+                                        score=dup_score,
+                                        file_type="",
+                                        savings=0,
+                                        quality_score=quality_score,
+                                        quality_algorithm=quality_algorithm,
+                                        exact_set_id=rep_set_id  # Same set as rep
+                                    )
+                                    expanded_items.append(dup_item)
+                                except Exception as e:
+                                    logger.error(f"Failed to create FileItem for dup {dup_path}: {e}")
+                                    continue
+                        break  # Only one set per rep
+
+        # Sort expanded items by path
+        expanded_items.sort(key=lambda item: item.path)
+
+        if len(expanded_items) >= 2:  # Only groups with >=2 after expansion
+            # Recalculate stats for expanded group
+            stats = compute_group_stats(expanded_items)
+            final_group = Group(
+                id=perceptual_group_id,
+                items=expanded_items,
+                stats=stats,
+                ref_path=ref_path
+            )
+            final_groups.append(final_group)
+            perceptual_group_id += 1
+
+    logger.info(f"Perceptual mode ({algorithm}): Found {len(final_groups)} expanded groups from {len(rep_groups)} rep groups")
+    return final_groups
 
 
 if __name__ == "__main__":
@@ -1724,7 +2022,7 @@ if __name__ == "__main__":
         print("Expected pHash error.")
     except Exception as e:
         print(f"pHash error: {e}")
-    
+
     try:
         _ = compute_whash("dummy.jpg")
         print("wHash call OK (dummy fails gracefully).")
@@ -1732,12 +2030,12 @@ if __name__ == "__main__":
         print("Expected wHash error.")
     except Exception as e:
         print(f"wHash error: {e}")
-    
+
     try:
-        sample = [{'path': 'a.jpg', 'hash': '0000'}, {'path': 'b.jpg', 'hash': '0000'}]
-        groups = find_exact_duplicates(sample)
+        sample_paths = ['a.jpg', 'b.jpg']
+        groups = find_similar_images(sample_paths, algorithm='exact')
         print(f"Exact duplicates: {len(groups)} groups")
     except Exception as e:
         print(f"Exact test error: {e}")
-    
+
     print("Verification complete.")

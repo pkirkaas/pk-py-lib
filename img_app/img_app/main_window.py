@@ -162,7 +162,7 @@ class ScanWorker(QThread):
     def __init__(self, db_manager, flat_cache_manager, profile_json: dict, algorithm: str = "xxh3", mode: str = 'duplicate', compute_hashes: bool = False, search_type: Optional[str] = None, profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
         """
         Initialize worker.
-     
+
         Parameters
         ----------
         db_manager : DatabaseManager
@@ -315,7 +315,7 @@ class ScanWorker(QThread):
     def run(self) -> None:
         """
         Execute scanning and cache validation/refresh.
-        
+
         Workflow
         --------
         1) Gather roots from profile pools (A/B), flattened/normalized
@@ -328,7 +328,7 @@ class ScanWorker(QThread):
         import os
         from datetime import datetime
         import traceback
-        
+
         stats = {
             "found": 0,
             "processed": 0,
@@ -338,18 +338,18 @@ class ScanWorker(QThread):
             "errors": 0,
             "error_details": [],  # Collect structured per-error details for post-scan reporting
         }
-        
+
         try:
             roots = self._gather_files()
             if not roots:
                 raise ValueError("No valid roots to scan")
-            
+
             # Determine patterns based on search_type for efficient traversal
             # For 'duplicate': patterns=None to include all files for comprehensive exact hashing
             # For 'similarity': image extensions only to focus on perceptual hash candidates
             image_exts = [f"*{ext}" for ext in IMAGE_EXTENSIONS]
             patterns = image_exts if self.mode == 'similarity' else None
-            
+
             # Resolve algorithms with search_type awareness
             # For 'duplicate': Limit to ['xxh3'] for file content hashing (no perceptual)
             # For 'similarity': Use perceptual algorithms from profile or defaults
@@ -361,13 +361,13 @@ class ScanWorker(QThread):
                 else:
                     algorithms_param = self.profile.get('similarity', {}).get('enabled_algorithms', ['phash', 'whash'])
             LOGGER.debug(f"Calling scan_directory: search_type={self.search_type}, algorithms={algorithms_param}, exact_grouping={self.exact_grouping}, patterns={patterns}")
-            
+
             # Prepare walk_kwargs from profile for traversal parameters (e.g., max_depth, exclude_patterns, include_patterns)
             # Only include valid traversal-related keys to prevent passing irrelevant profile fields (e.g., db_manager, similarity settings) to underlying walk_files
             # This ensures only applicable kwargs like max_depth, exclude_patterns, include_patterns are forwarded, avoiding TypeError on invalid params
             valid_traversal_keys = {'max_depth', 'exclude_patterns', 'include_patterns'}  # Extend with other walk_files-compatible keys as needed (e.g., 'recurse')
             walk_kwargs = {k: v for k, v in self.profile.items() if k in valid_traversal_keys}
-            
+
             # Call extended scan_directory with explicit search_type for conditional logic in cache and hashing
             # For duplicate mode: patterns=None (all files for xxh3 hashing), algorithms=['xxh3'], search_type='duplicate' (skips image metadata/phash/whash)
             # For similarity mode: patterns=image extensions, algorithms=perceptual (phash/whash) from profile, extracts metadata (width/height/phash/whash)
@@ -388,7 +388,7 @@ class ScanWorker(QThread):
                 stop_event=lambda: self._stop,
                 **{k: v for k, v in walk_kwargs.items() if k not in ['db_manager', 'profile_name']}  # Filter to exclude non-traversal keys already handled explicitly
             )
-            
+
             if scan_result is None:
                 # Scan was cancelled by stop_event. Set cancellation flag and proceed to emit finished signal.
                 stats["processed"] = 0
@@ -396,7 +396,7 @@ class ScanWorker(QThread):
                 logger.debug("ScanWorker run cancelled by user request.")
                 # We rely on the last progress callback to have emitted the final status
                 # (e.g., "Scan cancelled.)
-                
+
             else:
                 files = scan_result['files']
                 # Add 'files' to summary for post-scan duplicate grouping
@@ -404,7 +404,7 @@ class ScanWorker(QThread):
                 if self.exact_grouping:
                     # Note: scan_directory now returns 'exact_groups' for exact grouping
                     stats['groups_data'] = scan_result.get('exact_groups', {})
-                
+
                 total = len(files)
                 stats["found"] = total
                 # Record current run file set
@@ -416,26 +416,26 @@ class ScanWorker(QThread):
                 stats["algorithm"] = self.algorithm
                 if getattr(self, "profile_id", None):
                     stats["profile_id"] = self.profile_id
-                
+
                 # Populate pool map post-scan (from metadata if available, else from roots)
                 self._file_pool_map = {}
                 for f in files:
                     path = f.get('path', '')
                     # Default to 'A' for single-pool; can enhance with DB pool later
                     self._file_pool_map[path] = 'A'
-                
+
                 # For duplicates, include groups_data in summary
                 if self.exact_grouping:
                     # groups_data is now populated from scan_result['exact_groups'] above
                     logger.debug(f"Exact groups included in summary: {len(stats['groups_data'])} groups")
-                
+
                 # Collect errors from scan_result
                 stats["error_details"] = scan_result.get('error_details', [])
                 stats["errors"] = len(stats["error_details"])
-                
+
                 # The progress is now handled inside scan_directory, so we just set the final processed count
                 stats["processed"] = total  # All files processed by scan_directory
-                
+
         except Exception as e:
             # Top-level fatal error
             self.error.emit(str(e))
@@ -445,7 +445,7 @@ class ScanWorker(QThread):
                 'traceback': traceback.format_exc()
             })
             stats["errors"] = len(stats["error_details"])
-        
+
         # Emit summary at the end (even on partial stop)
         errors = stats.get('errors', 0)
         # Scan completion reported via finished signal; no terminal print
@@ -517,13 +517,13 @@ class ComparisonWorker(QThread):
             'comparison_type': self.comparison_type,
             'summary': self.scan_results,
         }
-        
+
         try:
             if self._stop:
                 results['cancelled'] = True
                 self.logger.debug("ComparisonWorker cancelled before start.")
                 return
-            
+
             if self.comparison_type == 'duplicate':
                 self._run_duplicate_comparison(results)
             elif self.comparison_type == 'similarity':
@@ -543,7 +543,7 @@ class ComparisonWorker(QThread):
         Handles exact duplicate detection.
         """
         self.progress.emit(0, 100, "Starting exact duplicate detection...")
-        
+
         # Simulate work and check for cancellation
         import time
         time.sleep(0.1)
@@ -555,16 +555,16 @@ class ComparisonWorker(QThread):
 
         # Fetch groups using MainWindow's method (which relies on self._last_run_paths being set)
         raw_duplicate_groups = self.main_window._get_duplicate_groups_single_pool()
-        
+
         # Cache summary printed in main handler after processing
         total_files = len(self.scan_results.get('run_paths', []))
-        
+
         # Convert raw dicts to immutable Group objects and extract pool map
         dialog_groups, pool_map = self.main_window._convert_raw_groups_to_dialog_groups(raw_duplicate_groups, search_type='duplicate')
-        
+
         results['groups'] = dialog_groups
         results['pool_map'] = pool_map
-        
+
         self.progress.emit(100, 100, f"Duplicate detection finished. Found {len(dialog_groups)} groups.")
         self.logger.debug(f"Duplicate comparison finished. Found {len(dialog_groups)} groups.")
 
@@ -573,12 +573,12 @@ class ComparisonWorker(QThread):
         Handles perceptual similarity grouping.
         """
         self.progress.emit(0, 100, "Starting perceptual similarity grouping...")
-        
+
         # 1. Prepare parameters
         profile_payload = self.main_window.active_profile # Assuming active_profile holds the payload
         run_paths = self.scan_results.get('run_paths', [])
         db_mgr = getattr(self.main_window, "database_manager", None)
-        
+
         if not profile_payload or not run_paths or not db_mgr:
             self.error.emit("Missing required context (profile, paths, or database manager) for similarity comparison.")
             self.progress.emit(100, 100, "Similarity comparison failed.")
@@ -595,13 +595,13 @@ class ComparisonWorker(QThread):
 
         # 2. Compute similarity groups using MainWindow's method
         dialog_groups = self.main_window._compute_similarity_groups(profile_payload, run_paths, db_mgr, search_type='similarity')
-        
+
         # 3. Extract pool map
         pool_map = self.main_window._extract_pool_map_from_groups(dialog_groups)
-        
+
         results['groups'] = dialog_groups
         results['pool_map'] = pool_map
-        
+
         self.progress.emit(100, 100, f"Similarity grouping finished. Found {len(dialog_groups)} groups.")
         self.logger.debug(f"Similarity comparison finished. Found {len(dialog_groups)} groups.")
 
@@ -634,7 +634,7 @@ class MainWindow(QMainWindow):
     def _to_int_timestamp(val) -> int:
         """
         Best-effort string/number/None -> integer epoch seconds converter.
-        
+
         This robust conversion is necessary because database values might be stored
         as strings (e.g., ISO format) or integers, and direct int() conversion fails
         for strings. Returns 0 on failure or None input.
@@ -649,7 +649,7 @@ class MainWindow(QMainWindow):
                 return 0
             if s.isdigit():
                 return int(s)
-            
+
             # Attempt common ISO formats
             from datetime import datetime
             s2 = s[:-1] if s.endswith("Z") else s
@@ -664,7 +664,7 @@ class MainWindow(QMainWindow):
             return int(dt.timestamp()) if dt else 0
         except Exception:
             return 0
-    
+
     # Signal emitted when the active profile changes
     profile_changed = Signal(dict)
 
@@ -672,12 +672,12 @@ class MainWindow(QMainWindow):
         """
         Creates a QAction that is disabled and does nothing when triggered.
         Used for menu placeholders.
-        
+
         Parameters
         ----------
         text : str
             The text to display on the action.
-            
+
         Returns
         -------
         QAction
@@ -691,7 +691,7 @@ class MainWindow(QMainWindow):
     def _on_clear_cache(self) -> None:
         """
         Handles the 'Clear Cache' menu action.
-        
+
         Calls self.flat_cache_manager.clear_cache() and shows success/error message.
         """
         if not hasattr(self, 'flat_cache_manager') or self.flat_cache_manager is None:
@@ -709,7 +709,7 @@ class MainWindow(QMainWindow):
     def _on_clean_cache(self) -> None:
         """
         Handles the 'Clean Cache' menu action.
-        
+
         Calls self.flat_cache_manager.clean_cache() in a background thread with progress dialog.
         """
         if not hasattr(self, 'flat_cache_manager') or self.flat_cache_manager is None:
@@ -777,7 +777,7 @@ class MainWindow(QMainWindow):
     def _show_about(self) -> None:
         """
         Handles the 'About' menu action.
-        
+
         Currently a placeholder that shows an info message.
         """
         show_selectable_info(self, "About KDC Image Organizer", "KDC Image Organizer\nVersion: Development Prototype\n\nThis application is currently in the Proof-of-Concept phase.")
@@ -873,7 +873,7 @@ class MainWindow(QMainWindow):
 
         # 2. Validate and save via controller
         resp = self.controller.update_structured_profile(profile_id, updated_payload)
-        
+
         if resp.success:
             self.status_label.setText(f"Profile '{updated_payload.get('name', 'Unnamed')}' saved successfully.")
             # Update internal active profile state
@@ -905,7 +905,7 @@ class MainWindow(QMainWindow):
     def _get_duplicate_groups_single_pool(self) -> List[Dict[str, Any]]:
         """
         Retrieves the pre-computed exact duplicate groups from the last scan run.
-        
+
         Returns
         -------
         List[Dict[str, Any]]
@@ -922,14 +922,14 @@ class MainWindow(QMainWindow):
         """
         Converts raw group dictionaries (from scan/comparison) into immutable Group objects
         and extracts the path->pool map.
-        
+
         Parameters
         ----------
         raw_groups : List[Dict[str, Any]]
             List of raw group dictionaries.
         search_type : str
             'duplicate' to ensure 'Unknown' resolution without image ops.
-            
+
         Returns
         -------
         Tuple[List[Group], Dict[str, str]]
@@ -937,31 +937,31 @@ class MainWindow(QMainWindow):
         """
         dialog_groups: List[Group] = []
         pool_map: Dict[str, str] = {}
-        
+
         for index, raw_group in enumerate(raw_groups):
             group_files: List[FileItem] = []
             total_size = 0
-            
+
             for raw_file in raw_group.get("files", []):
                 path = str(raw_file.get("path", "")).strip()
                 if not path:
                     continue
-                
+
                 # Use cached metadata if available, otherwise use raw data
                 size, modified = self._metadata_cache.get(path, (0, 0))
-                
+
                 # Fallback to raw data if cache miss or raw data is better
                 raw_size = int(raw_file.get("size", 0) or 0)
                 raw_modified = MainWindow._to_int_timestamp(raw_file.get("modified", 0))
-                
+
                 size = max(size, raw_size)
                 modified = max(modified, raw_modified)
-                
+
                 pool = str(raw_file.get("pool", "A") or "A")
-                
+
                 resolution = "Unknown" if search_type == 'duplicate' else "—"
                 # Skip image ops in duplicate mode
-                
+
                 file_item = FileItem(
                     path=path,
                     size=size,
@@ -974,7 +974,7 @@ class MainWindow(QMainWindow):
                 group_files.append(file_item)
                 total_size += size
                 pool_map[path] = pool
-            
+
             if group_files:
                 stats = GroupStats(
                     total_size=total_size,
@@ -984,7 +984,7 @@ class MainWindow(QMainWindow):
                     avg_score=1.0,
                     file_count=len(group_files),
                 )
-                
+
                 dialog_groups.append(
                     Group(
                         id=raw_group.get("hash", f"dup_{index}"),
@@ -993,16 +993,16 @@ class MainWindow(QMainWindow):
                         ref_path=group_files[0].path if group_files else "",
                     )
                 )
-                
+
         return dialog_groups, pool_map
 
     def _compute_similarity_groups(self, profile_payload: Dict[str, Any], run_paths: List[str], db_manager: Any, search_type: str = 'similarity') -> List[Group]:
         """
         Fetches perceptual hashes from the cache DB for the run paths and computes similarity clusters.
-        
+
         Since pk_py_lib.core.image.similarity.find_similar_images already returns List[Group]
         (enriched with metadata), this method primarily handles data fetching and dispatch.
-        
+
         Parameters
         ----------
         profile_payload : Dict[str, Any]
@@ -1013,97 +1013,67 @@ class MainWindow(QMainWindow):
             The DatabaseManager instance.
         search_type : str
             'similarity' to ensure full computations.
-            
+
         Returns
         -------
         List[Group]
             List of immutable Group objects representing similarity clusters.
         """
         from src.pk_py_lib.core.image.similarity import find_similar_images
-        
+
         # 1. Extract algorithm and threshold from profile
         criteria = profile_payload.get("criteria", {})
         algorithm = criteria.get("algorithm", "phash")
-        
+
         # Default to 10 for phash, 12 for whash (Hamming distance)
         default_threshold = 10 if algorithm == "phash" else 12
-        
+
         # Try to get the threshold from criteria, assuming it's the Hamming distance (int)
         threshold_int = criteria.get(f"{algorithm}_threshold", default_threshold)
-        
-        # 2. Fetch hashes from DB for the run paths
-        hashes: List[Dict[str, str]] = []
-        
-        if not run_paths:
-            return []
-                
-        placeholders = ",".join("?" for _ in run_paths)
-        
-        # Use FlatCacheManager to get hashes for the run paths
-        if self.flat_cache_manager:
-            # Get entries for all run paths
-            entries = self.flat_cache_manager.get_entries(run_paths)
-            
-            # Extract hashes based on the requested algorithm
-            for path, entry in entries.items():
-                hash_value = None
-                if algorithm == "xxh3":
-                    hash_value = entry.xxh3 if entry else None
-                elif algorithm == "phash":
-                    hash_value = entry.phash if entry else None
-                elif algorithm == "whash":
-                    hash_value = entry.whash if entry else None
-                
-                if hash_value:
-                    hashes.append({
-                        "path": path,
-                        "hash": str(hash_value),
-                        "pool": self._get_pool_for_path(path, profile_payload)
-                    })
-        else:
-            logger.warning("FlatCacheManager not available for similarity grouping")
-                
+
         # 3. Compute similarity groups
         # find_similar_images returns List[Group] directly, enriched with metadata
+        flat_cache = self.flat_cache_manager if hasattr(self, 'flat_cache_manager') else None
         dialog_groups: List[Group] = find_similar_images(
-            hashes=hashes,
+            run_paths,
             algorithm=algorithm,
             threshold=threshold_int, # Pass Hamming distance (int)
             settings=profile_payload,
+            flat_cache_manager=flat_cache,
             search_type=search_type,
         )
-                
+
         return dialog_groups
-    
+
     def _get_pool_for_path(self, path: str, payload_for_mode: dict) -> str:
         """
         Dynamically compute the pool for a given path based on the current profile's paths.
-    
+
         Determines which scan pool or directory group the path belongs to, using
         self.current_profile.paths or similar; returns a string identifier like the
         root directory name or a hash-based group. Handles cases where path is not
         in profiled paths by returning 'unknown'.
-    
+
         Parameters
         ----------
         path : str
             Absolute file path to determine the pool for.
         payload_for_mode : dict
             The settings profile payload used for the run, containing 'pools' configuration.
-    
+
         Returns
         -------
         str
             Pool label ("A", "B", or "unknown").
         """
         from pathlib import Path
-    
+
         if not payload_for_mode or "pools" not in payload_for_mode:
             return "unknown"
-    
+
         pools = payload_for_mode["pools"]
         path_obj = Path(path)
-    
+
         # Check Pool A paths
         if "A" in pools:
             a_paths = pools["A"].get("paths", [])
@@ -1116,7 +1086,7 @@ class MainWindow(QMainWindow):
                     except ValueError:
                         # Not relative, continue
                         pass
-    
+
         # Check Pool B paths
         if "B" in pools:
             b_paths = pools["B"].get("paths", [])
@@ -1129,7 +1099,7 @@ class MainWindow(QMainWindow):
                     except ValueError:
                         # Not relative, continue
                         pass
-    
+
         # Default to unknown if no match
         return "unknown"
     def __init__(self, parent: QWidget | None = None, active_profile: Optional[Dict[str, Any]] = None, cli_args: Optional[argparse.Namespace] = None) -> None:
@@ -1165,7 +1135,7 @@ class MainWindow(QMainWindow):
         self._progress_dialog: Optional[ProgressDialog] = None
         self._scan_worker: Optional[ScanWorker] = None
         self._comparison_worker: Optional[ComparisonWorker] = None
-        
+
         self._setup_window()
         self._setup_menu_bar()
         self._setup_status_bar()
@@ -1175,7 +1145,7 @@ class MainWindow(QMainWindow):
         # App-wide palette override for readable, dark non-selected text in item views (QTreeWidget, QTableView, etc.)
         # This avoids dark-theme palettes forcing light/low-contrast text on light row backgrounds.
         self._apply_app_palette_hack()
-        
+
         # Initialize start time for progress simulation
         import time
         self.start_time = time.time()
@@ -1318,7 +1288,7 @@ class MainWindow(QMainWindow):
         """Create a standard application menu bar with File, Cache, View, Help."""
         menubar = self.menuBar() if self.menuBar() else QMenuBar(self)
         self.setMenuBar(menubar)
-        
+
         # File menu
         file_menu = menubar.addMenu("&File")
         # Placeholder actions (no-op)
@@ -1326,14 +1296,14 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._make_noop_action("Save"))
         file_menu.addSeparator()
         file_menu.addAction(self._make_noop_action("Exit"))
-        
+
         # Cache menu (new)
         cache_menu = menubar.addMenu("&Cache")
         clear_cache_action = QAction("Clear Cache", self)
         clear_cache_action.setStatusTip("Clear flat_cache.db and recreate it empty")
         clear_cache_action.triggered.connect(self._on_clear_cache)
         cache_menu.addAction(clear_cache_action)
-        
+
         clean_cache_action = QAction("Clean Cache", self)
         clean_cache_action.setStatusTip("Validate entries against the filesystem and remove invalid entries")
         clean_cache_action.triggered.connect(self._on_clean_cache)
@@ -1343,28 +1313,28 @@ class MainWindow(QMainWindow):
         view_cache_action.setStatusTip("View the contents of the flat cache database")
         view_cache_action.triggered.connect(self._on_view_cache)
         cache_menu.addAction(view_cache_action)
-        
+
         # View menu
         view_menu = menubar.addMenu("&View")
         view_menu.addAction(self._make_noop_action("Reset Layout"))
-        
+
         # Help menu
         help_menu = menubar.addMenu("&Help")
         about_action = QAction("&About...", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
-        
+
     @log_errors()
     def _setup_status_bar(self) -> None:
         """Attach a status bar with selectable text for feedback."""
         status = self.statusBar() if self.statusBar() else QStatusBar(self)
         self.setStatusBar(status)
-        
+
         # Create a label for selectable status messages
         self.status_label = QLabel("Ready")
         self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         status.addPermanentWidget(self.status_label)
-        
+
         # Show active profile name if available
         try:
             if getattr(self, "active_profile", None):
@@ -1445,11 +1415,11 @@ class MainWindow(QMainWindow):
                 return
 
             resp = self.controller.list_profiles()
-            
+
             if resp.success:
                 self.profiles = resp.data or []
                 self.profile_combo.clear()
-                
+
                 if self.profiles:
                     # Populate combobox with profile names, marking active profile
                     for profile in self.profiles:
@@ -1457,14 +1427,14 @@ class MainWindow(QMainWindow):
                         if profile.get('is_active'):
                             name += " ★"
                         self.profile_combo.addItem(name, profile.get('id'))
-                    
+
                     # Select the active profile if available
                     active_profile = None
                     for profile in self.profiles:
                         if profile.get('is_active'):
                             active_profile = profile
                             break
-                    
+
                     if active_profile:
                         self.active_profile = active_profile
                         index = self.profile_combo.findData(active_profile.get('id'))
@@ -1472,13 +1442,13 @@ class MainWindow(QMainWindow):
                             self.profile_combo.setCurrentIndex(index)
                     elif self.profile_combo.count() > 0:
                         self.profile_combo.setCurrentIndex(0)
-                    
+
                     self.status_label.setText(f"Loaded {len(self.profiles)} profiles")
                 else:
                     self.status_label.setText("No profiles available. Create a new profile.")
             else:
                 self.status_label.setText(f"Failed to load profiles: {resp.message}")
-                
+
         except Exception as exc:
             self.status_label.setText(f"Error loading profiles: {exc}")
             # Log detailed error
@@ -1492,23 +1462,23 @@ class MainWindow(QMainWindow):
         """
         if index < 0:
             return
-            
+
         profile_id = self.profile_combo.itemData(index)
         if not profile_id:
             return
-            
+
         # Find the selected profile
         selected_profile = None
         for profile in self.profiles:
             if profile.get('id') == profile_id:
                 selected_profile = profile
                 break
-                
+
         if selected_profile:
             self.active_profile = selected_profile
             self.profile_changed.emit(selected_profile)
             self.status_label.setText(f"Active profile: {selected_profile.get('name', 'Unnamed')}")
-            
+
             # Update the active profile in the database
             try:
                 if self.controller:
@@ -1517,7 +1487,7 @@ class MainWindow(QMainWindow):
                         self.status_label.setText(f"Error setting active profile: {resp.message}")
             except Exception as exc:
                 self.status_label.setText(f"Error setting active profile: {exc}")
-            
+
             # Load the profile into the structured editor
             self._load_profile_into_editor(profile_id)
 
@@ -1525,7 +1495,7 @@ class MainWindow(QMainWindow):
     def _load_profile_into_editor(self, profile_id: str) -> None:
         """
         Fetch the full profile data and load it into the StructuredProfileEditorWidget.
-        
+
         If the editor widget does not exist, it is created and replaces the placeholder.
         """
         try:
@@ -1544,7 +1514,7 @@ class MainWindow(QMainWindow):
                 return
 
             profile_data = resp.data.get('json_data') if isinstance(resp.data, dict) and resp.data.get('format') == 'json' and 'json_data' in resp.data else resp.data
-            
+
             if not profile_data:
                 self.status_label.setText("Profile data is empty or invalid")
                 return
@@ -1558,11 +1528,11 @@ class MainWindow(QMainWindow):
                 # Replace the placeholder with the actual editor
                 self.stacked_widget.removeWidget(self.structured_editor_placeholder)
                 self.stacked_widget.addWidget(self.structured_editor)
-                
+
                 # Connect signals only once
                 self.structured_editor.dirtyChanged.connect(self._on_editor_dirty_changed)
                 self._editor_dirty_connected = True
-                
+
             # 3. Load data and switch view
             self.structured_editor.load_profile(profile_data)
             self.stacked_widget.setCurrentWidget(self.structured_editor)
@@ -1598,7 +1568,7 @@ class MainWindow(QMainWindow):
                 return
 
             from src.pk_py_lib.core.settings_schema import create_default_profile
-            
+
             # Create a name prompt dialog
             dlg = _NamePromptDialog("Create Profile", "Name:", parent=self)
             # Suggest a unique name using controller
@@ -1607,23 +1577,23 @@ class MainWindow(QMainWindow):
                 dlg.inp.setText(sugg_resp.data)
             else:
                 dlg.inp.setText("New Profile")
-            
+
             if dlg.exec() == QDialog.Accepted:
                 name = dlg.text()
                 if not name:
                     dlg.set_error("Name is required")
                     return
-                
+
                 # Validate the name using controller
                 validate_resp = self.controller.validate_name(name)
                 if not validate_resp.success:
                     dlg.set_error(validate_resp.message or "Invalid name")
                     return
-                
+
                 # Create the profile with default JSON data using controller
                 json_data = create_default_profile(name, "")
                 create_resp = self.controller.create_structured_profile(json_data, make_active=True)
-                
+
                 if create_resp.success:
                     self.status_label.setText(f"Profile '{name}' created")
                     self.load_profiles()  # Reload profiles to include the new one
@@ -1644,14 +1614,14 @@ class MainWindow(QMainWindow):
         if not self.active_profile:
             self.status_label.setText("No active profile selected to copy")
             return
-            
+
         try:
             if self.controller is None:
                 self.status_label.setText("Controller not available")
                 return
 
             current_name = self.active_profile.get('name', 'Unnamed')
-            
+
             # Create a name prompt dialog
             dlg = _NamePromptDialog("Copy Profile", "New name:", parent=self)
             # Suggest a unique name based on current profile using controller
@@ -1660,19 +1630,19 @@ class MainWindow(QMainWindow):
                 dlg.inp.setText(sugg_resp.data)
             else:
                 dlg.inp.setText(f"Copy of {current_name}")
-            
+
             if dlg.exec() == QDialog.Accepted:
                 new_name = dlg.text()
                 if not new_name:
                     dlg.set_error("Name is required")
                     return
-                
+
                 # Validate the name
                 validate_resp = self.controller.validate_name(new_name)
                 if not validate_resp.success:
                     dlg.set_error(validate_resp.message or "Invalid name")
                     return
-                
+
                 # Copy the profile using controller
                 copy_resp = self.controller.duplicate_structured_profile(
                     source_profile_id=self.active_profile['id'],
@@ -1680,7 +1650,7 @@ class MainWindow(QMainWindow):
                     description=f"Copy of {current_name}",
                     make_active=False
                 )
-                
+
                 if copy_resp.success:
                     self.status_label.setText(f"Profile '{new_name}' created from copy")
                     self.load_profiles()  # Reload profiles to include the new one
@@ -1698,7 +1668,7 @@ class MainWindow(QMainWindow):
         """
         Public method to initiate the default operation (scan/comparison)
         based on the currently active profile settings.
-        
+
         This method is typically called on application startup if the --default
         CLI flag is provided. It delegates to the internal _on_start handler.
         """
@@ -1708,7 +1678,7 @@ class MainWindow(QMainWindow):
     def _on_start(self) -> None:
         """
         Handle start button click to begin the operation.
- 
+
         Behavior update:
         - If the embedded settings editor has unsaved changes (dirty), attempt a synchronous save before starting.
         - On save failure, an error dialog is shown and the operation is aborted.
@@ -1717,12 +1687,12 @@ class MainWindow(QMainWindow):
         if not self.active_profile:
             self.status_label.setText("No active profile selected")
             return
- 
+
         db_mgr = getattr(self, "database_manager", None)
         if db_mgr is None:
             show_selectable_error(self, "Cache Error", "DatabaseManager is not available on the main window.")
             return
- 
+
         # 1) Save pending settings if editor is dirty (supports either structured_editor or legacy editor attribute)
         editor = getattr(self, "structured_editor", None)
         if editor is None and hasattr(self, "editor"):
@@ -1730,7 +1700,7 @@ class MainWindow(QMainWindow):
                 editor = getattr(self, "editor")
             except Exception:
                 editor = None
- 
+
         def _editor_is_dirty(ed) -> bool:
             """Best-effort dirty check across editor variants."""
             try:
@@ -1744,7 +1714,7 @@ class MainWindow(QMainWindow):
                 return bool(getattr(ed, "_dirty", False))
             except Exception:
                 return False
- 
+
         if _editor_is_dirty(editor):
             # Disable Start during save and inform user
             self.start_btn.setEnabled(False)
@@ -1756,7 +1726,7 @@ class MainWindow(QMainWindow):
                 QApplication.processEvents()
             except Exception:
                 pass
- 
+
             # Attempt synchronous save using existing handler; it validates and persists
             self._on_save_profile()
 
@@ -1779,7 +1749,7 @@ class MainWindow(QMainWindow):
         self._progress_dialog.set_indeterminate("Starting operation...")
         self._progress_dialog.cancellation_requested.connect(self._on_cancellation_requested)
         self.start_btn.setEnabled(False)
- 
+
         # 3) Resolve full profile JSON for the run (now guaranteed to include saved changes)
         try:
             if self.controller is None:
@@ -1796,26 +1766,26 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Error preparing run: {exc}")
             self.start_btn.setEnabled(True)
             return
- 
+
         # 4) Start background worker
         import time
         self.start_time = time.time()
         self._scan_errors = []
- 
+
         # Determine the profile name used for this run and pass it to the worker
         try:
             prof_name = str((payload.get("name") if isinstance(payload, dict) else (self.active_profile.get("name") if self.active_profile else "")) or "")
         except Exception:
             prof_name = str(self.active_profile.get("name")) if getattr(self, "active_profile", None) else ""
- 
+
         mode = payload.get('mode', 'duplicate')
         self._current_scan_mode = mode
         compute_hashes = mode == 'similarity'
- 
+
         flat_cache_mgr = getattr(self, "flat_cache_manager", None)
         if flat_cache_mgr is None:
             self.logger.warning("FlatCacheManager not available on MainWindow. Proceeding without cache.")
- 
+
         self._scan_worker = ScanWorker(
             db_manager=db_mgr,
             flat_cache_manager=flat_cache_mgr,
@@ -1832,7 +1802,7 @@ class MainWindow(QMainWindow):
         self._scan_worker.error.connect(self._on_scan_error)
         self._scan_worker.finished.connect(self._on_scan_finished_with_comparison_start)
         self._scan_worker.start()
-        
+
         # Show the modal dialog (blocks until accepted/rejected/closed)
         self._progress_dialog.exec()
 
@@ -1852,14 +1822,14 @@ class MainWindow(QMainWindow):
     def _on_cancellation_requested(self) -> None:
         """
         Handles the cancellation signal from the ProgressDialog.
-        
+
         Requests cooperative stop on any running worker threads.
         """
         self.logger.info("Cancellation requested by user.")
         if self._scan_worker and self._scan_worker.isRunning():
             self.logger.info("Stopping ScanWorker.")
             self._scan_worker.stop()
-        
+
         if self._comparison_worker and self._comparison_worker.isRunning():
             self.logger.info("Stopping ComparisonWorker.")
             self._comparison_worker.stop()
@@ -1900,7 +1870,7 @@ class MainWindow(QMainWindow):
         # make this tricky. We will rely on the fact that ScanWorker provides current_path (str) and ComparisonWorker
         # does not (so current_path will be an empty string or None if the signal is defined
         # to match the slot signature).
-        
+
         # For simplicity and robustness against signal argument mismatch, we will assume
         # if `current_path` is a non-empty string, it's a scan update.
         is_scan_progress = bool(current_path)
@@ -1908,14 +1878,14 @@ class MainWindow(QMainWindow):
         if total > 0:
             percent = int((processed / total) * 100)
             percent = max(0, min(100, percent))
-            
+
             if is_scan_progress:
                 # ScanWorker progress: show path and detailed count
                 status_text = f"Scanning: {current_path} ({processed}/{total})"
             else:
                 # ComparisonWorker progress: show percentage and message
                 status_text = f"{message} ({percent}%)"
-            
+
             self._progress_dialog.set_progress(percent, status_text)
         else:
             # Indeterminate state or initial phase
@@ -2182,12 +2152,12 @@ class MainWindow(QMainWindow):
         try:
             if db_mgr is not None:
                 from collections import defaultdict
-                
+
                 # Use FlatCacheManager for duplicate detection instead of old cache_db
                 if self.flat_cache_manager:
                     # Get all entries for run paths
                     entries = self.flat_cache_manager.get_entries(run_paths)
-                    
+
                     if two_pool:
                         if direction == "duplicates":
                             # Two-Pool Duplicate Clustering (A vs B)
@@ -2196,27 +2166,27 @@ class MainWindow(QMainWindow):
                                           if self._get_pool_for_path(path, payload_for_mode) == 'A'}
                             pool_b_files = {path: entry for path, entry in entries.items()
                                           if self._get_pool_for_path(path, payload_for_mode) == 'B'}
-                            
+
                             # Find duplicates between pools
                             groups_map: dict[str, list[str]] = defaultdict(list)
-                            
+
                             # Create hash lookup for pool B
                             b_hash_lookup = {}
                             for path, entry in pool_b_files.items():
                                 hash_value = entry.xxh3 if entry else None
                                 if hash_value:
                                     b_hash_lookup[hash_value] = path
-                            
+
                             # Check pool A files against pool B
                             for a_path, a_entry in pool_a_files.items():
                                 a_hash = a_entry.xxh3 if a_entry else None
                                 if a_hash and a_hash in b_hash_lookup:
                                     b_path = b_hash_lookup[a_hash]
                                     groups_map[a_path].append(b_path)
-                            
+
                             report_lines.append("Two-Pool Report — duplicates (A vs B)")
                             all_paths_in_groups = set()
-                            
+
                             for a_path, b_list in groups_map.items():
                                 if not b_list:
                                     continue
@@ -2227,16 +2197,16 @@ class MainWindow(QMainWindow):
                                 for b in b_list:
                                     report_lines.append(f"  - {b}")
                                     all_paths_in_groups.add(b)
-                
+
                             # Prepare data for DuplicateManagerDialog (groups_data_prepared)
                             if all_paths_in_groups:
                                 group_id = 1
                                 for a_path, b_list in groups_map.items():
                                     if not b_list:
                                         continue
-                                    
+
                                     group_files = []
-                                    
+
                                     # Add A path (reference)
                                     a_entry = entries.get(a_path)
                                     if a_entry:
@@ -2247,7 +2217,7 @@ class MainWindow(QMainWindow):
                                             "pool": self._get_pool_for_path(a_path, payload_for_mode),
                                             "score": 1.0
                                         })
-                                    
+
                                     # Add B paths (duplicates)
                                     for b_path in b_list:
                                         b_entry = entries.get(b_path)
@@ -2259,7 +2229,7 @@ class MainWindow(QMainWindow):
                                                 "pool": self._get_pool_for_path(b_path, payload_for_mode),
                                                 "score": 1.0
                                             })
-                                    
+
                                     if len(group_files) >= 2:
                                         groups_data_prepared.append({
                                             "hash": f"two_pool_dup_{group_id}",
@@ -2276,7 +2246,7 @@ class MainWindow(QMainWindow):
                                     hash_value = entry.xxh3 if entry else None
                                     if hash_value:
                                         pool_a_hashes.add(hash_value)
-                            
+
                             # Find files in pool B that are not in pool A
                             report_lines.append("Two-Pool Report — non_duplicates (B not in A)")
                             for path, entry in entries.items():
@@ -2293,9 +2263,9 @@ class MainWindow(QMainWindow):
                             hash_value = entry.xxh3 if entry else None
                             if hash_value:
                                 hash_groups[hash_value].append(path)
-                        
+
                         report_lines.append("Duplicate Report — Single Pool")
-                        
+
                         for hash_value, paths in hash_groups.items():
                             if len(paths) >= 2:
                                 groups += 1
@@ -2303,7 +2273,7 @@ class MainWindow(QMainWindow):
                                 report_lines.append(f"\nHash: {hash_value}")
                                 for path in paths:
                                     report_lines.append(f"  - {path}")
-                                
+
                                 # Prepare data for DuplicateManagerDialog
                                 group_files = []
                                 for path in paths:
@@ -2316,14 +2286,14 @@ class MainWindow(QMainWindow):
                                             "pool": self._get_pool_for_path(path, payload_for_mode),
                                             "score": 1.0
                                         })
-                                
+
                                 if len(group_files) >= 2:
                                     groups_data_prepared.append({
                                         "hash": hash_value,
                                         "count": len(group_files),
                                         "files": group_files,
                                     })
-                        
+
                         # Fallback groups (empty since we're using flat cache)
                         groups_data_fallback = []
                 else:
@@ -2410,7 +2380,7 @@ class MainWindow(QMainWindow):
         mode_val = (payload_for_mode.get("mode") if isinstance(payload_for_mode, dict) else "?") or "?"
         scope_kind = (((payload_for_mode.get("scope") or {}).get("kind")) if isinstance(payload_for_mode, dict) else None) or "?"
         is_similarity = mode_val == "similarity"
-        
+
         # Handle non-duplicates case first, which only generates a report and returns
         if two_pool and direction == "non_duplicates":
             if self._progress_dialog:
@@ -2421,7 +2391,7 @@ class MainWindow(QMainWindow):
 
         # 3. Start ComparisonWorker
         comparison_type = 'similarity' if is_similarity else 'duplicate'
-        
+
         # Update progress dialog for the next phase
         if self._progress_dialog:
             self._progress_dialog.set_indeterminate(f"Starting {comparison_type} comparison...")
@@ -2436,10 +2406,10 @@ class MainWindow(QMainWindow):
         self._comparison_worker.finished.connect(self._on_comparison_finished)
         self._comparison_worker.error.connect(self._on_scan_error) # Reuse scan error handler for logging
         self._comparison_worker.start()
-        
+
         # Note: The modal dialog is already running from _on_start() and will block until
         # it is explicitly closed in _on_comparison_finished or cancelled.
-        
+
         # We must ensure the report text and summary are available for _on_comparison_finished
         # which will display the final dialogs.
         self._last_report_text = report_text
@@ -2451,7 +2421,7 @@ class MainWindow(QMainWindow):
         self._last_direction = direction
         self._last_groups_data_prepared = groups_data_prepared
         self._last_groups_data_fallback = groups_data_fallback
-        
+
         # The method returns here, allowing the ComparisonWorker to run in the background
         # while the modal ProgressDialog remains open.
         return
@@ -2472,7 +2442,7 @@ class MainWindow(QMainWindow):
         if self._progress_dialog:
             self._progress_dialog.close()
         self.start_btn.setEnabled(True)
-        
+
         # 2. Check for cancellation
         if results.get("cancelled"):
             self.logger.info("Comparison cancelled or failed. Aborting result display.")
@@ -2481,24 +2451,24 @@ class MainWindow(QMainWindow):
         # 3. Extract necessary context stored during scan phase
         dialog_groups: List[Group] = results.get('groups', [])
         pool_map: Dict[str, str] = results.get('pool_map', {})
-        
+
         def _get_pool_for_path(self, path: str, profile: dict) -> str:
             """
             Determine the pool (A or B) for a given file path based on profile pool configurations.
-            
+
             Args:
                 path: Absolute file path.
                 profile: Settings profile payload with "pools" configuration.
-            
+
             Returns:
                 Pool label ("A" or "B"), defaults to "A" if undetermined.
             """
             if not profile or "pools" not in profile:
                 return "A"
-        
+
             pools = profile["pools"]
             path_obj = Path(path)
-        
+
             # Check Pool A paths
             if "A" in pools:
                 a_paths = pools["A"].get("paths", [])
@@ -2510,7 +2480,7 @@ class MainWindow(QMainWindow):
                     except ValueError:
                         # Not relative, continue
                         pass
-        
+
             # Check Pool B paths
             if "B" in pools:
                 b_paths = pools["B"].get("paths", [])
@@ -2522,10 +2492,10 @@ class MainWindow(QMainWindow):
                     except ValueError:
                         # Not relative, continue
                         pass
-        
+
             # Default to A if no match
             return "A"
-        
+
         # Context stored in instance variables by _on_scan_finished_with_comparison_start
         text = getattr(self, '_last_summary_text', "Operation completed.")
         report_text = getattr(self, '_last_report_text', "No detailed report available.")
@@ -2535,10 +2505,10 @@ class MainWindow(QMainWindow):
         mode_val = payload_for_mode.get("mode", "?")
         scope_kind = payload_for_mode.get("scope", {}).get("kind")
         is_similarity = mode_val == "similarity"
-        
+
         # 4. Display results dialog
         dialog = None
-        
+
         try:
             # Clear selection store before opening a new dialog
             try:
@@ -2554,9 +2524,9 @@ class MainWindow(QMainWindow):
                         "The scan did not produce any similarity clusters for review.",
                     )
                     return
-                
+
                 text += f"\nSimilarity groups: {len(dialog_groups)}"
-                
+
                 dialog = SimilarityManagerDialog(
                     groups=dialog_groups,
                     pool_map=pool_map,
@@ -2577,9 +2547,9 @@ class MainWindow(QMainWindow):
                         "The scan did not produce any duplicate clusters for review.",
                     )
                     return
-                
+
                 text += f"\nDuplicates groups: {len(dialog_groups)}"
-                
+
                 # Determine initial direction for the dialog based on two_pool status
                 initial_direction = PoolDirection.ALL
                 if two_pool:
@@ -2625,7 +2595,7 @@ class MainWindow(QMainWindow):
                 )
             except Exception:
                 pass
-        
+
         except Exception as e:
             # Fallback error handling for dialog creation/execution failure
             try:

@@ -48,10 +48,10 @@ THUMBNAIL_SIZE = QSize(160, 160)
 def _format_bytes(size: Optional[int]) -> str:
     """
     Convert a byte count into a human friendly string.
- 
+
     Args:
         size: Raw byte value that may be ``None`` or negative.
- 
+
     Returns:
         Human readable string (e.g. ``"1.5 MB"``) or ``"—"`` when unavailable.
     """
@@ -79,11 +79,11 @@ def _format_bytes(size: Optional[int]) -> str:
 def _normalise_path(selection_store: SelectionStore, path: str) -> str:
     """
     Produce a normalised path compatible with the supplied SelectionStore.
- 
+
     Args:
         selection_store: The selection store providing the normalisation strategy.
         path: Absolute or relative filesystem path.
- 
+
     Returns:
         Normalised absolute path string.
     """
@@ -164,7 +164,7 @@ class FileGroupView(QWidget):
     def set_display_mode(self, mode: Literal["duplicates", "similarity"]) -> None:
         """
         Update the display mode and refresh the rendered groups.
- 
+
         Args:
             mode: Desired visual mode (``"duplicates"`` or ``"similarity"``).
         """
@@ -195,7 +195,7 @@ class FileGroupView(QWidget):
     def update_model(self, model: FileGroupModel) -> None:
         """
         Render a new :class:`FileGroupModel`.
- 
+
         Args:
             model: Immutable view-model containing groups, pool map and direction.
         """
@@ -223,7 +223,7 @@ class FileGroupView(QWidget):
     def set_pool_direction(self, direction: PoolDirection) -> None:
         """
         Apply a new pool direction filter and refresh the view.
- 
+
         Args:
             direction: Direction enum describing which pools should be visible.
         """
@@ -255,11 +255,11 @@ class FileGroupView(QWidget):
     def get_selected_files(self, apply_filter: bool = False) -> List[FileItem]:
         """
         Collect the :class:`FileItem` objects currently marked as selected.
- 
+
         Args:
             apply_filter: When ``True``, respects the model's active pool direction;
                 otherwise scans the canonical group list.
- 
+
         Returns:
             Ordered list of file items corresponding to the selected paths.
         """
@@ -376,6 +376,7 @@ class FileGroupView(QWidget):
                     "Modified",
                     "Score",
                     "Quality",
+                    "Exact",
                 ]
                 hidden_columns = set()
 
@@ -395,7 +396,7 @@ class FileGroupView(QWidget):
     def _populate_tree(self, groups: Sequence[FileGroup]) -> None:
         """
         Populate the tree widget with the supplied groups.
- 
+
         Args:
             groups: Sequence of immutable file groups to render.
         """
@@ -431,11 +432,11 @@ class FileGroupView(QWidget):
     def _build_group_item(self, group: FileGroup, font: QFont) -> QTreeWidgetItem:
         """
         Create the top-level tree row representing a file group.
- 
+
         Args:
             group: The immutable group being visualised.
             font: Pre-constructed bold font for emphasis.
- 
+
         Returns:
             Configured :class:`QTreeWidgetItem` instance.
         """
@@ -456,12 +457,13 @@ class FileGroupView(QWidget):
                 else:
                     group_item.setText(6, "—")
                 group_item.setText(7, "—")  # Quality placeholder for group
+                group_item.setText(8, "—")  # Exact placeholder for group
 
             group_item.setData(0, Qt.UserRole, group.ref_path)
             group_item.setFlags(Qt.ItemIsEnabled)
             for column in range(self.tree_widget.columnCount()):
                 group_item.setFont(column, font)
-                if column in (3, 5, 6, 7):
+                if column in (3, 6, 7, 8):
                     group_item.setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
                 else:
                     group_item.setTextAlignment(column, Qt.AlignLeft | Qt.AlignVCenter)
@@ -481,12 +483,12 @@ class FileGroupView(QWidget):
     def _build_file_item(self, file_item: FileItem) -> QTreeWidgetItem:
         """
         Create a child row for the provided file.
- 
+
         In similarity mode, displays the normalized quality score (0-1 range, e.g., "0.745") from the FileItem in column 7, or "-" if unavailable. Aligns quality right for numeric display.
- 
+
         Args:
             file_item: Immutable file metadata used to populate the row.
- 
+
         Returns:
             Configured :class:`QTreeWidgetItem` instance.
         """
@@ -517,14 +519,20 @@ class FileGroupView(QWidget):
                 quality_text = "—"
                 if file_item.quality_score is not None:
                     quality_text = f"{file_item.quality_score:.3f}"
-                
+
                 tree_item.setText(7, quality_text)
+
+                # Display exact_set_id if available
+                exact_text = str(file_item.exact_set_id) if file_item.exact_set_id is not None else ""
+                tree_item.setText(8, exact_text)
 
             tooltip = f"{file_item.path}\nSize: {_format_bytes(file_item.size)}"
             for column in range(self.tree_widget.columnCount()):
                 tree_item.setTextAlignment(column, Qt.AlignLeft | Qt.AlignVCenter)
-                if column == 7:
-                    tree_item.setTextAlignment(7, Qt.AlignRight | Qt.AlignVCenter)
+                if column in (3, 7, 8):
+                    tree_item.setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
+                else:
+                    tree_item.setTextAlignment(column, Qt.AlignLeft | Qt.AlignVCenter)
                 tree_item.setToolTip(column, tooltip)
 
             tree_item.setFlags(
@@ -552,7 +560,7 @@ class FileGroupView(QWidget):
     def _on_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         """
         React to user toggles of the checkbox column.
- 
+
         Args:
             item: The tree item that changed.
             column: Column index that triggered the change.
@@ -580,7 +588,7 @@ class FileGroupView(QWidget):
     def _emit_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         """
         Forward double-click events with the associated file path.
- 
+
         Args:
             item: Tree item that was double-clicked.
             column: Column index (unused, present for Qt signal compatibility).
@@ -601,7 +609,7 @@ class FileGroupView(QWidget):
     def _on_selection_store_changed(self, selection: Iterable[str]) -> None:
         """
         Synchronise checkbox state when the SelectionStore mutates.
- 
+
         Args:
             selection: Iterable of normalised paths currently selected.
         """
@@ -708,7 +716,7 @@ class SimilarityPreviewPane(QWidget):
     ) -> None:
         """
         Populate the preview table with the supplied file items.
- 
+
         Args:
             file_items: Sequence of file entries derived from the active group.
             generate_thumbnails: When ``True``, attempts to render scaled previews.
@@ -853,10 +861,10 @@ class SimilarityPreviewPane(QWidget):
     def _create_thumbnail_label(self, file_item: FileItem) -> QLabel:
         """
         Create a QLabel that renders a scaled thumbnail for the provided file.
- 
+
         Args:
             file_item: File metadata used to locate the image on disk.
- 
+
         Returns:
             QLabel configured with the scaled pixmap or a diagnostic message.
         """
@@ -898,7 +906,7 @@ class SimilarityPreviewPane(QWidget):
     def _on_table_item_changed(self, item: QTableWidgetItem) -> None:
         """
         Synchronise SelectionStore when the preview checkbox toggles.
- 
+
         Args:
             item: Table item that changed (expected column 0).
         """
@@ -925,7 +933,7 @@ class SimilarityPreviewPane(QWidget):
     def _on_cell_double_clicked(self, row: int, column: int) -> None:
         """
         Emit the file path when a table row is activated.
- 
+
         Args:
             row: The row index that was double-clicked.
             column: Column index (unused but kept for Qt compatibility).
@@ -949,7 +957,7 @@ class SimilarityPreviewPane(QWidget):
     def _on_selection_store_changed(self, selection: Iterable[str]) -> None:
         """
         Mirror selection store updates within the preview table.
- 
+
         Args:
             selection: Iterable of normalised file paths currently selected.
         """

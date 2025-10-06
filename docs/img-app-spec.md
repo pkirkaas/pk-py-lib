@@ -268,6 +268,10 @@ Each settings profile includes:
   - Files < 512 KiB skip partial hashing and go directly to full XXH3
 - Reference: [canonical-decisions.md](docs/roo/canonical-decisions.md:93)
 
+### Optimization in Similarity Search
+
+The perceptual similarity search (pHash/wHash) now incorporates exact duplicate detection as an initial phase for efficiency. Bitwise identical files are identified via XXH3 hashes and grouped into sets with unique IDs. Only one representative per set undergoes perceptual hashing, with full sets expanded into final similarity groups. This reduces computational overhead (e.g., fewer DCT/DWT operations) in duplicate-heavy collections, maintaining exact results and scalability via LSH. The GUI displays set IDs in a new "Exact" column for easy identification and management.
+
 ## 7. Results semantics
 
 - Single pool
