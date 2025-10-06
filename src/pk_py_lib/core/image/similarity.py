@@ -848,7 +848,8 @@ def compute_phash_batch(
     paths: List[str],
     hash_size: int = 8,
     settings: Optional[Dict] = None,
-    flat_cache_manager: Optional[FlatCacheManager] = None
+    flat_cache_manager: Optional[FlatCacheManager] = None,
+    algorithm: str = 'phash'
 ) -> Dict[str, Optional[str]]:
     """
     Batch compute pHashes for a list of image paths, with progress logging.
@@ -891,19 +892,28 @@ def compute_phash_batch(
     results: Dict[str, Optional[str]] = {}
     total = len(paths)
 
-    logger.info(f"Starting batch pHash computation for {total} images (size={hash_size})")
+    logger.info(f"Starting batch {algorithm} computation for {total} images (size={hash_size}) [cache-enabled]")
 
     # Use get_hashes for batch efficiency
-    batch_results = flat_cache_manager.get_hashes(paths, ['phash'])
+    batch_results = flat_cache_manager.get_hashes(paths, [algorithm])
 
     for path in paths:
-        hash_val = batch_results.get(path, {}).get('phash')
+        hash_val = batch_results.get(path, {}).get(algorithm)
         results[path] = hash_val
         if hash_val is None:
-            logger.warning(f"Failed to compute pHash for {path}")
+            logger.warning(f"Failed to compute {algorithm} for {path}")
 
     success_count = sum(1 for v in results.values() if v is not None)
-    logger.info(f"Batch complete: {success_count}/{total} successful")
+
+    # Calculate cache hit information
+    if flat_cache_manager:
+        counters = flat_cache_manager.get_counters()
+        cache_hits = len([p for p in paths if p in batch_results and batch_results[p].get(algorithm) is not None])
+        cache_info = f" (cache hits: {cache_hits})"
+    else:
+        cache_info = ""
+
+    logger.info(f"Batch complete: {success_count}/{total} successful{cache_info}")
 
     return results
 
@@ -1416,7 +1426,8 @@ def compute_whash_batch(
     wavelet: str = 'db1',
     settings: Optional[Dict] = None,
     flat_cache_manager: Optional[FlatCacheManager] = None,
-    search_type: str = 'similarity'
+    search_type: str = 'similarity',
+    algorithm: str = 'whash'
 ) -> Dict[str, Optional[str]]:
     """
     Batch compute wHashes for a list of image paths, with progress logging.
@@ -1468,20 +1479,28 @@ def compute_whash_batch(
     results: Dict[str, Optional[str]] = {}
     total = len(paths)
 
-    logger.info(f"Starting batch wHash computation for {total} images (size={hash_size}, mode={mode}, wavelet={wavelet})")
+    logger.info(f"Starting batch {algorithm} computation for {total} images (size={hash_size}, mode={mode}, wavelet={wavelet}) [cache-enabled]")
 
     # Use get_hashes for batch efficiency (note: get_hashes doesn't support mode/wavelet params yet; assume default or extend if needed)
     # For now, since _compute_hash in flat_cache uses default for whash, call batch
-    batch_results = flat_cache_manager.get_hashes(paths, ['whash'], search_type=search_type)
+    batch_results = flat_cache_manager.get_hashes(paths, [algorithm], search_type=search_type)
 
     for path in paths:
-        hash_val = batch_results.get(path, {}).get('whash')
+        hash_val = batch_results.get(path, {}).get(algorithm)
         results[path] = hash_val
         if hash_val is None:
-            logger.warning(f"Failed to compute wHash for {path}")
+            logger.warning(f"Failed to compute {algorithm} for {path}")
 
     success_count = sum(1 for v in results.values() if v is not None)
-    logger.info(f"Batch complete: {success_count}/{total} successful")
+
+    # Calculate cache hit information
+    if flat_cache_manager:
+        cache_hits = len([p for p in paths if p in batch_results and batch_results[p].get(algorithm) is not None])
+        cache_info = f" (cache hits: {cache_hits})"
+    else:
+        cache_info = ""
+
+    logger.info(f"Batch complete: {success_count}/{total} successful{cache_info}")
 
     return results
 
@@ -1570,9 +1589,9 @@ def compute_similarity_hash_batch(
             algorithm = 'phash'
 
     if algorithm == 'phash':
-        return compute_phash_batch(paths, settings=settings, flat_cache_manager=flat_cache_manager)
+        return compute_phash_batch(paths, settings=settings, flat_cache_manager=flat_cache_manager, algorithm=algorithm)
     elif algorithm == 'whash':
-        return compute_whash_batch(paths, settings=settings, flat_cache_manager=flat_cache_manager, search_type=search_type)
+        return compute_whash_batch(paths, settings=settings, flat_cache_manager=flat_cache_manager, search_type=search_type, algorithm=algorithm)
     else:
         raise ValueError(f"Unsupported similarity hash algorithm: {algorithm}. Supported: 'phash', 'whash'")
 

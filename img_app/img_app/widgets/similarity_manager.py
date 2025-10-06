@@ -626,11 +626,16 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             return [], pool_map, total_files
 
         try:
+            # Extract just the paths from the hashes we already fetched
+            paths = [h['path'] for h in hashes]
+
             sim_groups = find_similar_images(
-                hashes=hashes,
+                paths=paths,  # ✅ Correct: Pass file paths as expected
                 algorithm=algorithm,
                 threshold=threshold,
                 settings=self._profile_payload,
+                flat_cache_manager=self._flat_cache_manager,  # ✅ Ensure cache is used
+                search_type='similarity'
             )
         except (ValueError, KeyError, TypeError) as e:
             LOGGER.error(f"Similarity calculation error: {e}", exception=e)

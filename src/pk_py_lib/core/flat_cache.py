@@ -49,7 +49,7 @@ class FlatCacheError(Exception):
 class FlatCacheDBError(FlatCacheError):
     """
     Raised when a database operation fails unexpectedly.
-    
+
     Args:
         message (str): Descriptive message about the DB failure.
         original_error (Exception, optional): The underlying sqlite3.Error or other exception.
@@ -104,7 +104,7 @@ class CacheComputeError(FlatCacheError):
 class FlatCacheEntry:
     """
     Represents a single entry in the flat cache database.
-    
+
     Attributes:
         path (str): Normalized full file path (PRIMARY KEY).
         size (int): File size in bytes.
@@ -216,7 +216,7 @@ class FlatCacheManager:
     def __init__(self, db_path: Optional[Path | str] = None, logger: Optional[logging.Logger] = None):
         """
         Initializes the FlatCacheManager.
-        
+
         Parameters:
             db_path (Optional[Path | str]): The full path to the SQLite database file.
                                             Defaults to get_data_dir() / DEFAULT_DB_NAME.
@@ -246,20 +246,20 @@ class FlatCacheManager:
     def _validate_schema_or_recreate(self) -> None:
         """
         Validates that the existing database matches the current schema version.
-        
+
         If the database file exists but has a different schema version (or the version
         cannot be determined), deletes the entire database file and all companion files
         (WAL, SHM) to ensure a clean slate for recreation.
-        
+
         This approach is appropriate for a development/PoC project where cached data
         can be regenerated and migration complexity should be avoided.
-        
+
         Logs:
             - Schema validation start and results
             - Current vs. expected schema version on mismatch
             - Database deletion and recreation actions
             - Any errors encountered during validation or deletion
-        
+
         Raises:
             FlatCacheDBError: If database files cannot be deleted after validation failure.
         """
@@ -267,14 +267,14 @@ class FlatCacheManager:
         if not self.db_path.exists():
             self.logger.info(f"Database file does not exist yet: {self.db_path}. Will create with schema v{SCHEMA_VERSION}.")
             return
-        
+
         self.logger.info(f"Validating schema for existing database: {self.db_path}")
-        
+
         try:
             # Attempt to connect and read schema version
             conn = sqlite3.connect(str(self.db_path), timeout=5)
             conn.row_factory = sqlite3.Row
-            
+
             try:
                 # Check if schema_version table exists
                 cursor = conn.execute(
@@ -288,9 +288,9 @@ class FlatCacheManager:
                     cursor = conn.execute("SELECT version FROM schema_version")
                     row = cursor.fetchone()
                     current_version = row[0] if row else 0
-                
+
                 self.logger.info(f"Database schema version: {current_version}, Expected: {SCHEMA_VERSION}")
-                
+
                 # Check if version matches
                 if current_version != SCHEMA_VERSION:
                     self.logger.warning(
@@ -298,13 +298,13 @@ class FlatCacheManager:
                         f"Database has v{current_version}, but code expects v{SCHEMA_VERSION}. "
                         f"Deleting database to recreate with current schema."
                     )
-                    
+
                     # Close connection before deleting
                     conn.close()
-                    
+
                     # Delete database and all companion files
                     self._delete_database_files()
-                    
+
                     self.logger.info(
                         f"Database deleted successfully. New database with schema v{SCHEMA_VERSION} "
                         f"will be created during initialization."
@@ -312,39 +312,39 @@ class FlatCacheManager:
                 else:
                     self.logger.info(f"Schema validation passed: v{SCHEMA_VERSION}")
                     conn.close()
-                    
+
             except sqlite3.Error as e:
                 self.logger.error(f"SQLite error during schema validation: {e}", exc_info=True)
                 conn.close()
-                
+
                 # If we can't read the schema, assume it's corrupted and delete
                 self.logger.warning(
                     f"Cannot validate schema due to database error. "
                     f"Database may be corrupted. Deleting to recreate."
                 )
                 self._delete_database_files()
-                
+
         except sqlite3.Error as e:
             self.logger.error(f"Cannot connect to database for validation: {e}", exc_info=True)
             self.logger.warning("Cannot access database. Attempting to delete and recreate.")
             self._delete_database_files()
-            
+
         except Exception as e:
             self.logger.error(f"Unexpected error during schema validation: {e}", exc_info=True)
             # For unexpected errors, try to delete and recreate
             self._delete_database_files()
-    
+
     def _delete_database_files(self) -> None:
         """
         Deletes the database file and all companion files (WAL, SHM).
-        
+
         This is used when schema validation fails or the database is corrupted.
         Attempts to delete all related files to ensure a clean slate for recreation.
-        
+
         Logs:
             - Each file deletion attempt and result
             - Any errors encountered during deletion
-        
+
         Raises:
             FlatCacheDBError: If files cannot be deleted (e.g., due to permissions or locks).
         """
@@ -353,9 +353,9 @@ class FlatCacheManager:
             self.db_path.with_suffix('.db-wal'),
             self.db_path.with_suffix('.db-shm')
         ]
-        
+
         deletion_errors = []
-        
+
         for file_path in files_to_delete:
             if file_path.exists():
                 try:
@@ -379,7 +379,7 @@ class FlatCacheManager:
                     deletion_errors.append(error_msg)
             else:
                 self.logger.debug(f"File does not exist, skipping: {file_path}")
-        
+
         if deletion_errors:
             error_summary = "; ".join(deletion_errors)
             raise FlatCacheDBError(
@@ -387,7 +387,7 @@ class FlatCacheManager:
                 f"Errors: {error_summary}. "
                 f"Try closing any applications using the database and run again."
             )
-        
+
         self.logger.info("All database files deleted successfully.")
 
     @log_errors()
@@ -397,10 +397,10 @@ class FlatCacheManager:
         """
         Context manager yielding a sqlite3.Connection with automatic commit/rollback,
         WAL mode, and row factory set to sqlite3.Row.
-        
+
         Yields:
             sqlite3.Connection: An active database connection.
-        
+
         Raises:
             FlatCacheDBError: If a database error occurs during connection or transaction.
         """
@@ -430,11 +430,11 @@ class FlatCacheManager:
     def _migrate_from_legacy_cache_if_needed(self) -> None:
         """
         Performs one-time migration from legacy cache.db if it exists in data_dir.
-        
+
         Queries image_metadata and image_hashes from cache.db, maps to FlatCacheEntry
         (populates new fields, extracts xxh3 and phash hashes),
         inserts into flat_cache.db, then deletes cache.db.
-        
+
         Logs the process; idempotent (skips if cache.db missing or already migrated).
         """
         legacy_cache_path = self.data_dir / "cache.db"
@@ -463,7 +463,7 @@ class FlatCacheManager:
                     return
 
                 self.logger.info(f"Starting migration from legacy cache.db (version {legacy_version}) to flat_cache v{SCHEMA_VERSION}")
-                
+
                 migrated_count = 0
                 # Query image_metadata (main data)
                 cur_meta = legacy_conn.execute("""
@@ -473,7 +473,7 @@ class FlatCacheManager:
                     # Extract xxh3 and phash from legacy data
                     xxh3_val = None  # Legacy SHA-256 not migrated; recompute xxh3 on access
                     phash_val = None
-                    
+
                     # Query associated hashes from image_hashes
                     cur_hashes = legacy_conn.execute("""
                         SELECT algorithm, hash_value FROM image_hashes WHERE image_id = ?
@@ -483,7 +483,7 @@ class FlatCacheManager:
                             phash_val = row_hash['hash_value']
                         elif row_hash['algorithm'] == 'xxh3':
                             xxh3_val = row_hash['hash_value']  # Prefer xxh3 from hashes table
-                    
+
                     entry_data = {
                         'path': row_meta['file_path'],
                         'size': row_meta['file_size'],
@@ -496,7 +496,7 @@ class FlatCacheManager:
                         'created_at': time.time(),
                         'updated_at': time.time(),
                     }
-                    
+
                     # Create entry and insert
                     entry = FlatCacheEntry.from_dict(entry_data)
                     if self.set_entry(entry):
@@ -505,7 +505,7 @@ class FlatCacheManager:
                         self.logger.warning(f"Failed to migrate entry for {entry.path}")
 
                 self.logger.info(f"Migration complete: {migrated_count} entries transferred from cache.db")
-                
+
                 # Clean up legacy DB
                 legacy_cache_path.unlink(missing_ok=True)
                 self.logger.info("Legacy cache.db deleted after successful migration.")
@@ -521,13 +521,13 @@ class FlatCacheManager:
         """
         Ensures the database file exists and the required table is created.
         Handles schema migration by checking version and recreating if needed.
-        
+
         For PoC simplicity: If schema version < current, drop and recreate the table.
         Logs recreation due to schema update.
-        
+
         Handles locked database errors by attempting to delete the DB file and WAL/SHM companions,
         then reinitializing. Includes retries for drop operations.
-        
+
         Raises:
             FlatCacheDBError: If table creation or migration fails after retries.
         """
@@ -567,7 +567,7 @@ class FlatCacheManager:
                             version INTEGER PRIMARY KEY
                         );
                     """)
-                    
+
                     # Get or set current version
                     cursor = conn.execute("SELECT version FROM schema_version")
                     row = cursor.fetchone()
@@ -576,9 +576,9 @@ class FlatCacheManager:
                     else:
                         current_version = 0
                         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (int(SCHEMA_VERSION),))
-                    
+
                     self.logger.info(f"Diagnostic: Current schema version: {current_version}, target: {SCHEMA_VERSION}")
-                    
+
                     # If version mismatch, migrate (for PoC: drop and recreate)
                     if current_version < SCHEMA_VERSION:
                         if current_version == 7:
@@ -606,7 +606,7 @@ class FlatCacheManager:
                         else:
                             # For older versions, drop and recreate
                             self.logger.info(f"Schema migration needed for older version {current_version}. Recreating table.")
-                            
+
                             # Drop existing table if it exists (no inner retry needed if we deleted files already)
                             try:
                                 self.logger.info(f"Diagnostic: Attempting DROP TABLE IF EXISTS {self.table_name}")
@@ -623,29 +623,29 @@ class FlatCacheManager:
                             except Exception as drop_error:
                                 self.logger.error(f"Diagnostic: DROP TABLE failed with unexpected error: {drop_error}")
                                 raise
-                            
+
                             # Run full schema
                             self.logger.info("Diagnostic: Executing full schema creation")
                             conn.executescript(FLAT_CACHE_SCHEMA)
-                            
+
                             # Update version
                             conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (int(SCHEMA_VERSION),))
-                            
+
                             self.logger.info("Schema migration complete: table recreated with v{}.".format(SCHEMA_VERSION))
                     else:
                         # Ensure table and indexes exist
                         conn.executescript(FLAT_CACHE_SCHEMA)
-                    
+
                     self.logger.debug(f"Table {self.table_name} ensured (version {SCHEMA_VERSION}).")
                     return  # Success, exit retry loop
 
             except FlatCacheDBError as e:
                 original_err = getattr(e, 'original_error', None)
                 is_lock_error = (isinstance(original_err, sqlite3.OperationalError) and "locked" in str(original_err).lower()) or ("locked" in str(e).lower())
-                
+
                 if is_lock_error and attempt < max_retries:
                     self.logger.warning(f"Database locked during init (attempt {attempt}/{max_retries}): {e}. Attempting to delete DB files and retry...")
-                    
+
                     # Delete DB and companion files to break lock
                     try:
                         for ext in ['', '-wal', '-shm']:
@@ -658,13 +658,13 @@ class FlatCacheManager:
                         self.logger.error(f"Failed to delete locked DB files: {delete_error}")
                         if attempt == max_retries:
                             raise FlatCacheDBError(f"Persistent lock and deletion failed: {e}", original_error=e)
-                    
+
                     time.sleep(retry_delay)
                     continue  # Retry init
                 else:
                     self.logger.critical(f"Failed to initialize flat cache database: {e}")
                     raise
-            
+
             except Exception as e:
                 if attempt < max_retries:
                     self.logger.warning(f"Unexpected error during init (attempt {attempt}/{max_retries}): {e}. Retrying...")
@@ -696,13 +696,13 @@ class FlatCacheManager:
     def _get_file_stats(file_path: str) -> Tuple[int, float]:
         """
         Retrieves size and modification time (mtime) for a file.
-        
+
         Parameters:
             file_path (str): The path to the file.
-        
+
         Returns:
             Tuple[int, float]: (size, mtime)
-        
+
         Raises:
             FileNotFoundError: If the file does not exist.
             PermissionError: If file stats cannot be read.
@@ -719,23 +719,23 @@ class FlatCacheManager:
     def _validate_entry(self, entry: FlatCacheEntry, strict: bool = True) -> Tuple[bool, Dict[str, Any]]:
         """
         Validates a cached entry against the current file system statistics.
-        
+
         Parameters:
             entry (FlatCacheEntry): The cached entry to validate.
             strict (bool): If True (default), raises FlatCacheValidationError on failure.
                            If False, returns (False, mismatches) without raising.
-        
+
         Returns:
             Tuple[bool, Dict[str, Any]]: (is_valid: bool, mismatches: dict)
                 - is_valid: True if valid.
                 - mismatches: Empty dict if valid; otherwise, details of failures.
-        
+
         Raises:
             FlatCacheValidationError: If strict=True and validation fails.
         """
         file_path = entry.path
         self.logger.debug(f"Cache validate for {file_path}, action: start, strict: {strict}")  # Log validation start
-    
+
         try:
             current_size, current_mtime = self._get_file_stats(file_path)
             self.logger.debug(f"Cache validate_size for {file_path}, cached_size: {entry.size}, current_size: {current_size}")  # Log size check
@@ -751,16 +751,16 @@ class FlatCacheManager:
             if strict:
                 raise FlatCacheValidationError(file_path, mismatches)
             return False, mismatches
-    
+
         mismatches = {}
-    
+
         # Size check
         if current_size != entry.size:
             self.logger.debug(f"Cache validate_size for {file_path}, result: valid=False")  # Log size invalid
             mismatches["size"] = f"Cached: {entry.size}, Current: {current_size}"
         else:
             self.logger.debug(f"Cache validate_size for {file_path}, result: valid=True")  # Log size valid
-    
+
         # Modification time check (with float tolerance for precision issues)
         self.logger.debug(f"Cache validate_date for {file_path}, cached_mtime: {entry.mtime}, current_mtime: {current_mtime}")  # Log date check
         if abs(current_mtime - entry.mtime) > 1e-6:
@@ -768,7 +768,7 @@ class FlatCacheManager:
             mismatches["mtime"] = f"Cached: {entry.mtime}, Current: {current_mtime}"
         else:
             self.logger.debug(f"Cache validate_date for {file_path}, result: valid=True")  # Log date valid
-    
+
         # Validity flag
         self.logger.debug(f"Cache validate_flag for {file_path}, is_valid: {entry.is_valid}")  # Log flag check
         if not entry.is_valid:
@@ -776,13 +776,13 @@ class FlatCacheManager:
             mismatches["is_valid"] = "Entry marked invalid"
         else:
             self.logger.debug(f"Cache validate_flag for {file_path}, result: valid=True")  # Log flag valid
-    
+
         if mismatches:
             self.logger.debug(f"Cache validate for {file_path}, result: overall_valid=False, mismatches: {len(mismatches)}")  # Log overall invalid
             if strict:
                 raise FlatCacheValidationError(file_path, mismatches)
             return False, mismatches
-    
+
         self.logger.debug(f"Cache validate for {file_path}, result: overall_valid=True")  # Log overall valid
         return True, {}
 
@@ -790,13 +790,13 @@ class FlatCacheManager:
     def get_entry(self, file_path: str) -> Optional[FlatCacheEntry]:
         """
         Queries the cache for an entry and validates it against current file stats.
-        
+
         Additionally, for BRISQUE scores, detects legacy 0-100 scale (scores >1.0) and
         normalizes them in-place to 0-1 scale by dividing by 100.0, then persists the update.
-        
+
         Parameters:
             file_path (str): The path to the file.
-        
+
         Returns:
             Optional[FlatCacheEntry]: The valid entry (with normalized brisque if migrated), or None if not found or invalid.
         """
@@ -856,22 +856,22 @@ class FlatCacheManager:
     def set_entry(self, entry: FlatCacheEntry, search_type: Optional[str] = None) -> bool:
         """
         Inserts or replaces a cache entry (UPSERT), conditionally based on search_type.
-        
+
         For search_type='duplicate', performs a targeted UPDATE of core fields only
         (path, size, mtime, xxh3, updated_at, is_valid) to avoid overwriting existing
         image metadata (width, height, phash, whash, brisque) from prior similarity scans.
         Uses INSERT OR REPLACE for full updates in other modes (e.g., 'similarity').
-        
+
         The entry's 'path' must be normalized before calling this method.
         It automatically updates 'updated_at' and ensures file stats are current.
-        
+
         Parameters:
             entry (FlatCacheEntry): The entry to store.
             search_type (Optional[str]): 'duplicate' for limited update; otherwise full INSERT.
-        
+
         Returns:
             bool: True if the operation succeeded, False otherwise.
-        
+
         Notes:
             - Duplicate mode preserves image data to support mixed scan workflows.
             - Full mode overwrites all fields, suitable for similarity scans.
@@ -885,7 +885,7 @@ class FlatCacheManager:
             entry.created_at = now
         entry.updated_at = now
         self.logger.debug(f"Cache set for {entry.path}, action: update_timestamps, created_at: {entry.created_at}, updated_at: {entry.updated_at}")
-        
+
         # Update file stats just before saving to ensure consistency
         try:
             entry.size, entry.mtime = self._get_file_stats(entry.path)
@@ -893,7 +893,7 @@ class FlatCacheManager:
         except (FileNotFoundError, PermissionError) as e:
             self.logger.warning(f"Cannot set entry for non-existent or inaccessible file {entry.path}: {e}")
             return False
-        
+
         if search_type == 'duplicate':
             # Limited UPDATE for core fields; explicitly clear image-specific fields to ensure clean cache in duplicate mode
             # This prevents retention of perceptual/image data from prior similarity scans
@@ -902,13 +902,13 @@ class FlatCacheManager:
             set_clause = ', '.join([f"{field} = ?" for field in core_fields] + [f"{field} = NULL" for field in image_clear_fields])
             values = [getattr(entry, field) if field != 'is_valid' else int(entry.is_valid) for field in core_fields]
             values.append(entry.path)  # WHERE path = ?
-            
+
             sql = f"""
             UPDATE {self.table_name}
             SET {set_clause}
             WHERE path = ?
             """
-            
+
             self.logger.debug(f"Cache set for {entry.path}, field: core, action: prepare_update, mode: duplicate")  # Log SQL prep
             self.logger.debug(f"Limited UPDATE for duplicate mode (core fields + image clear): {entry.path}")
         else:
@@ -917,15 +917,15 @@ class FlatCacheManager:
             columns = ', '.join(data.keys())
             placeholders = ', '.join(['?'] * len(data))
             values = tuple(data.values())
-            
+
             sql = f"""
             INSERT OR REPLACE INTO {self.table_name} ({columns})
             VALUES ({placeholders})
             """
-            
+
             self.logger.debug(f"Cache set for {entry.path}, field: all, action: prepare_insert, mode: full")  # Log SQL prep
             self.logger.debug(f"Full INSERT/REPLACE for {entry.path} (search_type={search_type or 'default'})")
-        
+
         try:
             with self._get_connection() as conn:
                 if search_type == 'duplicate':
@@ -956,7 +956,7 @@ class FlatCacheManager:
                 else:
                     conn.execute(sql, values)
                     self.logger.debug(f"Cache set for {entry.path}, action: execute_insert, mode: full")  # Log execution
-            
+
             self.logger.debug(f"Cache set for {entry.path}, result: success=True, mode: {'duplicate' if search_type == 'duplicate' else 'full'}")  # Log success
             return True
         except FlatCacheDBError as e:
@@ -1163,10 +1163,10 @@ class FlatCacheManager:
     def _is_image_file(self, file_path: str) -> bool:
         """
         Checks if the file is a supported image file.
-        
+
         Parameters:
             file_path (str): The path to the file.
-        
+
         Returns:
             bool: True if it can be opened as an image with PIL.
         """
@@ -1489,29 +1489,29 @@ class FlatCacheManager:
     def get_hashes(self, file_paths: List[str], hash_types: List[str] = ['phash'], search_type: Optional[str] = None) -> Dict[str, Dict[str, str]]:
         """
         Batch processes a list of files to get or compute hashes efficiently, respecting search_type.
-        
+
         For each file, checks cache, validates, computes missing hashes if needed (skipping perceptual
         hashes in 'duplicate' mode), logs progress and errors. In 'duplicate' mode, only ensures xxh3
         is available without touching image metadata or perceptual hashes.
-        
+
         This method always performs file stat validation on cached entries to ensure freshness.
         Specify hash_types to retrieve only required hashes, avoiding unnecessary computations.
         Use search_type to control scope: 'duplicate' for file-only hashing (e.g., xxh3, no image loading);
         'similarity' for perceptual hashes (phash, whash) and quality metrics (brisque) on images.
-        
+
         Parameters:
             file_paths (List[str]): List of file paths to process.
             hash_types (List[str]): List of hash types to retrieve/compute. Defaults to ['phash'].
                 In 'duplicate' mode, non-xxh3 types are set to None without computation.
             search_type (Optional[str]): 'duplicate' to limit to file hashes (xxh3 only, no image loading);
                 'similarity' for full perceptual + content hashes. Defaults to None (full computation).
-        
+
         Returns:
             Dict[str, Dict[str, str]]: Mapping of path to dict of hash_type: value (None for skipped perceptual in duplicate mode).
-        
+
         Raises:
             FileNotFoundError, PermissionError, CacheComputeError: For individual files; continues for others.
-        
+
         Example:
             >>> results = manager.get_hashes(['/img.jpg'], ['phash', 'xxh3'], search_type='similarity')
             >>> # Computes both
@@ -1527,11 +1527,13 @@ class FlatCacheManager:
             hash_types = ['xxh3']
             self.logger.debug(f"Cache get_hashes duplicate_mode: forced_types: {hash_types}")  # Log mode adjust
 
-        # For similarity, ensure all types including xxh3
+        # For similarity, ensure xxh3 for exact duplicate detection, but respect requested hash types
         if search_type == 'similarity':
-            full_types = list(set(hash_types + ['xxh3', 'phash', 'whash']))
-            hash_types = full_types
-            self.logger.debug(f"Cache get_hashes similarity_mode: expanded_types: {hash_types}")  # Log expand
+            # Ensure xxh3 for exact duplicate detection, but respect requested hash types
+            if 'xxh3' not in hash_types:
+                hash_types = list(hash_types) + ['xxh3']
+            # Don't force all hash types - compute only what's requested
+            self.logger.debug(f"Cache get_hashes similarity_mode: requested_types: {hash_types}")  # Log requested types
         else:
             # Default: dedup provided types
             hash_types = list(set(hash_types))
@@ -1571,11 +1573,11 @@ class FlatCacheManager:
     def get_entries(self, paths: List[str], include_invalid: bool = False) -> Dict[str, Optional[FlatCacheEntry]]:
         """
         Batch retrieves validated cache entries for a list of paths.
-        
+
         Parameters:
             paths (List[str]): List of file paths.
             include_invalid (bool): If True, return invalid entries (e.g., for cleanup); default False (None for invalid).
-        
+
         Returns:
             Dict[str, Optional[FlatCacheEntry]]: Path to entry (None if missing/invalid unless include_invalid).
         """
@@ -1871,18 +1873,18 @@ class FlatCacheManager:
     def reset_counters(self) -> None:
         """
         Resets the cache interaction counters to zero for a new processing session.
-        
+
         This method is used before starting a new scan or comparison to track fresh cache interactions.
-        
+
         Parameters:
             None
-        
+
         Returns:
             None
-        
+
         Raises:
             None
-        
+
         Example:
             manager.reset_counters()  # Counters now 0 for new duplicate scan
         """
@@ -1893,18 +1895,18 @@ class FlatCacheManager:
     def get_counters(self) -> dict[str, int]:
         """
         Returns the current values of cache interaction counters.
-        
+
         This method provides a snapshot of hits, misses, and invalid entries for reporting, e.g., terminal summary.
-        
+
         Parameters:
             None
-        
+
         Returns:
             dict[str, int]: Dictionary with keys 'hits', 'misses', 'invalid_entries' and integer values.
-        
+
         Raises:
             ValueError: If any counter is negative (unexpected, for debugging).
-        
+
         Example:
             counters = manager.get_counters()
             # {'hits': 10, 'misses': 5, 'invalid_entries': 2}
@@ -1932,35 +1934,35 @@ class FlatCacheManager:
 if __name__ == '__main__':
     # Setup basic logging for standalone test
     logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
+
     # Use a temporary file-based database for testing
     db_path = Path("./test_flat_cache.db").resolve()
-    
+
     # Create a dummy image file for testing (simple 1x1 PNG)
     test_file_path = Path("./temp_test_image.png").resolve()
     test_file_path.write_bytes(b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDAT\x08\xd7c\xf8\x0f\x00\x00\x00\x04\x00\x01\xe2 \x0c\xbd\x00\x00\x00\x00IEND\xaeB`\x82')
-    
+
     print(f"--- Starting FlatCacheManager Test (DB: {db_path.name}) ---")
-    
+
     try:
         manager = FlatCacheManager(db_path=db_path)
-        
+
         # Test batch get_hashes
         print("\n--- Testing get_hashes ---")
         hashes = manager.get_hashes([str(test_file_path)], ['phash', 'xxh3'])
         print(f"Hashes: {hashes}")
-        
+
         # Verify entry
         entry = manager.get_entry(str(test_file_path))
         print(f"Entry xxh3: {entry.xxh3 if entry else None}, phash: {entry.phash if entry else None}")
-        
+
         # Test invalidation by modifying file (append to make size change)
         with open(test_file_path, 'ab') as f:
             f.write(b'test')
         print("\n--- After modification (should recompute) ---")
         new_hashes = manager.get_hashes([str(test_file_path)], ['phash'])
         print(f"New hashes: {new_hashes}")
-        
+
     finally:
         # Clean up
         if test_file_path.exists():
