@@ -163,7 +163,7 @@ class StructuredProfileEditorWidget(QWidget):
 
             # Add stretch to push fields to the left and prevent expansion
             meta_layout.addStretch(1)
-            
+
             layout.addWidget(meta_group)
 
             # Scope section
@@ -173,7 +173,7 @@ class StructuredProfileEditorWidget(QWidget):
 
             # Create a horizontal layout for Scope Kind and Direction on the same line
             self.scope_direction_layout = QHBoxLayout()
-            
+
             # Scope Kind combo box with label
             scope_kind_label = QLabel("Scope Kind:")
             self.cmb_scope_kind = QComboBox()
@@ -181,10 +181,10 @@ class StructuredProfileEditorWidget(QWidget):
             self.cmb_scope_kind.setMaximumWidth(160)  # ~20 characters
             self.scope_direction_layout.addWidget(scope_kind_label)
             self.scope_direction_layout.addWidget(self.cmb_scope_kind)
-            
+
             # Add stretch to separate Scope Kind and Direction
             self.scope_direction_layout.addSpacing(20)
-            
+
             # Direction combo box with label
             self.direction_label = QLabel("Direction:")
             self.cmb_scope_direction = QComboBox()
@@ -193,7 +193,7 @@ class StructuredProfileEditorWidget(QWidget):
             self.cmb_scope_direction.setMaximumWidth(160)  # ~20 characters
             self.scope_direction_layout.addWidget(self.direction_label)
             self.scope_direction_layout.addWidget(self.cmb_scope_direction)
-            
+
             # Add the horizontal layout to the form layout
             scope_layout.addRow(self.scope_direction_layout)
 
@@ -265,7 +265,7 @@ class StructuredProfileEditorWidget(QWidget):
 
             # Create a horizontal layout for Mode and Algorithm on the same line
             mode_algo_layout = QHBoxLayout()
-            
+
             # Mode combo box with label
             mode_label = QLabel("Mode:")
             self.cmb_mode = QComboBox()
@@ -273,10 +273,10 @@ class StructuredProfileEditorWidget(QWidget):
             self.cmb_mode.setMaximumWidth(160)  # ~20 characters
             mode_algo_layout.addWidget(mode_label)
             mode_algo_layout.addWidget(self.cmb_mode)
-            
+
             # Add stretch to separate Mode and Algorithm
             mode_algo_layout.addSpacing(20)
-            
+
             # Algorithm combo box with label
             algo_label = QLabel("Algorithm:")
             self.cmb_algorithm = QComboBox()
@@ -287,7 +287,7 @@ class StructuredProfileEditorWidget(QWidget):
             self.cmb_algorithm.setMaximumWidth(160)  # ~20 characters
             mode_algo_layout.addWidget(algo_label)
             mode_algo_layout.addWidget(self.cmb_algorithm)
-            
+
             # Add the horizontal layout to the form layout
             mode_layout.addRow(mode_algo_layout)
 
@@ -310,7 +310,7 @@ class StructuredProfileEditorWidget(QWidget):
             degree_layout.addWidget(self.lbl_degree)
             # Add row to form layout
             criteria_layout.addRow(self.lbl_degree_label, self.degree_widget)
-            
+
             self.lbl_hash_label = QLabel("Hash Algorithm:")
             self.cmb_hash_algorithm = QComboBox()
             self.cmb_hash_algorithm.addItems(["phash", "whash"])
@@ -374,7 +374,7 @@ class StructuredProfileEditorWidget(QWidget):
             self.cmb_mode.currentTextChanged.connect(self._on_mode_changed)
             self.cmb_algorithm.currentTextChanged.connect(self._on_change)
             self.sld_degree.valueChanged.connect(self._on_degree_changed)
-            
+
             self.cmb_hash_algorithm.currentTextChanged.connect(self._on_hash_algorithm_changed)
 
             # Scope
@@ -515,7 +515,7 @@ class StructuredProfileEditorWidget(QWidget):
                 value=value
             )
 
-    @log_errors
+    @log_errors()
     @gui_error_handler(component_name="StructuredProfileEditorWidget")
     def _on_change(self, *args) -> None:
         """Handle any change in the UI and update dirty state."""
@@ -596,13 +596,13 @@ class StructuredProfileEditorWidget(QWidget):
     def _get_complete_profile(self, for_validation: bool = False) -> Dict[str, Any]:
         """
         Get the current profile with all required generated fields added.
-        
+
         Parameters
         ----------
         for_validation : bool
             If True, normalize the profile to fill in defaults for validation
             If False, return the profile with only generated fields added
-            
+
         Returns
         -------
         Dict[str, Any]
@@ -610,12 +610,12 @@ class StructuredProfileEditorWidget(QWidget):
         """
         try:
             profile = self._current_profile.copy()
-            
+
             # Add generated fields that are required by schema but not user-editable
             if not self._original_profile:  # New profile
                 from uuid import uuid4
                 from datetime import datetime, timezone
-                
+
                 profile.setdefault("id", str(uuid4()))
                 now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                 profile.setdefault("created_at", now)
@@ -624,14 +624,14 @@ class StructuredProfileEditorWidget(QWidget):
                 profile.setdefault("id", self._original_profile.get("id"))
                 profile.setdefault("created_at", self._original_profile.get("created_at"))
                 profile.setdefault("updated_at", self._original_profile.get("updated_at"))
-            
+
             profile.setdefault("profile_version", "1.0.0")
             profile.setdefault("schema_version", "1.0")
-            
+
             if for_validation:
                 # Use normalization to fill in all other defaults for validation
                 return normalize_settings(profile)
-            
+
             return profile
         except Exception as e:
             logger.error(
@@ -658,19 +658,19 @@ class StructuredProfileEditorWidget(QWidget):
             if not self._current_profile:
                 self.lbl_validation.setText("Profile incomplete")
                 return
-                
+
             # Check required user-editable fields before schema validation
             name = self._current_profile.get("name", "").strip()
             if not name:
                 self.lbl_validation.setText("Profile incomplete: name is required")
                 return
-                
+
             pool_a = self._current_profile.get("pools", {}).get("A", {})
             pool_a_paths = pool_a.get("paths", [])
             if not pool_a_paths:
                 self.lbl_validation.setText("Profile incomplete: Pool A must have at least one path")
                 return
-                
+
             # For two-pool scope, check Pool B paths
             scope = self._current_profile.get("scope", {})
             if scope.get("kind") == "two_pool":
@@ -685,7 +685,7 @@ class StructuredProfileEditorWidget(QWidget):
 
             # Get complete profile with generated fields for validation
             validation_profile = self._get_complete_profile(for_validation=True)
-        
+
             # Validate the complete profile
             is_valid, errors = validate_settings_schema(validation_profile)
             if is_valid:
@@ -724,7 +724,7 @@ class StructuredProfileEditorWidget(QWidget):
             self.degree_widget.setVisible(is_similarity)
             self.sld_degree.setEnabled(is_similarity)
             self.lbl_degree.setEnabled(is_similarity)
-            
+
             self.lbl_hash_label.setVisible(is_similarity)
             self.cmb_hash_algorithm.setVisible(is_similarity)
             self.lbl_hash_label.setEnabled(is_similarity)
@@ -737,13 +737,13 @@ class StructuredProfileEditorWidget(QWidget):
                 desired_algos = ["phash", "whash"]
             else:
                 desired_algos = []
-            
+
             # Save current algorithm before potentially changing items
             current_algo_before = self.cmb_algorithm.currentText()
-            
+
             # Get current items in the algorithm combo box
             current_items = [self.cmb_algorithm.itemText(i) for i in range(self.cmb_algorithm.count())]
-            
+
             # Only update the combo box items if they are different from desired
             if set(current_items) != set(desired_algos):
                 self.cmb_algorithm.blockSignals(True)
@@ -756,7 +756,7 @@ class StructuredProfileEditorWidget(QWidget):
                     else:
                         self.cmb_algorithm.setCurrentText(desired_algos[0])
                 self.cmb_algorithm.blockSignals(False)
-            
+
             # Ensure current algorithm is valid for the mode (in case it was set to something invalid)
             current_algo = self.cmb_algorithm.currentText()
             if desired_algos and current_algo not in desired_algos:
@@ -767,22 +767,22 @@ class StructuredProfileEditorWidget(QWidget):
                 if "criteria" not in self._current_profile:
                     self._current_profile["criteria"] = {}
                 self._current_profile["criteria"]["algorithm"] = desired_algos[0]
-            
+
             # Enable/disable based on mode
             self.cmb_algorithm.setEnabled(bool(desired_algos))
 
             # Show/hide and enable/disable Pool B and Direction based on scope kind
             is_two_pool = scope_kind == "two_pool"
-            
+
             # Pool B visibility and enablement
             self.pool_b_group.setVisible(is_two_pool)
             self.inp_pool_b_paths.setEnabled(is_two_pool)
             self.btn_pool_b_select.setEnabled(is_two_pool)
-            
+
             # Direction combo box visibility and enablement
             self.cmb_scope_direction.setVisible(is_two_pool)
             self.cmb_scope_direction.setEnabled(is_two_pool)
-            
+
             # Also hide the Direction label when not in two-pool mode
             self.direction_label.setVisible(is_two_pool)
         except Exception as e:
@@ -903,7 +903,7 @@ class StructuredProfileEditorWidget(QWidget):
 
             # Get current items in the algorithm combo box
             current_items = [self.cmb_algorithm.itemText(i) for i in range(self.cmb_algorithm.count())]
-            
+
             # Only update the combo box items if they are different from desired
             if set(current_items) != set(desired_algos):
                 self.cmb_algorithm.clear()
@@ -920,7 +920,7 @@ class StructuredProfileEditorWidget(QWidget):
             algorithm = criteria.get("algorithm", default_algo)
             self.cmb_algorithm.setCurrentText(algorithm)
             self.sld_degree.setValue(criteria.get("degree_ui", 90))
-            
+
             # PRIORITY 2 FIX: Set hash algorithm first, but wait to sync cmb_algorithm until after _update_ui_state()
             # This ensures the UI is properly initialized before setting algorithm values
             sim_hash = criteria.get("similarity_hash_algorithm", "phash")
@@ -933,7 +933,7 @@ class StructuredProfileEditorWidget(QWidget):
 
             # Update UI state for enable/disable logic and to populate combo items correctly
             self._update_ui_state()
-            
+
             # NOW sync the algorithm combo after UI state is updated to prevent reset
             self.cmb_algorithm.setCurrentText(sim_hash)
 
@@ -1148,21 +1148,21 @@ class StructuredProfileEditorWidget(QWidget):
                 current_text = self.inp_pool_a_paths.toPlainText()
             else:
                 current_text = self.inp_pool_b_paths.toPlainText()
-            
+
             current_paths = [line.strip() for line in current_text.splitlines() if line.strip()]
-            
+
             # Create filter spec that allows both files and directories
             filter_spec = PathFilterSpec(
                 allow_dirs=True,
                 allow_files=True,
                 include_hidden=False,
             )
-            
+
             # Create dialog
             dlg = QDialog(self)
             dlg.setWindowTitle(f"Edit {pool.replace('_', ' ').title()} Paths")
             layout = QVBoxLayout(dlg)
-            
+
             # Create multi-path selector widget
             widget = MultiPathSelectorWidget(
                 parent=dlg,
@@ -1172,13 +1172,13 @@ class StructuredProfileEditorWidget(QWidget):
             )
             widget.set_paths(current_paths)
             layout.addWidget(widget)
-            
+
             # Dialog buttons
             buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dlg)
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
             layout.addWidget(buttons)
-            
+
             if dlg.exec() == QDialog.Accepted:
                 new_paths = widget.get_paths()
                 new_text = "\n".join(str(p) for p in new_paths)

@@ -390,18 +390,18 @@ This document provides comprehensive error handling strategies and edge case sce
 ```python
 class PermissionErrorHandler:
     """Handle file permission errors."""
-    
+
     def handle_permission_denied(self, file_path: Path, operation: str):
         """
         Scenario: User lacks read/write permissions for file/folder
-        
+
         Recovery Strategy:
         1. Check if running with admin privileges
         2. Offer to skip file
         3. Request elevation if possible
         4. Log detailed error with path
         """
-        
+
         # Detection
         try:
             file_path.stat()
@@ -413,7 +413,7 @@ class PermissionErrorHandler:
                 "Run application as administrator",
                 "Select different folder"
             ]
-            
+
             # User notification
             self.notify_user(
                 title="Permission Denied",
@@ -421,7 +421,7 @@ class PermissionErrorHandler:
                 details=str(e),
                 options=recovery_options
             )
-            
+
             # Log for debugging
             self.logger.warning(
                 "Permission denied",
@@ -436,23 +436,23 @@ class PermissionErrorHandler:
 def handle_file_locked(self, file_path: Path):
     """
     Scenario: File is locked by another application
-    
+
     Edge Cases:
     - File opened in image editor
     - Antivirus scanning file
     - Cloud sync in progress
     - System indexing service
-    
+
     Recovery:
     1. Wait and retry (exponential backoff)
     2. Create read-only copy for analysis
     3. Skip and mark for later retry
     4. Identify locking process if possible
     """
-    
+
     max_retries = 3
     wait_time = 1.0
-    
+
     for attempt in range(max_retries):
         try:
             # Attempt to open file
@@ -464,7 +464,7 @@ def handle_file_locked(self, file_path: Path):
                 wait_time *= 2
             else:
                 raise
-    
+
     # Fallback: Try read-only shadow copy
     return self.create_shadow_copy(file_path)
 ```
@@ -474,14 +474,14 @@ def handle_file_locked(self, file_path: Path):
 def handle_file_disappeared(self, file_path: Path, cached_hash: str):
     """
     Scenario: File deleted/moved after initial scan
-    
+
     Recovery:
     1. Search for file by hash in common locations
     2. Check recycle bin
     3. Update cache to mark as missing
     4. Offer to remove from results
     """
-    
+
     # Search for relocated file
     possible_locations = [
         file_path.parent,  # Same directory
@@ -489,13 +489,13 @@ def handle_file_disappeared(self, file_path: Path, cached_hash: str):
         Path.home() / "Downloads",
         Path.home() / "Desktop"
     ]
-    
+
     for location in possible_locations:
         found = self.find_file_by_hash(location, cached_hash)
         if found:
             self.update_file_location(file_path, found)
             return found
-    
+
     # Mark as missing in cache
     self.mark_file_missing(file_path)
 ```
@@ -506,28 +506,28 @@ def handle_file_disappeared(self, file_path: Path, cached_hash: str):
 ```python
 class NetworkDriveHandler:
     """Handle network drive issues."""
-    
+
     def handle_network_disconnection(self, path: Path):
         """
         Scenario: Network drive becomes unavailable during operation
-        
+
         Edge Cases:
         - WiFi disconnection
         - VPN timeout
         - NAS going to sleep
         - SMB/CIFS timeout
-        
+
         Recovery:
         1. Detect network vs local drive
         2. Pause operation and wait for reconnection
         3. Cache partial results
         4. Offer to continue with local files only
         """
-        
+
         if self.is_network_path(path):
             # Monitor network status
             reconnect_timeout = 30  # seconds
-            
+
             if self.wait_for_network(reconnect_timeout):
                 # Network restored
                 self.resume_operation()
@@ -542,16 +542,16 @@ class NetworkDriveHandler:
 def handle_slow_network(self, transfer_rate: float):
     """
     Scenario: Network too slow for efficient operation
-    
+
     Detection: Transfer rate < 1MB/s for image operations
-    
+
     Recovery:
     1. Switch to metadata-only mode
     2. Queue files for background processing
     3. Reduce thumbnail quality
     4. Implement adaptive timeout
     """
-    
+
     if transfer_rate < 1_000_000:  # bytes/second
         self.enable_low_bandwidth_mode()
         self.reduce_concurrent_operations()
@@ -564,36 +564,36 @@ def handle_slow_network(self, transfer_rate: float):
 ```python
 class StorageHandler:
     """Handle storage-related errors."""
-    
+
     def handle_disk_full(self, required_space: int, available_space: int):
         """
         Scenario: Not enough space for cache/thumbnails
-        
+
         Edge Cases:
         - Cache directory on different drive
         - System temp directory full
         - User quota exceeded
-        
+
         Recovery:
         1. Automatic cache cleanup
         2. Use alternative temp location
         3. Reduce cache size limit
         4. Stream processing without cache
         """
-        
+
         # Try to free space
         freed = self.cleanup_old_cache_entries()
-        
+
         if freed >= required_space:
             return True
-        
+
         # Offer alternatives
         alternatives = [
             self.get_alternative_cache_locations(),
             self.suggest_cleanup_targets(),
             self.calculate_minimum_cache_size()
         ]
-        
+
         return self.prompt_user_action(alternatives)
 ```
 
@@ -602,16 +602,16 @@ class StorageHandler:
 def handle_cache_corruption(self, cache_db: Path):
     """
     Scenario: Cache database corrupted
-    
+
     Detection: SQLite integrity check fails
-    
+
     Recovery:
     1. Attempt automatic repair
     2. Rebuild from backup
     3. Clear and regenerate
     4. Continue without cache
     """
-    
+
     try:
         # Attempt repair
         self.repair_sqlite_db(cache_db)
@@ -633,24 +633,24 @@ def handle_cache_corruption(self, cache_db: Path):
 ```python
 class CorruptedImageHandler:
     """Handle corrupted image files."""
-    
+
     def handle_partial_corruption(self, image_path: Path):
         """
         Scenario: Image partially corrupted but partially readable
-        
+
         Edge Cases:
         - Truncated JPEG
         - Bad EXIF data
         - Color profile corruption
         - Progressive JPEG with missing scans
-        
+
         Recovery:
         1. Try alternative decoders
         2. Extract readable portions
         3. Use file recovery tools
         4. Mark as corrupted but include in results
         """
-        
+
         strategies = [
             self.try_pillow_decoder,
             self.try_opencv_decoder,
@@ -658,13 +658,13 @@ class CorruptedImageHandler:
             self.extract_thumbnail_from_exif,
             self.create_placeholder_thumbnail
         ]
-        
+
         for strategy in strategies:
             try:
                 return strategy(image_path)
             except Exception as e:
                 self.log_recovery_attempt(strategy.__name__, e)
-                
+
         return self.create_error_placeholder()
 ```
 
@@ -673,25 +673,25 @@ class CorruptedImageHandler:
 def handle_format_variation(self, image_path: Path, claimed_format: str):
     """
     Scenario: File extension doesn't match actual format
-    
+
     Edge Cases:
     - JPEG saved as .png
     - WebP with .jpg extension
     - HEIC on system without support
     - Rare formats (JPEG-XR, AVIF)
-    
+
     Recovery:
     1. Detect actual format from headers
     2. Try multiple decoders
     3. Convert using external tools
     4. Install missing codecs
     """
-    
+
     actual_format = self.detect_format_from_header(image_path)
-    
+
     if actual_format != claimed_format:
         self.log_format_mismatch(image_path, claimed_format, actual_format)
-        
+
     # Try format-specific handlers
     return self.get_format_handler(actual_format).decode(image_path)
 ```
@@ -702,27 +702,27 @@ def handle_format_variation(self, image_path: Path, claimed_format: str):
 ```python
 class MemoryErrorHandler:
     """Handle memory-related errors."""
-    
+
     def handle_large_image_oom(self, image_path: Path, dimensions: tuple):
         """
         Scenario: Image too large to load in memory
-        
+
         Edge Cases:
         - Gigapixel panoramas
         - Uncompressed TIFF files
         - Multi-page TIFF
         - 16/32-bit per channel images
-        
+
         Recovery:
         1. Use memory-mapped loading
         2. Process in tiles
         3. Downsample before processing
         4. Use streaming decoder
         """
-        
+
         width, height = dimensions
         pixel_count = width * height
-        
+
         if pixel_count > 100_000_000:  # 100 megapixels
             # Use tiled processing
             return self.process_image_in_tiles(image_path, tile_size=1024)
@@ -736,16 +736,16 @@ class MemoryErrorHandler:
 def handle_memory_fragmentation(self):
     """
     Scenario: Memory fragmented, unable to allocate large blocks
-    
+
     Recovery:
     1. Force garbage collection
     2. Restart worker processes
     3. Reduce concurrent operations
     4. Implement memory pooling
     """
-    
+
     gc.collect()
-    
+
     if self.get_memory_fragmentation_ratio() > 0.5:
         self.restart_worker_pool()
         self.reduce_batch_size()
@@ -759,45 +759,45 @@ def handle_memory_fragmentation(self):
 ```python
 class DatabaseStartupValidator:
     """Handle database validation and recovery on application startup."""
-    
+
     def validate_databases_on_startup(self):
         """
         Scenario: Application startup database validation
-        
+
         Validation Sequence:
         1. Check existence of all required databases
         2. Run PRAGMA quick_check on each database
         3. If quick_check fails, run PRAGMA integrity_check
         4. Handle corruption based on database type
-        
+
         Databases:
         - settings.db (user_data_dir)
         - sessions.db (user_data_dir)
         - cache.db (user_cache_dir)
         """
-        
+
         databases = [
             ('settings.db', self.data_dir, 'critical'),
             ('sessions.db', self.data_dir, 'important'),
             ('cache.db', self.cache_dir, 'recoverable')
         ]
-        
+
         for db_name, location, importance in databases:
             db_path = location / db_name
-            
+
             # Check existence
             if not db_path.exists():
                 self.create_database_with_schema(db_path, db_name)
                 continue
-                
+
             # Validate integrity
             if not self.validate_database_integrity(db_path):
                 self.handle_corrupt_database(db_path, importance)
-    
+
     def validate_database_integrity(self, db_path: Path) -> bool:
         """
         Run PRAGMA checks on database.
-        
+
         Returns True if healthy, False if corrupt.
         """
         conn = sqlite3.connect(db_path)
@@ -805,31 +805,31 @@ class DatabaseStartupValidator:
             # Quick check first (faster)
             cursor = conn.execute("PRAGMA quick_check")
             result = cursor.fetchone()
-            
+
             if result[0] != "ok":
                 # Full integrity check if quick check fails
                 cursor = conn.execute("PRAGMA integrity_check")
                 result = cursor.fetchone()
                 return result[0] == "ok"
-            
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Database validation failed: {e}")
             return False
         finally:
             conn.close()
-    
+
     def handle_corrupt_database(self, db_path: Path, importance: str):
         """
         Handle corrupt database based on importance level.
-        
+
         Recovery strategies:
         - critical (settings.db): Try to export/preserve settings
         - important (sessions.db): Offer to rebuild
         - recoverable (cache.db): Auto-rebuild
         """
-        
+
         if importance == 'critical':
             # settings.db - try to preserve data
             self.handle_corrupt_settings_db(db_path)
@@ -839,30 +839,30 @@ class DatabaseStartupValidator:
         else:
             # cache.db - safe to rebuild
             self.rebuild_cache_database(db_path)
-    
+
     def handle_corrupt_settings_db(self, db_path: Path):
         """
         Handle corrupted settings database.
-        
+
         Recovery:
         1. Attempt to export readable settings
         2. Create backup of corrupt database
         3. Rebuild with preserved settings if possible
         4. Use defaults if export fails
         """
-        
+
         backup_path = db_path.with_suffix('.corrupt.backup')
-        
+
         try:
             # Try to export settings
             exported_settings = self.export_readable_settings(db_path)
-            
+
             # Backup corrupt database
             shutil.copy2(db_path, backup_path)
-            
+
             # Rebuild database
             self.create_database_with_schema(db_path, 'settings.db')
-            
+
             # Restore exported settings
             if exported_settings:
                 self.import_settings(db_path, exported_settings)
@@ -877,56 +877,56 @@ class DatabaseStartupValidator:
                     "Settings could not be recovered. Using defaults.",
                     level="warning"
                 )
-                
+
         except Exception as e:
             self.logger.error(f"Failed to recover settings.db: {e}")
             self.prompt_critical_error(
                 "Settings database is corrupt and cannot be recovered.",
                 options=["Use defaults", "Exit application"]
             )
-    
+
     def handle_corrupt_sessions_db(self, db_path: Path):
         """
         Handle corrupted sessions database.
-        
+
         Recovery:
         1. Inform user about session loss
         2. Offer to rebuild from scratch
         3. Create backup of corrupt database
         """
-        
+
         response = self.prompt_user(
             title="Sessions Database Corrupted",
             message="Your scan sessions history is corrupted. Rebuild?",
             options=["Rebuild (lose history)", "Try repair", "Exit"]
         )
-        
+
         if response == "Rebuild (lose history)":
             backup_path = db_path.with_suffix('.corrupt.backup')
             shutil.copy2(db_path, backup_path)
             self.create_database_with_schema(db_path, 'sessions.db')
-            
+
         elif response == "Try repair":
             self.attempt_database_repair(db_path)
         else:
             sys.exit(1)
-    
+
     def rebuild_cache_database(self, db_path: Path):
         """
         Rebuild cache database (safe to lose).
-        
+
         Cache will be regenerated as needed during operation.
         """
-        
+
         self.logger.info("Rebuilding cache database")
-        
+
         # Remove corrupt database
         if db_path.exists():
             db_path.unlink()
-        
+
         # Create fresh database
         self.create_database_with_schema(db_path, 'cache.db')
-        
+
         self.notify_user(
             "Cache Rebuilt",
             "Image cache has been cleared and will rebuild automatically.",
@@ -938,25 +938,25 @@ class DatabaseStartupValidator:
 ```python
 class SchemaMigrationHandler:
     """Handle database schema migration errors."""
-    
+
     def handle_migration_with_safety(self, db_path: Path, target_version: str):
         """
         Scenario: Database needs schema migration
-        
+
         Safety measures:
         1. Create timestamped backup before migration
         2. Run Alembic migrations
         3. Rollback on failure
         4. Maintain backup retention policy
         """
-        
+
         # Create backup before migration
         backup_path = self.create_migration_backup(db_path)
-        
+
         try:
             # Run Alembic migration
             self.run_alembic_migration(db_path, target_version)
-            
+
             # Verify migration success
             if self.verify_migration(db_path, target_version):
                 # Clean up old backups per retention policy
@@ -964,13 +964,13 @@ class SchemaMigrationHandler:
                 return True
             else:
                 raise Exception("Migration verification failed")
-                
+
         except Exception as e:
             self.logger.error(f"Migration failed: {e}")
-            
+
             # Rollback from backup
             self.restore_from_backup(backup_path, db_path)
-            
+
             # Notify user
             self.notify_user(
                 "Database Migration Failed",
@@ -978,75 +978,75 @@ class SchemaMigrationHandler:
                 "The database has been restored to its previous state.",
                 level="error"
             )
-            
+
             return False
-    
+
     def create_migration_backup(self, db_path: Path) -> Path:
         """
         Create timestamped backup before migration.
-        
+
         Format: {db_name}.{ISO_timestamp}.v{schema_version}
         """
         from datetime import datetime
-        
+
         # Get current schema version
         version = self.get_schema_version(db_path)
-        
+
         # Create backup filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_name = f"{db_path.stem}.{timestamp}.v{version}"
         backup_path = self.backups_dir / backup_name
-        
+
         # Copy database
         shutil.copy2(db_path, backup_path)
-        
+
         self.logger.info(f"Created migration backup: {backup_path}")
         return backup_path
-    
+
     def cleanup_old_backups(self, db_path: Path):
         """
         Apply backup retention policy.
-        
+
         Policy:
         - Keep 10 most recent backups per database
         - Purge backups older than 30 days
         """
         from datetime import datetime, timedelta
-        
+
         db_name = db_path.stem
         cutoff_date = datetime.now() - timedelta(days=30)
-        
+
         # Find all backups for this database
         backups = list(self.backups_dir.glob(f"{db_name}.*"))
-        
+
         # Sort by modification time (newest first)
         backups.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        
+
         # Keep 10 most recent
         for backup in backups[10:]:
             backup.unlink()
             self.logger.info(f"Removed old backup: {backup}")
-        
+
         # Remove backups older than 30 days
         for backup in backups[:10]:
             if datetime.fromtimestamp(backup.stat().st_mtime) < cutoff_date:
                 backup.unlink()
                 self.logger.info(f"Removed expired backup: {backup}")
-    
+
     def restore_from_backup(self, backup_path: Path, db_path: Path):
         """
         Restore database from backup after failed migration.
         """
-        
+
         self.logger.info(f"Restoring database from {backup_path}")
-        
+
         # Remove failed migration database
         if db_path.exists():
             db_path.unlink()
-        
+
         # Restore from backup
         shutil.copy2(backup_path, db_path)
-        
+
         self.logger.info("Database restored successfully")
 ```
 
@@ -1054,14 +1054,14 @@ class SchemaMigrationHandler:
 ```python
 class MetaTableHandler:
     """Handle meta table creation and management."""
-    
+
     def ensure_meta_table(self, db_path: Path):
         """
         Ensure meta table exists with schema version.
-        
+
         Required for all databases to track schema version.
         """
-        
+
         conn = sqlite3.connect(db_path)
         try:
             # Create meta table if not exists
@@ -1073,24 +1073,24 @@ class MetaTableHandler:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
+
             # Insert schema version if not present
             conn.execute("""
                 INSERT OR IGNORE INTO meta (key, value, notes)
                 VALUES ('schema_version', '1.0.0', 'Initial schema version')
             """)
-            
+
             conn.commit()
-            
+
         except Exception as e:
             self.logger.error(f"Failed to create meta table: {e}")
             raise
         finally:
             conn.close()
-    
+
     def get_schema_version(self, db_path: Path) -> str:
         """Get current schema version from meta table."""
-        
+
         conn = sqlite3.connect(db_path)
         try:
             cursor = conn.execute(
@@ -1098,7 +1098,7 @@ class MetaTableHandler:
             )
             result = cursor.fetchone()
             return result[0] if result else '0.0.0'
-            
+
         except:
             return '0.0.0'
         finally:
@@ -1111,27 +1111,27 @@ class MetaTableHandler:
 ```python
 class DatabaseErrorHandler:
     """Handle database-related errors."""
-    
+
     def handle_database_locked(self, db_path: Path, operation: str):
         """
         Scenario: SQLite database locked by another process
-        
+
         Edge Cases:
         - Multiple app instances
         - Backup software accessing DB
         - Antivirus scanning
         - Incomplete transaction
-        
+
         Recovery:
         1. Wait with exponential backoff
         2. Use WAL mode
         3. Create temporary copy
         4. Force unlock (risky)
         """
-        
+
         # Enable WAL mode for better concurrency
         self.enable_wal_mode(db_path)
-        
+
         # Retry with backoff
         for attempt in range(5):
             try:
@@ -1141,7 +1141,7 @@ class DatabaseErrorHandler:
                     time.sleep(2 ** attempt)
                 else:
                     raise
-                    
+
         # Last resort: work with copy
         return self.work_with_db_copy(db_path, operation)
 ```
@@ -1151,18 +1151,18 @@ class DatabaseErrorHandler:
 def handle_write_corruption(self, db_path: Path, transaction: dict):
     """
     Scenario: Database corrupted during write operation
-    
+
     Recovery:
     1. Rollback transaction
     2. Restore from journal
     3. Replay from operation log
     4. Restore from backup
     """
-    
+
     # Check for journal files
     journal = db_path.with_suffix('.db-journal')
     wal = db_path.with_suffix('.db-wal')
-    
+
     if journal.exists() or wal.exists():
         self.recover_from_journal(db_path)
     else:
@@ -1178,38 +1178,38 @@ def handle_write_corruption(self, db_path: Path, transaction: dict):
 ```python
 class AlgorithmErrorHandler:
     """Handle algorithm-related errors."""
-    
+
     def handle_hash_failure(self, image: Image, algorithm: str):
         """
         Scenario: Hash algorithm fails on specific image
-        
+
         Edge Cases:
         - Grayscale when expecting RGB
         - Unusual bit depth
         - Alpha channel issues
         - Extreme aspect ratios
-        
+
         Recovery:
         1. Convert image format
         2. Use fallback algorithm
         3. Compute partial hash
         4. Skip with warning
         """
-        
+
         # Try format conversion
         conversions = [
             ('RGB', self.convert_to_rgb),
             ('L', self.convert_to_grayscale),
             ('RGBA', self.remove_alpha_channel)
         ]
-        
+
         for target_mode, converter in conversions:
             try:
                 converted = converter(image)
                 return self.compute_hash(converted, algorithm)
             except:
                 continue
-                
+
         # Use simpler algorithm
         return self.compute_basic_hash(image)
 ```
@@ -1219,22 +1219,22 @@ class AlgorithmErrorHandler:
 def handle_comparison_overflow(self, num_images: int):
     """
     Scenario: Too many comparisons (n²/2 complexity)
-    
+
     Edge Cases:
     - 100,000+ images
     - All images very similar
     - Degenerate clustering
-    
+
     Recovery:
     1. Use hierarchical clustering
     2. Implement early termination
     3. Use approximate algorithms
     4. Process in chunks
     """
-    
+
     max_direct_comparisons = 1_000_000
     total_comparisons = (num_images * (num_images - 1)) // 2
-    
+
     if total_comparisons > max_direct_comparisons:
         # Switch to approximate method
         return self.use_lsh_algorithm()  # Locality Sensitive Hashing
@@ -1248,28 +1248,28 @@ def handle_comparison_overflow(self, num_images: int):
 ```python
 class UIErrorHandler:
     """Handle UI-related errors."""
-    
+
     def handle_dpi_scaling_issue(self, detected_dpi: float):
         """
         Scenario: UI elements incorrectly scaled
-        
+
         Edge Cases:
         - Multiple monitors with different DPI
         - Dynamic DPI changes
         - Fractional scaling (125%, 175%)
         - Remote desktop sessions
-        
+
         Recovery:
         1. Auto-detect and adjust
         2. Provide manual override
         3. Use DPI-aware rendering
         4. Fall back to 100% scaling
         """
-        
+
         if detected_dpi > 144:  # High DPI display
             QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
             QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
-        
+
         # Handle per-monitor DPI
         if self.has_multiple_monitors():
             self.enable_per_monitor_dpi()
@@ -1280,14 +1280,14 @@ class UIErrorHandler:
 def handle_widget_render_failure(self, widget: QWidget, error: Exception):
     """
     Scenario: Custom widget fails to render
-    
+
     Recovery:
     1. Fall back to basic widget
     2. Disable hardware acceleration
     3. Use software rendering
     4. Reduce visual effects
     """
-    
+
     try:
         # Try software rendering
         widget.setAttribute(Qt.WA_UseSoftwareOpenGL)
@@ -1305,39 +1305,39 @@ def handle_widget_render_failure(self, widget: QWidget, error: Exception):
 ```python
 class ConfigErrorHandler:
     """Handle configuration-related errors."""
-    
+
     def handle_invalid_config(self, config: dict, schema: dict):
         """
         Scenario: Configuration contains invalid values
-        
+
         Edge Cases:
         - Type mismatches
         - Out of range values
         - Missing required keys
         - Circular references
-        
+
         Recovery:
         1. Validate and sanitize
         2. Use defaults for invalid values
         3. Prompt user for critical settings
         4. Restore from backup
         """
-        
+
         validated = {}
         errors = []
-        
+
         for key, schema_def in schema.items():
             value = config.get(key, schema_def.get('default'))
-            
+
             try:
                 validated[key] = self.validate_value(value, schema_def)
             except ValidationError as e:
                 errors.append((key, e))
                 validated[key] = schema_def['default']
-        
+
         if errors:
             self.notify_config_fixes(errors)
-            
+
         return validated
 ```
 
@@ -1348,24 +1348,24 @@ class ConfigErrorHandler:
 def handle_profile_migration_failure(self, old_version: str, new_version: str):
     """
     Scenario: Profile incompatible with new version
-    
+
     Recovery:
     1. Create backup of old profile
     2. Attempt partial migration
     3. Create new profile with defaults
     4. Offer manual migration tool
     """
-    
+
     backup_path = self.backup_profile(old_version)
-    
+
     try:
         # Try partial migration
         migrated = self.partial_migrate_profile(backup_path, new_version)
         missing = self.get_missing_settings(migrated)
-        
+
         if missing:
             self.prompt_for_missing_settings(missing)
-            
+
     except:
         # Create fresh profile
         self.create_default_profile()
@@ -1380,23 +1380,23 @@ def handle_profile_migration_failure(self, old_version: str, new_version: str):
 ```python
 class ConcurrencyHandler:
     """Handle concurrency-related issues."""
-    
+
     def handle_race_condition(self, resource: str):
         """
         Scenario: Multiple threads accessing shared resource
-        
+
         Edge Cases:
         - Cache updates during read
         - Simultaneous file modifications
         - GUI updates from worker threads
-        
+
         Recovery:
         1. Implement proper locking
         2. Use thread-safe data structures
         3. Queue operations
         4. Retry with backoff
         """
-        
+
         with self.get_lock(resource):
             # Ensure exclusive access
             return self.perform_operation(resource)
@@ -1407,14 +1407,14 @@ class ConcurrencyHandler:
 def handle_deadlock(self, timeout: float = 30.0):
     """
     Scenario: Circular wait causing deadlock
-    
+
     Recovery:
     1. Implement timeout on all locks
     2. Detect and break circular dependencies
     3. Use lock ordering
     4. Restart affected operations
     """
-    
+
     if self.detect_circular_wait():
         # Break deadlock
         self.release_lowest_priority_lock()
@@ -1430,14 +1430,14 @@ def handle_deadlock(self, timeout: float = 30.0):
 def handle_extreme_file_count(self, folder: Path, count: int):
     """
     Scenario: Folder contains millions of files
-    
+
     Recovery:
     1. Use generator-based iteration
     2. Process in batches
     3. Implement pagination
     4. Use database for file list
     """
-    
+
     if count > 100_000:
         # Stream process
         return self.process_files_streaming(folder)
@@ -1448,14 +1448,14 @@ def handle_extreme_file_count(self, folder: Path, count: int):
 def handle_deep_nesting(self, path: Path, depth: int):
     """
     Scenario: Folder structure nested 100+ levels
-    
+
     Recovery:
     1. Limit recursion depth
     2. Use iterative traversal
     3. Implement path length checks
     4. Flatten structure in cache
     """
-    
+
     if depth > 50:
         self.use_iterative_traversal()
         self.warn_user_about_depth(depth)
@@ -1468,16 +1468,16 @@ def handle_deep_nesting(self, path: Path, depth: int):
 def handle_case_sensitivity(self, path: Path):
     """
     Scenario: Mixed case-sensitive/insensitive systems
-    
+
     Recovery:
     1. Normalize all paths
     2. Use case-insensitive comparison
     3. Detect file system type
     4. Maintain case mapping
     """
-    
+
     fs_type = self.detect_filesystem_type(path)
-    
+
     if fs_type.case_sensitive:
         self.enable_case_sensitive_mode()
 ```
@@ -1489,14 +1489,14 @@ def handle_case_sensitivity(self, path: Path):
 def handle_file_handle_limit(self):
     """
     Scenario: Too many open files
-    
+
     Recovery:
     1. Implement file handle pooling
     2. Close unused handles
     3. Increase system limits
     4. Process in smaller batches
     """
-    
+
     # Monitor open handles
     if self.get_open_handle_count() > self.max_handles * 0.8:
         self.close_idle_handles()
@@ -1527,13 +1527,13 @@ class ErrorPriority(Enum):
 def communicate_error(self, error: Exception, priority: ErrorPriority):
     """
     Standardized error communication.
-    
+
     - CRITICAL: Modal dialog with options
     - HIGH: Toast notification with action
     - MEDIUM: Status bar warning
     - LOW: Log entry only
     """
-    
+
     if priority == ErrorPriority.CRITICAL:
         self.show_error_dialog(error)
     elif priority == ErrorPriority.HIGH:
@@ -1550,10 +1550,10 @@ def communicate_error(self, error: Exception, priority: ErrorPriority):
 ```python
 class ErrorInjector:
     """Inject errors for testing recovery."""
-    
+
     def inject_random_errors(self, probability: float = 0.1):
         """Randomly inject errors during testing."""
-        
+
         if random.random() < probability:
             error_type = random.choice([
                 PermissionError,
@@ -1582,17 +1582,17 @@ class ErrorInjector:
 ```python
 class ErrorHandlerRegistry:
     """Central registry for error handlers."""
-    
+
     handlers = {
         PermissionError: PermissionErrorHandler,
         MemoryError: MemoryErrorHandler,
         sqlite3.DatabaseError: DatabaseErrorHandler,
         OSError: FileSystemErrorHandler,
     }
-    
+
     def handle(self, error: Exception) -> RecoveryAction:
         """Route error to appropriate handler."""
-        
+
         handler_class = self.handlers.get(type(error), DefaultErrorHandler)
         handler = handler_class()
         return handler.handle(error)
@@ -1602,13 +1602,13 @@ class ErrorHandlerRegistry:
 ```python
 class ErrorMetrics:
     """Track error patterns for improvement."""
-    
+
     def record_error(self, error: Exception, recovery: RecoveryAction):
         """Record error occurrence and recovery success."""
-        
+
         self.error_counts[type(error)] += 1
         self.recovery_success[recovery] += 1
-        
+
         # Identify patterns
         if self.error_counts[type(error)] > 10:
             self.suggest_preventive_action(error)
@@ -1671,7 +1671,7 @@ Scope
   - Error code: LOCKED_DB
 - Integrity/migration failure during startup
   - Symptom: PRAGMA checks fail or migration fails
-  - User message: 
+  - User message:
     - settings.db: "Settings database appears corrupted. We can try to preserve readable settings and rebuild."
     - Offer: "Rebuild" or "Exit" (see general DB section 4.0).
   - Error code: INVALID_CONFIG or UNKNOWN_ERROR
@@ -1882,7 +1882,7 @@ The system fully complies with the project's GUI error handling requirements:
 #### 14.2.2 Detailed STDERR Logging
 The system logs comprehensive error details including:
 - **Full error text/description**: Complete error message
-- **File path of component**: Full path to source file where error occurred  
+- **File path of component**: Full path to source file where error occurred
 - **Line number**: Exact line number where error was handled
 - **Parameters/values**: All context variables that caused the error
 - **Call stack**: Complete stack trace for exceptions
@@ -1929,7 +1929,7 @@ from src.pk_py_lib.gui.utils.messages import gui_error_context
 
 with gui_error_context(
     parent=self,
-    component_name="BatchProcessing", 
+    component_name="BatchProcessing",
     batch_id=123,
     file_count=len(files)
 ):
@@ -1949,7 +1949,7 @@ def _show_error(self, title: str, message: Optional[str], code: Optional[str]) -
     msg = str(message) if message is not None else "An unexpected error occurred."
     if code:
         msg += f"\n\nCode: {code}"
-    
+
     handle_gui_error(
         parent=self,
         error=msg,
@@ -1966,7 +1966,7 @@ def _show_error(self, title: str, message: Optional[str], code: Optional[str]) -
     msg = str(message) if message is not None else "An unexpected error occurred."
     if code:
         msg += f"\n\nCode: {code}"
-    
+
     handle_gui_error(
         parent=self,
         error=msg,
@@ -2014,7 +2014,7 @@ Use [`gui_error_context`](src/pk_py_lib/gui/utils/messages.py:352) for error han
 
 The error handling system includes comprehensive tests in [`test_gui_error_handling.py`](test_gui_error_handling.py) covering:
 - String and exception error handling
-- Decorator functionality with and without parameters  
+- Decorator functionality with and without parameters
 - Context manager successful and error cases
 - Integration with existing components
 
@@ -2064,7 +2064,7 @@ To address a specific "Unexpected error: name 'QColor' is not defined" issue in 
       item.setForeground(QColor("green"))
   NameError: name 'QColor' is not defined
   ```
-- **Testing Confirmation**: 
+- **Testing Confirmation**:
   - Ran `pdm run imgapp` and triggered "View Cache": No GUI error; proper table display with colored validity column.
   - Simulated exception (e.g., force NameError): Error dialog shown; full details logged to terminal/STDERR and `logs/img-app-terminal.log`.
   - Verified console output uses RichConsoleOutput/SimpleConsoleOutput, routing ERROR to sys.stderr as required.
@@ -2072,3 +2072,36 @@ To address a specific "Unexpected error: name 'QColor' is not defined" issue in 
 #### 14.9.3 Global Exception Handler Assessment
 - **Evaluation**: The specific uncaught error was resolved by catching in `__init__` and enhancing logging. No additional global handler needed for this dialog, as errors are now fully caught and logged. For broader app coverage, existing `gui_error_handler` decorator and `handle_gui_error` function provide sufficient uncaught error handling in other GUI components.
 - **Recommendation**: Monitor for similar issues; if uncaught GUI errors appear elsewhere, integrate `sys.excepthook` override in `img_app/app.py` main() to route to `handle_gui_error`.
+
+## 15. Recent Fixes: Logging, Decorator Invocation, and GUI Attribute Initialization (Session-Specific Resolutions)
+
+This section documents targeted fixes implemented to resolve startup crashes, runtime TypeErrors, and AttributeErrors in the imgapp GUI. These changes enhance logging robustness, ensure proper decorator factory invocation, and prevent dialog closure issues. All fixes align with project guidelines for detailed STDERR logging, selectable error dialogs, and graceful error recovery. They were verified through `pdm run imgapp` execution, confirming clean startup, functional path editing in the GUI, and stable dialog handling without exceptions.
+
+### 15.1 Decorator Invocation Fixes in Structured Editor and Widgets
+- **Issue**: The `@log_errors` and `@log_warnings` decorators in [`src/pk_py_lib/gui/settings_manager/structured_editor.py`](src/pk_py_lib/gui/settings_manager/structured_editor.py) and [`src/pk_py_lib/gui/file_selector/widgets.py`](src/pk_py_lib/gui/file_selector/widgets.py) were applied without parentheses, treating them as classes rather than factory functions. This caused TypeErrors during method decoration (e.g., "TypeError: 'function' object is not callable" or unbound method issues), preventing proper error/warning logging and leading to unhandled exceptions in GUI event handlers.
+- **Resolution**: Added parentheses to invoke the factories correctly, e.g., `@log_errors()` and `@log_warnings()`. This ensures the decorators return callable wrappers that intercept exceptions and route them through the centralized GUI error handling system ([`src/pk_py_lib/gui/utils/messages.py`](src/pk_py_lib/gui/utils/messages.py)).
+  - **Affected Lines** (approximate; post-fix):
+    - In `structured_editor.py`: Lines ~45-60 for method decorators like `_validate_field` and `save_profile`.
+    - In `widgets.py`: Lines ~30-50 for file selector event handlers like `on_path_changed`.
+- **Impact on GUI Workflows**: Path editing in the file selector and settings editor now logs warnings/errors without crashing. For example, invalid path inputs trigger selectable dialogs with details (e.g., "Invalid path format") and comprehensive STDERR output (file path, parameters like `path_str='invalid/path'`, full stack trace), enabling clean user interactions and debugging.
+- **Best Practices Reflected**: Ensures decorator factories are invoked as intended, aligning with Python decorator patterns. Integrates with the GUI error system for selectable text dialogs and detailed logging per `.roo/rules/15-PythonGUI.md`.
+
+### 15.2 Module-Level Logger and PKLogger Method Enhancements
+- **Issue**: The PKLogger class in [`src/pk_py_lib/core/logging/logger.py`](src/pk_py_lib/core/logging/logger.py) lacked a module-level logger instance, causing AttributeErrors when accessing `logger` in imported modules. Additionally, methods like `_log`, `error`, `warning` did not handle `*args` and `**kwargs` properly, leading to TypeErrors (e.g., "TypeError: _log() takes 2 positional arguments but 3 were given") during formatted logging calls from GUI components.
+- **Resolution**:
+  - Added a module-level `logger = PKLogger(__name__)` instance at the top of the file (line ~10) for direct access without instantiation.
+  - Updated PKLogger methods (`_log`, `error`, `warning`, etc.) to unpack `*args` and `**kwargs` correctly, forwarding them to the underlying handler (e.g., `self._handler.log(level, msg, *args, **kwargs)`). This supports formatted messages like `logger.error("Failed to load %s", path, exc_info=True)`.
+  - Ensured integration with console and file outputs via existing handlers in [`src/pk_py_lib/core/logging/outputs`](src/pk_py_lib/core/logging/outputs).
+- **Impact on GUI Workflows**: App startup now initializes logging without errors, and runtime events (e.g., path validation in settings editor) produce structured logs. For instance, a failed path load logs: "ERROR: Path load failed for /invalid/path | file: structured_editor.py:45 | params: {'path': '/invalid/path'} | traceback: ...", routed to STDERR and `logs/img-app-terminal.log`. This prevents silent failures and supports debugging of GUI path editing flows.
+- **Best Practices Reflected**: Promotes reusable logging with flexible argument handling, adhering to Python logging standards. Enhances diagnostics for GUI errors, ensuring full context (file, line, params, stack) as required by project rules.
+
+### 15.3 PathSelectorDialog Attribute Initialization Fix
+- **Issue**: In the PathSelectorDialog (part of file selector widgets), the `_original_msg_handler` attribute was not initialized in `__init__`, causing an AttributeError ("'PathSelectorDialog' object has no attribute '_original_msg_handler'") during `closeEvent` when attempting to restore the original message handler. This led to crashes when closing the dialog after path selection, disrupting GUI workflows like editing paths in the settings manager.
+- **Resolution**: Initialized `self._original_msg_handler = None` in `PathSelectorDialog.__init__` (line ~25 in [`src/pk_py_lib/gui/file_selector/widgets.py`](src/pk_py_lib/gui/file_selector/widgets.py)). Updated `closeEvent` to check `if self._original_msg_handler is not None:` before restoration, preventing the error. The handler is set during dialog open and restored on close to manage custom message handling.
+- **Impact on GUI Workflows**: Dialogs for path selection (e.g., browsing directories in Pool A/B configuration) now close cleanly without AttributeErrors. Users can edit paths in the structured editor, select via dialog, and dismiss without crashes. Errors, if any, are caught by the GUI error system, showing selectable dialogs (e.g., "Dialog closed unexpectedly") with STDERR details (component: "PathSelectorDialog", file: widgets.py:120, params: {'selected_paths': []}, stack trace).
+- **Best Practices Reflected**: Ensures attribute initialization to avoid runtime errors in event handlers. Aligns with Qt best practices for dialog lifecycle management and integrates with the centralized error handler for robust recovery.
+
+### 15.4 Overall Verification and Testing
+- **Testing Approach**: Fixes were validated by running `pdm run imgapp`, simulating startup, path editing in settings (e.g., invalid inputs), and dialog interactions (open/close PathSelector). No crashes observed; logs confirm detailed STDERR output and selectable dialogs.
+- **Session Outcome**: These resolutions enable successful imgapp execution with clean startup and stable GUI operations. Logging now captures all edge cases comprehensively, supporting future maintenance and user debugging.
+- **Cross-References**: Integrates with the GUI error system in section 14; UI impacts noted in [docs/roo/img-app-ui-design.md](docs/roo/img-app-ui-design.md) for path editing flows; spec updates in [docs/img-app-spec.md](docs/img-app-spec.md) for error recovery behaviors.

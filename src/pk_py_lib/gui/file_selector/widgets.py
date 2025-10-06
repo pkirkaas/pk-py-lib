@@ -21,7 +21,7 @@ import sys
 
 # PySide6 imports with defensive fallback error raising for environments without GUI
 try:
-    from PySide6.QtCore import Qt, QSortFilterProxyModel, QModelIndex, QDir, QSize, QByteArray, QBuffer, QIODevice, QRect
+    from PySide6.QtCore import Qt, QSortFilterProxyModel, QModelIndex, QDir, QSize, QByteArray, QBuffer, QIODevice, QRect, QItemSelection
     from PySide6.QtGui import QStandardItemModel, QStandardItem, QIcon, QPixmap, QPalette, QPainter, QColor, QPen
     from PySide6.QtWidgets import (
         QDialog,
@@ -61,7 +61,7 @@ except Exception as e:  # pragma: no cover - headless environments
 
     Qt = QSortFilterProxyModel = QModelIndex = QDir = (
         QStandardItemModel
-    ) = QStandardItem = QDialog = QFileSystemModel = QTreeView = QVBoxLayout = QHBoxLayout = QLabel = QPushButton = QDialogButtonBox = QWidget = QListWidget = QListWidgetItem = QLineEdit = QComboBox = QMessageBox = QSpacerItem = QSizePolicy = QCheckBox = QFrame = QApplication = QSplitter = QToolButton = _Missing()
+    ) = QStandardItem = QDialog = QFileSystemModel = QTreeView = QVBoxLayout = QHBoxLayout = QLabel = QPushButton = QDialogButtonBox = QWidget = QListWidget = QListWidgetItem = QLineEdit = QComboBox = QMessageBox = QSpacerItem = QSizePolicy = QCheckBox = QFrame = QApplication = QSplitter = QToolButton = QItemSelection = _Missing()
 
 
 # Core filesystem utilities used for validation
@@ -179,82 +179,39 @@ class PathFilterSpec:
 class FileSystemFilterProxy(QSortFilterProxyModel):
     """
     Proxy filter over a QFileSystemModel applying PathFilterSpec rules.
-    
+
     The source model must be a QFileSystemModel. This proxy will:
     - Filter hidden files/dirs if include_hidden is False
     - Filter out files based on whitelist/blacklist/category-derived extensions
     - Optionally hide files or directories entirely (allow_files / allow_dirs)
     """
-    
-    def _extract_drive_letter(self, name: str) -> Optional[str]:
-        """Extract drive letter from Windows drive name like 'Local Disk (C:)' or 'C:'."""
-        match = re.search(r'\((\w):', name)
-        if match:
-            return match.group(1).upper()
-        # Fallback for plain 'C:'
-        if len(name) >= 2 and name[1] == ':':
-            return name[0].upper()
-        return None
-    
+
+
     def lessThan(self, left: QModelIndex, right: QModelIndex) -> bool:  # type: ignore[override]
         """Custom sorting: on Windows, sort top-level drives by drive letter."""
-        if not self.sourceModel():
-            return super().lessThan(left, right)
-        
-        if not left.isValid() or not right.isValid():
-            return super().lessThan(left, right)
-        
-        if platform.system() != 'Windows':
-            return super().lessThan(left, right)
-        
-        # Check if both are top-level items (drives under root)
-        left_parent = left.parent()
-        right_parent = right.parent()
-        if left_parent.isValid() or right_parent.isValid():
-            return super().lessThan(left, right)
-        
-        try:
-            # Handle cases where indices might be from source or proxy
-            left_src = left
-            right_src = right
-            
-            if left.model() == self:  # Indices from proxy, map to source
-                left_src = self.mapToSource(left)
-                right_src = self.mapToSource(right)
-            elif left.model() != self.sourceModel():
-                # Unexpected model, log and fallback
-                LOGGER.warning(f"lessThan called with unexpected model: left.model={left.model()}, expected proxy or source")
-                return super().lessThan(left, right)
-            # If from source, use as is
-            
-            if not left_src.isValid() or not right_src.isValid():
-                LOGGER.debug(f"Invalid source indices in lessThan: left_src={left_src}, right_src={right_src}")
-                return super().lessThan(left, right)
-            
-            left_name = self.sourceModel().fileName(left_src)
-            right_name = self.sourceModel().fileName(right_src)
-            
-            left_letter = self._extract_drive_letter(left_name)
-            right_letter = self._extract_drive_letter(right_name)
-            
-            if left_letter and right_letter:
-                return left_letter < right_letter
-        except Exception as e:
-            exc_type, exc_value, exc_tb = sys.exc_info()
-            line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
-            func_name = "lessThan"
-            locals_info = {k: str(v)[:100] for k, v in locals().items() if k not in ["e", "exc_type", "exc_value", "exc_tb", "left", "right"]}  # Truncate long locals
-            LOGGER.error(
-                f"Error in {func_name} at line {line_no} in {__file__}: "
-                f"{exc_type.__name__ if exc_type else type(e).__name__}: {exc_value if exc_value else str(e)}. "
-                f"Locals: {locals_info}. "
-                f"GUI context: Comparing drives {left_name if 'left_name' in locals() else 'unknown'} vs {right_name if 'right_name' in locals() else 'unknown'}. "
-                f"Traceback:\n{traceback.format_exc()}"
-            )
-            # Fallback on any error to avoid warnings/crashes
-            pass
-        
-        # Fallback to default sorting if not both drives or any issue
+        source_model = self.sourceModel()
+        if platform.system().lower().startswith("win") and isinstance(source_model, QFileSystemModel):
+            try:
+                if not left.parent().isValid() and not right.parent().isValid():
+                    left_path = source_model.filePath(left)
+                    right_path = source_model.filePath(right)
+
+                    def drive_key(path_str: str) -> Tuple[int, str]:
+                        path_str = (path_str or "").replace("\\", "/")
+                        if len(path_str) >= 2 and path_str[1] == ":":
+                            return (0, path_str[0].upper())
+                        return (1, path_str.upper())
+
+                    return drive_key(left_path) < drive_key(right_path)
+            except Exception as exc:  # pragma: no cover
+                LOGGER.warning(
+                    "Drive sorting fallback due to error",
+                    variables={
+                        "exception": repr(exc),
+                        "left_index_valid": left.isValid(),
+                        "right_index_valid": right.isValid(),
+                    }
+                )
         return super().lessThan(left, right)
 
     def __init__(self, filter_spec: PathFilterSpec, parent: Optional[QWidget] = None):
@@ -267,32 +224,32 @@ class FileSystemFilterProxy(QSortFilterProxyModel):
         self._spec = spec.normalized()
         self.invalidateFilter()
 
-    @log_warnings
+    @log_warnings()
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:  # type: ignore[override]
         try:
             source_model = self.sourceModel()
             if not isinstance(source_model, QFileSystemModel):
                 return True
-    
+
             idx = source_model.index(source_row, 0, source_parent)
             if not idx or not idx.isValid():
                 return False
-    
+
             is_dir = source_model.isDir(idx)
             name = source_model.fileName(idx)
             # Hidden check
             if not self._spec.include_hidden and name.startswith("."):
                 return False
-    
+
             # Directory rules
             if is_dir:
                 # Design choice: hide directories from view when allow_dirs is False to keep UI simple
                 return self._spec.allow_dirs
-    
+
             # File rules
             if not self._spec.allow_files:
                 return False
-    
+
             ext = Path(name).suffix.lower()
             return self._spec.allows_file_extension(ext)
         except Exception as e:
@@ -542,8 +499,7 @@ class PathSelectorDialog(QDialog):
                     # Additionally, set a size policy to expand horizontally
                     self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             else:
-                # As a robust fallback, maximize then restore height to avoid full-screen
-                self.showMaximized()
+                self.resize(1000, 700)
         except Exception as e:
             exc_type, exc_value, exc_tb = sys.exc_info()
             line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
@@ -554,6 +510,9 @@ class PathSelectorDialog(QDialog):
                 f"GUI context: Setting dialog size to match parent window. "
                 f"Traceback:\n{traceback.format_exc()}"
             )
+
+        # Install custom Qt message handler to capture mapToSource warnings and other relevant Qt messages
+        self._original_msg_handler = qInstallMessageHandler(self._qt_message_handler)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -726,8 +685,7 @@ class PathSelectorDialog(QDialog):
                     # Use same width, reasonable height
                     self.resize(pw, max(500, int(ph * 0.8)) if ph and ph > 0 else 700)
             else:
-                # Fallback: maximize horizontally
-                self.showMaximized()
+                self.resize(1000, 700)
         except Exception as e:
             exc_type, exc_value, exc_tb = sys.exc_info()
             line_no = exc_tb.tb_lineno if exc_tb else inspect.currentframe().f_lineno
@@ -758,7 +716,7 @@ class PathSelectorDialog(QDialog):
         self.tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
 
     def _expand_to_path(self, path: Path) -> None:
-        @log_errors
+        @log_errors()
         def expand_logic():
             src_idx = self.fs_model.index(str(path))
             if not src_idx.isValid():
@@ -824,19 +782,45 @@ class PathSelectorDialog(QDialog):
             )
             # Non-fatal; sorting is optional
 
-    def _on_selection_changed(self) -> None:
-        idx = self.tree.currentIndex()
+    def _on_selection_changed(self, selected: QItemSelection, deselected: QItemSelection) -> None:
+        """Update preview/selection cache whenever the tree selection changes."""
+        del deselected  # intentionally unused but required by signal signature
+
+        idx = QModelIndex()
+
+        try:
+            selected_indexes = selected.indexes() if selected is not None else []
+            for candidate in selected_indexes:
+                if candidate.column() == 0:
+                    idx = candidate
+                    break
+        except Exception as exc:
+            LOGGER.warning(
+                "Failed to inspect selection indexes; falling back to current index",
+                variables={"exception": repr(exc)}
+            )
+
+        if not idx.isValid():
+            idx = self.tree.currentIndex()
+
         if not idx.isValid():
             self._selected_path = None
             self.lbl_selected.setText("")
             return
+
         try:
             if idx.model() != self.proxy:
-                LOGGER.warning(f"Invalid model for mapToSource in _on_selection_changed: idx.model={idx.model()}, expected={self.proxy}")
+                LOGGER.warning(
+                    "Invalid model for mapToSource in _on_selection_changed",
+                    variables={
+                        "received_model": repr(idx.model()),
+                        "expected_model": repr(self.proxy)
+                    }
+                )
                 return
             src_idx = self.proxy.mapToSource(idx)
             if not src_idx.isValid():
-                LOGGER.debug(f"Invalid src_idx in _on_selection_changed: {src_idx}")
+                LOGGER.debug("Invalid src_idx in _on_selection_changed", variables={"src_idx": repr(src_idx)})
                 return
             p = Path(self.fs_model.filePath(src_idx))
             self._selected_path = p
@@ -850,7 +834,8 @@ class PathSelectorDialog(QDialog):
                 f"{exc_type.__name__}: {exc_value}. "
                 f"Params: idx={idx}. "
                 f"GUI context: Updating selected path preview. File list size: {self.proxy.rowCount()}. "
-                f"Traceback:\n{traceback.format_exc()}"
+                f"Traceback:\n{traceback.format_exc()}",
+                variables={"selected_indexes": [repr(i) for i in selected_indexes] if 'selected_indexes' in locals() else []}
             )
             self._selected_path = None
             self.lbl_selected.setText("")
@@ -889,7 +874,7 @@ class PathSelectorDialog(QDialog):
                 f"Traceback:\n{traceback.format_exc()}"
             )
 
-    @log_errors
+    @log_errors()
     def _accept(self) -> None:
         # Validate selection against filter rules and exist
         if not self._selected_path:
@@ -1223,14 +1208,14 @@ class MultiPathSelectorWidget(QWidget):
 
     # Public API
 
-    @log_errors
+    @log_errors()
     def get_paths(self) -> List[Path]:
         """
         Return the current list of selected paths as Path objects (normalized).
         """
         return PathOperations.normalize_paths(self._current_paths())
 
-    @log_errors
+    @log_errors()
     def set_paths(self, paths: Sequence[Union[str, Path]]) -> None:
         """
         Replace current list with provided paths after normalization and de-containment minimalization.

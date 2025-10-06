@@ -14,6 +14,8 @@ from .panel import LogPanel
 from . import outputs
 from . import formatters
 
+from .logger import logger
+
 __all__ = [
     "PKLogger",
     "LogLevel",
@@ -27,7 +29,8 @@ __all__ = [
     "LogContext",
     "LogPanel",
     "outputs",
-    "formatters"
+    "formatters",
+    "logger"
 ]
 
 # Convenience functions for quick setup
