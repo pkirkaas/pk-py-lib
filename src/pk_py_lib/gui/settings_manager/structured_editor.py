@@ -372,10 +372,10 @@ class StructuredProfileEditorWidget(QWidget):
 
             # Mode and criteria
             self.cmb_mode.currentTextChanged.connect(self._on_mode_changed)
-            self.cmb_algorithm.currentTextChanged.connect(self._on_change)
             self.sld_degree.valueChanged.connect(self._on_degree_changed)
 
             self.cmb_hash_algorithm.currentTextChanged.connect(self._on_hash_algorithm_changed)
+            self.cmb_algorithm.currentTextChanged.connect(self._on_algorithm_changed)
 
             # Scope
             self.cmb_scope_kind.currentTextChanged.connect(self._on_scope_changed)
@@ -466,6 +466,34 @@ class StructuredProfileEditorWidget(QWidget):
                 error=e,
                 title="Hash Algorithm Change Error",
                 component_name="StructuredProfileEditorWidget._on_hash_algorithm_changed",
+                algorithm=algo
+            )
+
+    @gui_error_handler(component_name="StructuredProfileEditorWidget")
+    def _on_algorithm_changed(self, algo: str) -> None:
+        """Sync main algorithm combo with hash algorithm combo when changed."""
+        try:
+            if self.cmb_mode.currentText() == "similarity":
+                index = self.cmb_hash_algorithm.findText(algo)
+                if index != -1:
+                    self.cmb_hash_algorithm.blockSignals(True)
+                    self.cmb_hash_algorithm.setCurrentIndex(index)
+                    self.cmb_hash_algorithm.blockSignals(False)
+            self._on_change()
+        except Exception as e:
+            logger.error(
+                f"Error in _on_algorithm_changed: {type(e).__name__}: {e}",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                function_name="_on_algorithm_changed",
+                parameters={"algo": algo},
+                stack_trace=traceback.format_exc()
+            )
+            handle_gui_error(
+                parent=self,
+                error=e,
+                title="Algorithm Change Error",
+                component_name="StructuredProfileEditorWidget._on_algorithm_changed",
                 algorithm=algo
             )
 
@@ -585,10 +613,22 @@ class StructuredProfileEditorWidget(QWidget):
         if profile["mode"] == "similarity":
             profile["criteria"]["degree_ui"] = self.sld_degree.value()
             profile["criteria"]["similarity_hash_algorithm"] = self.cmb_hash_algorithm.currentText()
+        else:
+            profile["criteria"].pop("similarity_hash_algorithm", None)
 
         # For two_pool scope, add direction
         if profile["scope"]["kind"] == "two_pool":
             profile["scope"]["direction"] = self.cmb_scope_direction.currentText()
+
+        # Keep similarity section aligned with UI algorithm selection so downstream consumers
+        # (e.g., immediate run without saving) receive the correct enabled algorithm list.
+        similarity_section = profile.setdefault("similarity", {})
+        if profile["mode"] == "similarity":
+            selected_similarity_algo = self.cmb_hash_algorithm.currentText()
+            similarity_section["enabled_algorithms"] = [selected_similarity_algo]
+        else:
+            # Preserve existing value if present; otherwise default to phash for duplicates mode.
+            similarity_section.setdefault("enabled_algorithms", ["phash"])
 
         self._current_profile = profile
 
@@ -911,7 +951,8 @@ class StructuredProfileEditorWidget(QWidget):
                     self.cmb_algorithm.addItems(desired_algos)
 
             # Now set criteria from profile
-            criteria = profile.get("criteria", {})
+            criteria = profile.get("criteria", {}) or {}
+            similarity_section = profile.get("similarity", {}) or {}
             # Get algorithm with mode-based default
             if mode == "duplicates":
                 default_algo = "blake3"
@@ -921,9 +962,26 @@ class StructuredProfileEditorWidget(QWidget):
             self.cmb_algorithm.setCurrentText(algorithm)
             self.sld_degree.setValue(criteria.get("degree_ui", 90))
 
+            # Determine similarity hash algorithm with fallbacks:
+            # 1) criteria.similarity_hash_algorithm
+            # 2) similarity.enabled_algorithms first entry
+            # 3) criteria.algorithm if valid for similarity
+            # 4) default to 'phash'
+            enabled_algorithms = similarity_section.get("enabled_algorithms") or []
+            sim_hash_candidates = [
+                criteria.get("similarity_hash_algorithm"),
+                enabled_algorithms[0] if enabled_algorithms else None,
+                criteria.get("algorithm"),
+            ]
+            sim_hash = next(
+                (candidate for candidate in sim_hash_candidates if candidate in ("phash", "whash")),
+                "phash",
+            )
+            criteria["similarity_hash_algorithm"] = sim_hash
+            similarity_section.setdefault("enabled_algorithms", [sim_hash])
+
             # PRIORITY 2 FIX: Set hash algorithm first, but wait to sync cmb_algorithm until after _update_ui_state()
             # This ensures the UI is properly initialized before setting algorithm values
-            sim_hash = criteria.get("similarity_hash_algorithm", "phash")
             self.cmb_hash_algorithm.setCurrentText(sim_hash)
             # Don't set cmb_algorithm yet - wait until after _update_ui_state()
 

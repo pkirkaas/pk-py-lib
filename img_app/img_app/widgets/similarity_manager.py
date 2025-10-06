@@ -436,12 +436,24 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             self._update_model(new_model)
 
     @log_errors()
-    def _on_algorithm_changed(self) -> None:
-        """Update threshold when algorithm changes.
+    def _on_algorithm_changed(self, index: int) -> None:
+        """Update the threshold spin box when the algorithm selection changes.
+
+        Parameters
+        ----------
+        index : int
+            Index emitted by :class:`QComboBox.currentIndexChanged`, identifying the newly
+            selected algorithm entry. The handler falls back to the combo box's current
+            selection if the index is out of range or does not resolve to data.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
-        algorithm = self._algorithm_combo.currentData()
-        default = self._DEFAULT_THRESHOLDS.get(str(algorithm), self._threshold_spin.value())
+        algorithm_data = None
+        if 0 <= index < self._algorithm_combo.count():
+            algorithm_data = self._algorithm_combo.itemData(index)
+        if algorithm_data is None:
+            algorithm_data = self._algorithm_combo.currentData()
+        algorithm_key = str(algorithm_data or "phash").lower()
+        default = self._DEFAULT_THRESHOLDS.get(algorithm_key, self._threshold_spin.value())
         self._threshold_spin.setValue(default)
 
     @log_errors()

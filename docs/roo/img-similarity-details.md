@@ -195,6 +195,7 @@ class ImageHash(Base):
   }
   ```
   Load via profiles for user-specific tuning.
+  Load via profiles for user-specific tuning. Profile normalization mirrors the selected hash algorithm into both `criteria.similarity_hash_algorithm` and the first entry of `similarity.enabled_algorithms`, so choosing **wHash** in the GUI remains persisted and is honored by the runtime similarity pipeline instead of falling back to the default pHash.
 
 ## Integration
 
