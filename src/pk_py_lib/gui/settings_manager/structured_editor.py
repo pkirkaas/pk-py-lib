@@ -280,7 +280,10 @@ class StructuredProfileEditorWidget(QWidget):
             # Algorithm combo box with label
             algo_label = QLabel("Algorithm:")
             self.cmb_algorithm = QComboBox()
-            # Start with empty combo box, _update_ui_state will populate it correctly
+            # PRIORITY 3 FIX: Initialize with default similarity algorithms instead of empty
+            # This ensures the combo is properly initialized before _update_ui_state() is called
+            self.cmb_algorithm.addItems(["phash", "ahash", "dhash", "whash"])
+            self.cmb_algorithm.setCurrentText("phash")
             self.cmb_algorithm.setMaximumWidth(160)  # ~20 characters
             mode_algo_layout.addWidget(algo_label)
             mode_algo_layout.addWidget(self.cmb_algorithm)
@@ -918,17 +921,21 @@ class StructuredProfileEditorWidget(QWidget):
             self.cmb_algorithm.setCurrentText(algorithm)
             self.sld_degree.setValue(criteria.get("degree_ui", 90))
             
-            # Sync both algorithm combos to similarity_hash_algorithm for consistency
+            # PRIORITY 2 FIX: Set hash algorithm first, but wait to sync cmb_algorithm until after _update_ui_state()
+            # This ensures the UI is properly initialized before setting algorithm values
             sim_hash = criteria.get("similarity_hash_algorithm", "phash")
             self.cmb_hash_algorithm.setCurrentText(sim_hash)
-            self.cmb_algorithm.setCurrentText(sim_hash)
+            # Don't set cmb_algorithm yet - wait until after _update_ui_state()
 
             # Unblock signals
             self.cmb_algorithm.blockSignals(False)
             self.cmb_mode.blockSignals(False)
 
-            # Update UI state for enable/disable logic (without changing algorithm items)
+            # Update UI state for enable/disable logic and to populate combo items correctly
             self._update_ui_state()
+            
+            # NOW sync the algorithm combo after UI state is updated to prevent reset
+            self.cmb_algorithm.setCurrentText(sim_hash)
 
             # Set scope and output
             scope = profile.get("scope", {})

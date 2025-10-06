@@ -303,7 +303,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         splitter.setSizes([780, 420])
         parent_layout.addWidget(splitter)
 
-    @log_errors
+    @log_errors()
     def _on_item_double_clicked(self, item, column):
         """
         Private handler for double-click events on tree items.
@@ -350,7 +350,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         """Return the immutable :class:`FileGroupModel` backing the dialog."""
         return self._model
 
-    @log_errors
+    @log_errors()
     def apply_settings_profile(self, profile_payload: dict) -> None:
         """Validate and attach a Settings Profile Option A payload to the dialog.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
@@ -379,7 +379,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         # Success message box removed per user request. Validation status is logged.
         pass
 
-    @log_errors
+    @log_errors()
     def refresh_groups(
         self,
         groups: Sequence[Group],
@@ -424,7 +424,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
     # ------------------------------------------------------------------#
     # Internal helpers
     # ------------------------------------------------------------------#
-    @log_errors
+    @log_errors()
     def _on_direction_changed(self) -> None:
         """Update model direction when the combo box selection changes.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
@@ -435,7 +435,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             new_model = self._model.with_direction(direction)
             self._update_model(new_model)
 
-    @log_errors
+    @log_errors()
     def _on_algorithm_changed(self) -> None:
         """Update threshold when algorithm changes.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
@@ -444,7 +444,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         default = self._DEFAULT_THRESHOLDS.get(str(algorithm), self._threshold_spin.value())
         self._threshold_spin.setValue(default)
 
-    @log_errors
+    @log_errors()
     def _on_quality_changed(self, text: str) -> None:
         """Handle image quality evaluator selection change.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
@@ -463,7 +463,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             self._quality_combo.setCurrentIndex(current_index)
             self._quality_combo.blockSignals(False)
 
-    @log_errors
+    @log_errors()
     def _on_compute_clicked(self) -> None:
         """Compute similarity groups via database hashes.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
@@ -515,7 +515,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         self.refresh_groups(groups, pool_map=pool_map, direction=direction)
         self._select_first_group()
 
-    @log_errors
+    @log_errors()
     def _get_pool_for_path(self, path: str, profile: Optional[dict]) -> str:
         """
         Determine the pool (A or B) for a given file path based on profile pool configurations.
@@ -563,7 +563,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         # Default to A if no match
         return "A"
 
-    @log_errors
+    @log_errors()
     def _compute_groups_from_database(
         self,
         algorithm: str,
@@ -621,7 +621,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         dialog_groups = self._convert_similarity_groups(sim_groups)
         return dialog_groups, pool_map
 
-    @log_errors
+    @log_errors()
     def _convert_similarity_groups(
         self,
         similarity_groups: Iterable[CoreSimilarityGroup],
@@ -685,7 +685,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             )
         return converted
 
-    @log_errors
+    @log_errors()
     def _safe_image_metadata(
         self,
         path: str,
@@ -706,7 +706,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 "mod_date": fallback_mod_date or "Unknown",
             }
 
-    @log_errors
+    @log_errors()
     def _update_model(self, model: FileGroupModel) -> None:
         """Persist the model and refresh UI components.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
@@ -717,7 +717,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         self.update_groups(list(model.groups))
         self._select_first_group()
 
-    @log_errors
+    @log_errors()
     def _select_first_group(self) -> None:
         """Highlight the first group row to populate the preview pane.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
@@ -734,7 +734,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         tree.blockSignals(False)
         self._update_preview_for_item(first_item)
 
-    @log_errors
+    @log_errors()
     def _on_tree_selection_changed(self) -> None:
         """Update preview when the group tree selection changes.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
@@ -746,7 +746,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             return
         self._update_preview_for_item(current)
 
-    @log_errors
+    @log_errors()
     def _update_preview_for_item(self, item) -> None:
         """Populate the preview pane based on the selected tree item.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
@@ -763,7 +763,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             return
         self._preview_pane.update_preview(group.items)
 
-    @log_errors
+    @log_errors()
     def _on_group_view_selection_changed(self, selection: set) -> None:
         """Log selection changes relayed from the FileGroupView.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
@@ -785,7 +785,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 self._direction_combo.blockSignals(False)
                 return
 
-    @log_errors
+    @log_errors()
     def _extract_similarity_threshold(self) -> Optional[float]:
         """Best-effort extraction of normalized threshold from the profile payload.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
@@ -803,7 +803,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             return None
 
 
-    @log_errors
+    @log_errors()
     def _refresh_quality_scores(self) -> None:
         """
         Refresh the normalized quality scores (0-1 range) in the table based on the current evaluator.
@@ -870,7 +870,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 child.setText(7, score_display)
  
  
-    @log_errors
+    @log_errors()
     def _open_file(self, path: Path) -> None:
         """
         Open the file using the default OS application handler, reusing the double-click logic.
@@ -899,7 +899,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             LOGGER.warning(f"Failed to open file with default handler: {path}")
  
  
-    @log_errors
+    @log_errors()
     def _copy_path_to_clipboard(self, path: Path) -> None:
         """
         Copy the absolute file path to the system clipboard.
@@ -923,7 +923,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             show_selectable_error(self, "Clipboard Error", "Failed to copy path to clipboard.")
  
  
-    @log_errors
+    @log_errors()
     def _open_containing_folder(self, path: Path) -> None:
         """
         Open the containing folder in Windows Explorer, selecting the specific file.
@@ -957,7 +957,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             self._open_folder(path)
  
  
-    @log_errors
+    @log_errors()
     def _show_properties(self, path: Path) -> None:
         """
         Open the Windows file properties dialog for the specified file.
@@ -984,7 +984,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             LOGGER.warning(f"Unexpected error opening properties: {e}")
  
  
-    @log_errors
+    @log_errors()
     def _open_folder(self, path: Path) -> None:
         """
         Open the parent folder using a cross-platform method (fallback for non-Windows).
@@ -1011,7 +1011,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             LOGGER.warning(f"Failed to open parent folder: {parent_path}")
  
  
-    @log_errors
+    @log_errors()
     def _show_context_menu(self, position) -> None:
         """
         Display a right-click context menu for file items in the tree widget.
@@ -1084,7 +1084,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         LOGGER.debug(f"Context menu displayed for file: {path}")
  
  
-    @log_errors
+    @log_errors()
     def _perform_copy(self, path: str) -> None:
         """
         Perform copy operation for the selected file in the similarity manager.
@@ -1153,7 +1153,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             LOGGER.error(f"Unexpected error in copy: {e}", exception=e)
             show_selectable_error(self, "Copy Error", "An unexpected error occurred during copy.")
 
-    @log_errors
+    @log_errors()
     def _perform_move(self, path: str) -> None:
         """
         Perform move operation for the selected file in the similarity manager.
@@ -1225,7 +1225,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             LOGGER.error(f"Unexpected error in move: {e}", exception=e)
             show_selectable_error(self, "Move Error", "An unexpected error occurred during move.")
 
-    @log_errors
+    @log_errors()
     def _remove_file_from_model(self, path: str) -> None:
         """
         Remove a specific file path from the groups model and refresh the dialog view.

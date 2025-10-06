@@ -417,7 +417,17 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     if normalized["mode"] == "duplicates":
         criteria.setdefault("algorithm", "xxh3")
     else:
-        sim_hash = criteria.setdefault("similarity_hash_algorithm", "phash")
+        # PRIORITY 1 FIX: Preserve existing algorithm values without defaulting unnecessarily
+        # If similarity_hash_algorithm exists, use it; otherwise check algorithm; finally default to phash
+        # This prevents overwriting user-selected "whash" with the "phash" default
+        if "similarity_hash_algorithm" in criteria:
+            sim_hash = criteria["similarity_hash_algorithm"]
+        elif "algorithm" in criteria and criteria["algorithm"] in ["phash", "ahash", "dhash", "whash"]:
+            sim_hash = criteria["algorithm"]
+        else:
+            sim_hash = "phash"
+        
+        criteria["similarity_hash_algorithm"] = sim_hash
         criteria["algorithm"] = sim_hash
         logger.info(f"normalize_settings: mode={normalized['mode']}, set similarity_hash_algorithm={sim_hash}, algorithm={criteria['algorithm']}")
     
