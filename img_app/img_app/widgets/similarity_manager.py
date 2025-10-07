@@ -431,8 +431,9 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             and search_paths for the export service.
         """
         try:
-            # Get algorithm from combo box
+            # Task 3: Get algorithm from combo box for export with logging
             algorithm = str(self._algorithm_combo.currentData() or "phash").lower()
+            LOGGER.info(f"Exporting results with algorithm: {algorithm}")
 
             # Get threshold from spin box
             threshold = int(self._threshold_spin.value())
@@ -662,18 +663,47 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
 
             # Get entries for the search paths, fallback to empty list if no paths
             entries = self._flat_cache_manager.get_entries(search_paths or [])
+
+            # Task 1: Add comprehensive debug logging for hash retrieval
+            LOGGER.info(f"Requesting hashes: algorithm={algorithm}, types={all_types}")
             hashes_dict = self._flat_cache_manager.get_hashes(list(entries.keys()), all_types, search_type='similarity')
+            LOGGER.info(f"Received {len(hashes_dict)} hash dictionaries from cache")
+
+            # Log first 3 entries for debugging
+            for path, hashes_entry in list(hashes_dict.items())[:3]:
+                LOGGER.info(f"  Cache entry: {path}")
+                LOGGER.info(f"    Available algorithms: {list(hashes_entry.keys())}")
+                for alg, hash_val in hashes_entry.items():
+                    LOGGER.info(f"    {alg}: {hash_val[:16] if hash_val else None}...")
         except Exception as e:
             LOGGER.error(f"Failed to get hashes from flat cache: {e}", exception=e)
             return [], {}, 0
 
+        # Task 2: Add hash validation
         for path, path_hashes in hashes_dict.items():
-            # Get the specific algorithm hash
+            # Validate that requested algorithm exists in cache
+            if algorithm not in path_hashes:
+                LOGGER.warning(
+                    f"Requested algorithm '{algorithm}' not in cache for {path}. "
+                    f"Available: {list(path_hashes.keys())}"
+                )
+                continue
+
             hash_value = path_hashes.get(algorithm)
+
+            # DEBUG: Detect if whash accidentally equals phash (should never happen)
+            if algorithm == 'whash' and 'phash' in path_hashes and hash_value:
+                if hash_value == path_hashes['phash']:
+                    LOGGER.error(
+                        f"BUG DETECTED: whash value equals phash value for {path}! "
+                        f"This indicates hashes are not being computed correctly."
+                    )
+
             if hash_value:
+                hashes.append({"path": path, "hash": hash_value})
+                LOGGER.debug(f"Added {algorithm} hash for {Path(path).name}")
                 # Compute pool based on profile paths
                 pool = self._get_pool_for_path(path, self._profile_payload)
-                hashes.append({"path": path, "hash": hash_value})
                 pool_map[path] = pool
 
         # Print cache summary after processing
@@ -695,6 +725,8 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 settings['criteria'] = {}
             settings['criteria']['similarity_hash_algorithm'] = algorithm
 
+            # Task 1: Log final call to find_similar_images
+            LOGGER.info(f"Calling find_similar_images with algorithm={algorithm}, threshold={threshold}, {len(paths)} paths")
             sim_groups = find_similar_images(
                 paths=paths,  # ✅ Correct: Pass file paths as expected
                 algorithm=algorithm,
@@ -703,6 +735,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 flat_cache_manager=self._flat_cache_manager,  # ✅ Ensure cache is used
                 search_type='similarity'
             )
+            LOGGER.info(f"Returned {len(sim_groups)} similarity groups")
         except (ValueError, KeyError, TypeError) as e:
             LOGGER.error(f"Similarity calculation error: {e}", exception=e)
             return [], pool_map, total_files

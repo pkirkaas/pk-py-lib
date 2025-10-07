@@ -2016,6 +2016,11 @@ def find_similar_images(
         all_reps, algorithm=algorithm, settings=settings, flat_cache_manager=flat_cache_manager, search_type=search_type
     )
 
+    # Task 4: Log sample hashes to verify correct algorithm
+    logger.info(f"Computed {len(perceptual_hashes)} {algorithm} hashes")
+    for path, hash_val in list(perceptual_hashes.items())[:3]:
+        logger.debug(f"  {Path(path).name}: {algorithm} = {hash_val[:16] if hash_val else None}...")
+
     # Filter valid reps (skip if hash computation failed)
     valid_reps = [rep for rep in all_reps if perceptual_hashes.get(rep) is not None]
     rep_hashes = [{'path': rep, 'hash': perceptual_hashes[rep]} for rep in valid_reps]
