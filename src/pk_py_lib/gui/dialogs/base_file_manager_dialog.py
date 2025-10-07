@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 from ..dialog_models import DialogState, Group
 from ...core.filesystem.operations import FileOperations
 from ..models import SelectionStore
+from ..export_service import ExportService
 
 from src.pk_py_lib.core.logging.decorators import log_errors
 from src.pk_py_lib.core.logging.logger import get_logger
@@ -88,6 +89,9 @@ class BaseFileManagerDialog(QDialog):
         self._summary_text: str = ""
         self._report_text: str = ""
 
+        # Initialize export service
+        self._export_service = ExportService()
+
         # State for the collapsible top pane
         self._is_collapsed: bool = True
 
@@ -97,7 +101,7 @@ class BaseFileManagerDialog(QDialog):
             | Qt.WindowMinimizeButtonHint
             | Qt.WindowMaximizeButtonHint
         )
-        
+
         self.setModal(True)
         self.resize(1200, 800)
         self.setWindowTitle("File Manager")
@@ -222,7 +226,7 @@ class BaseFileManagerDialog(QDialog):
             self.tab_bar.addTab("Summary") # Index 0
             self.tab_bar.addTab("Report")  # Index 1
             self.tab_bar.setShape(QTabBar.RoundedNorth)
-            
+
             self._collapse_button = QToolButton(self)
             self._collapse_button.setArrowType(Qt.DownArrow) # Start collapsed
             self._collapse_button.setToolTip("Collapse/Expand Summary/Report Pane")
@@ -238,7 +242,7 @@ class BaseFileManagerDialog(QDialog):
             # 4. Add Header and Content to Parent Layout
             parent_layout.addWidget(header_widget)
             parent_layout.addWidget(self._tab_content_stack)
-            
+
             # Start collapsed by default
             self._tab_content_stack.setVisible(False)
         except Exception as e:
@@ -294,7 +298,7 @@ class BaseFileManagerDialog(QDialog):
     def _toggle_collapse(self) -> None:
         """
         Toggles the visibility of the tab content area (Summary/Report) and updates the collapse button icon.
-        
+
         When collapsed, the QStackedWidget containing the summary/report QTextEdits is hidden,
         but the QTabBar and collapse button remain visible.
         """
@@ -375,6 +379,12 @@ class BaseFileManagerDialog(QDialog):
             self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             footer_layout.addWidget(self.status_label)
             footer_layout.addStretch(1)
+
+            # Add Save As... button before Delete Selected
+            self.save_button = QPushButton("Save As...", footer_widget)
+            self.save_button.clicked.connect(self._on_save_clicked)
+            self.save_button.setToolTip("Export results to JSON file")
+            footer_layout.addWidget(self.save_button)
 
             self.delete_button = QPushButton("Delete Selected", footer_widget)
             self.delete_button.clicked.connect(self._on_delete_clicked)
@@ -631,14 +641,14 @@ class BaseFileManagerDialog(QDialog):
             msg_box.setInformativeText("This operation is generally reversible via the system trash.")
             msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
             msg_box.setDefaultButton(QMessageBox.No)
-            
+
             if msg_box.exec() != QMessageBox.Yes:
                 return
 
             # 2. Perform Deletion
             deleted_count = 0
             failed_paths: List[Path] = []
-            
+
             self.append_report_lines(
                 f"--- Starting deletion of {len(selected_paths)} files to Trash ---"
             )
@@ -694,15 +704,15 @@ class BaseFileManagerDialog(QDialog):
             self.append_report_lines(
                 f"--- Deletion complete: {deleted_count} deleted, {len(failed_paths)} failed ---"
             )
-            
+
             # Clear selection store for deleted items
             for path in selected_paths:
                 if Path(path) not in failed_paths:
                     self.selection_store.remove_selection(path)
-            
+
             # 4. Notify subclasses/parent to refresh their views
             self.files_deleted.emit(selected_paths)
-            
+
             # If all selected files were deleted, show success message
             if deleted_count > 0 and len(failed_paths) == 0:
                 QMessageBox.information(
@@ -730,7 +740,78 @@ class BaseFileManagerDialog(QDialog):
             )
             QMessageBox.critical(self, "Deletion Error", f"Failed to process deletion: {error_msg}")
             raise
-            
+
+    # ---------------------------------------------------------------------#
+    # Export functionality
+    # ---------------------------------------------------------------------#
+    @log_errors()
+    def _on_save_clicked(self) -> None:
+        """
+        Handle the Save As... button click to export results to JSON.
+
+        This method calls the export service with the appropriate parameters
+        extracted from the current dialog state and configuration.
+        """
+        try:
+            # Get export parameters from subclass implementation
+            export_params = self._get_export_parameters()
+
+            if not export_params:
+                QMessageBox.warning(
+                    self,
+                    "Export Not Available",
+                    "Export parameters could not be determined for this dialog type."
+                )
+                return
+
+            # Call export service
+            success = self._export_service.export_dialog_results(
+                parent=self,
+                **export_params
+            )
+
+            if success:
+                self.logger.info("Results export completed successfully")
+
+        except Exception as e:
+            exc_type = type(e).__name__
+            exc_info = sys.exc_info()
+            tb_lineno = exc_info[2].tb_lineno if exc_info[2] else inspect.currentframe().f_lineno
+            func_name = inspect.currentframe().f_code.co_name
+            locals_dict = locals()
+            error_msg = f"{exc_type}: {str(e)}"
+
+            self.logger.error(
+                error_msg,
+                extra={
+                    "file": __file__,
+                    "line": tb_lineno,
+                    "function": func_name,
+                    "locals": locals_dict,
+                    "traceback": traceback.format_exc(),
+                    "dialog_title": self.windowTitle(),
+                }
+            )
+            QMessageBox.critical(
+                self,
+                "Export Error",
+                f"Failed to export results: {error_msg}"
+            )
+
+    @log_errors()
+    def _get_export_parameters(self) -> Optional[Dict[str, Any]]:
+        """
+        Get export parameters for the current dialog.
+
+        Subclasses must override this method to provide their specific
+        export parameters like dialog type, algorithm, threshold, etc.
+
+        Returns:
+            Dictionary of export parameters or None if not supported
+        """
+        # Base implementation - subclasses must override
+        return None
+
     # ---------------------------------------------------------------------#
     # Signals
     # ---------------------------------------------------------------------#

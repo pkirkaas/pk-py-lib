@@ -421,6 +421,55 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         )
         super()._on_delete_clicked()
 
+    @log_errors()
+    def _get_export_parameters(self) -> Optional[Dict[str, Any]]:
+        """
+        Get export parameters specific to similarity dialog.
+
+        Returns:
+            Dictionary containing dialog_type, algorithm, threshold, profile_name,
+            and search_paths for the export service.
+        """
+        try:
+            # Get algorithm from combo box
+            algorithm = str(self._algorithm_combo.currentData() or "phash").lower()
+
+            # Get threshold from spin box
+            threshold = int(self._threshold_spin.value())
+
+            # Get profile name from settings
+            profile_name = "default"
+            if self._profile_payload:
+                profile_name = self._profile_payload.get("name", "default")
+            else:
+                try:
+                    from src.pk_py_lib.core.settings_profiles import get_active_profile_settings
+                    settings = get_active_profile_settings()
+                    profile_name = settings.get("name", "default") if isinstance(settings, dict) else "default"
+                except Exception:
+                    profile_name = "default"
+
+            # Get search paths from profile or use empty list
+            search_paths = []
+            if self._profile_payload and "pools" in self._profile_payload:
+                pools = self._profile_payload["pools"]
+                for pool_name in ["A", "B"]:
+                    if pool_name in pools:
+                        search_paths.extend(pools[pool_name].get("paths", []))
+
+            return {
+                "dialog_type": "similarity",
+                "groups": self.dialog_state.groups,
+                "profile_name": profile_name,
+                "algorithm": algorithm,
+                "threshold": threshold,
+                "search_paths": search_paths
+            }
+
+        except Exception as e:
+            LOGGER.error(f"Failed to get export parameters: {e}", exception=e)
+            return None
+
     # ------------------------------------------------------------------#
     # Internal helpers
     # ------------------------------------------------------------------#

@@ -59,8 +59,8 @@ import inspect
 from PySide6.QtWidgets import QMenu, QApplication
 from PySide6.QtGui import QDesktopServices
 from src.pk_py_lib.core.filesystem.operations import FileOperations
- 
- 
+
+
 LOGGER = get_logger("img_app.widgets.duplicate_manager")
 
 class DuplicateManagerDialog(BaseFileManagerDialog):
@@ -204,14 +204,14 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
     def _on_item_double_clicked(self, item, column):
         """
         Private handler for double-click events on tree items.
-    
+
         Parameters
         ----------
         item : QTreeWidgetItem
             The item that was double-clicked.
         column : int
             The column index of the double-click event.
-    
+
         Notes
         -----
         This method opens the file associated with the item using the default OS application
@@ -225,12 +225,12 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         if item.parent() is None:
             # Ignore double-clicks on group headers
             return
-    
+
         path_str = item.data(0, Qt.UserRole)
         if not path_str:
             LOGGER.warning("Double-clicked item has no associated file path")
             return
-    
+
         url = QUrl.fromLocalFile(str(path_str))
         success = QDesktopServices.openUrl(url)
         if success:
@@ -250,12 +250,12 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
     @log_errors()
     def apply_settings_profile(self, profile_payload: dict) -> None:
         """Validate and apply Settings Profile metadata to the dialog.
-    
+
         Parameters
         ----------
         profile_payload:
             Candidate profile dictionary following the Option A schema.
-    
+
         Notes
         -----
         * Validation leverages :func:`validate_settings_schema` which performs JSON
@@ -271,7 +271,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             "Settings profile validation for DuplicateManagerDialog",
             variables={"is_valid": is_valid, "error_count": len(self._validator_errors)},
         )
-    
+
         if not is_valid:
             error_message = "\n".join(self._validator_errors) or "Unknown validation issue."
             show_selectable_error(
@@ -328,6 +328,48 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             variables={"selected_count": selected_count},
         )
         super()._on_delete_clicked()
+
+    @log_errors()
+    def _get_export_parameters(self) -> Optional[Dict[str, Any]]:
+        """
+        Get export parameters specific to duplicate dialog.
+
+        Returns:
+            Dictionary containing dialog_type, profile_name, algorithm, and search_paths
+            for the export service. Algorithm is "xxh3" for duplicates.
+        """
+        try:
+            # Get profile name from settings
+            profile_name = "default"
+            if self._profile_payload:
+                profile_name = self._profile_payload.get("name", "default")
+            else:
+                try:
+                    from src.pk_py_lib.core.settings_profiles import get_active_profile_settings
+                    settings = get_active_profile_settings()
+                    profile_name = settings.get("name", "default") if isinstance(settings, dict) else "default"
+                except Exception:
+                    profile_name = "default"
+
+            # Get search paths from profile or use empty list
+            search_paths = []
+            if self._profile_payload and "pools" in self._profile_payload:
+                pools = self._profile_payload["pools"]
+                for pool_name in ["A", "B"]:
+                    if pool_name in pools:
+                        search_paths.extend(pools[pool_name].get("paths", []))
+
+            return {
+                "dialog_type": "duplicate",
+                "groups": self.dialog_state.groups,
+                "profile_name": profile_name,
+                "algorithm": "xxh3",  # Duplicates use exact hash comparison
+                "search_paths": search_paths
+            }
+
+        except Exception as e:
+            LOGGER.error(f"Failed to get export parameters: {e}", exception=e)
+            return None
 
     # ---------------------------------------------------------------------#
     # Internal helpers
@@ -392,21 +434,21 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
     def _get_pool_for_path(self, path: str, profile: Optional[dict]) -> str:
         """
         Determine the pool (A or B) for a given file path based on profile pool configurations.
-    
+
         Args:
             path: Absolute file path.
             profile: Settings profile payload with "pools" configuration.
-    
+
         Returns:
             Pool label ("A" or "B"), defaults to "A" if undetermined.
         GUI Context: DuplicateManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         if not profile or "pools" not in profile:
             return "A"
-    
+
         pools = profile["pools"]
         path_obj = Path(path)
-    
+
         # Check Pool A paths
         if "A" in pools:
             a_paths = pools["A"].get("paths", [])
@@ -419,7 +461,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
                     LOGGER.warning(f"Path relative check failed for {p}: {e}")
                     # Not relative, continue
                     pass
-    
+
         # Check Pool B paths
         if "B" in pools:
             b_paths = pools["B"].get("paths", [])
@@ -432,7 +474,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
                     LOGGER.warning(f"Path relative check failed for {p}: {e}")
                     # Not relative, continue
                     pass
-    
+
         # Default to A if no match
         return "A"
 
@@ -446,7 +488,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         """
         hashes_dict: Dict[str, Dict[str, str]] = {}
         pool_map: Dict[str, str] = {}
-    
+
         if not hasattr(self, '_flat_cache_manager') or self._flat_cache_manager is None:
             show_selectable_error(
                 self,
@@ -454,10 +496,10 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
                 "FlatCacheManager instance is required to compute duplicate groups.",
             )
             return [], {}, 0
-        
+
         # Reset counters before processing
         self._flat_cache_manager.reset_counters()
-    
+
         try:
             # For duplicate, compute only xxh3
             all_types = ['xxh3']
@@ -465,7 +507,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         except Exception as e:
             LOGGER.error(f"Failed to get hashes from flat cache: {e}", exception=e)
             return [], {}, 0
-        
+
         # Group by hash for exact duplicates
         from collections import defaultdict
         groups_map: defaultdict[str, list[str]] = defaultdict(list)
@@ -476,16 +518,16 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
                 # Compute pool based on profile paths
                 pool = self._get_pool_for_path(path, self._profile_payload)
                 pool_map[path] = pool
-        
+
         # Print cache summary after processing
         cache_hits, cache_misses, invalid_entries = self._flat_cache_manager.get_counters()
         total_files = len(hashes_dict)
         print(f"Cache Summary:\n - Hits: {cache_hits}\n - Misses: {cache_misses}\n - Invalid Entries: {invalid_entries}\nTotal Files Processed: {total_files}")
         self._flat_cache_manager.reset_counters()
-    
+
         if not groups_map:
             return [], pool_map, total_files
-    
+
         dialog_groups = []
         index = 1
         for hash_value, paths in groups_map.items():
@@ -533,12 +575,12 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
     def _open_file(self, path: Path) -> None:
         """
         Open the file using the default OS application handler, reusing the double-click logic.
-        
+
         Parameters
         ----------
         path : Path
             The absolute file path to open.
-        
+
         Notes
         -----
         Checks if the file exists before attempting to open; logs a warning if it does not.
@@ -549,25 +591,25 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         if not os.path.exists(path):
             LOGGER.warning(f"Cannot open file - does not exist: {path}")
             return
-        
+
         url = QUrl.fromLocalFile(str(path))
         success = QDesktopServices.openUrl(url)
         if success:
             LOGGER.info(f"Successfully opened file via default handler: {path}")
         else:
             LOGGER.warning(f"Failed to open file with default handler: {path}")
- 
- 
+
+
     @log_errors()
     def _copy_path_to_clipboard(self, path: Path) -> None:
         """
         Copy the absolute file path to the system clipboard.
-        
+
         Parameters
         ----------
         path : Path
             The absolute file path to copy as a string.
-        
+
         Notes
         -----
         Always succeeds as it copies the path string regardless of file existence.
@@ -580,18 +622,18 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         except Exception as e:
             LOGGER.error(f"Failed to copy path to clipboard: {e}", exception=e)
             show_selectable_error(self, "Clipboard Error", "Failed to copy path to clipboard.")
- 
- 
+
+
     @log_errors()
     def _open_containing_folder(self, path: Path) -> None:
         """
         Open the containing folder in Windows Explorer, selecting the specific file.
-        
+
         Parameters
         ----------
         path : Path
             The absolute file path; the parent directory will be opened with the file selected.
-        
+
         Notes
         -----
         Windows-specific using 'explorer /select,' command.
@@ -604,7 +646,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             LOGGER.warning(f"Cannot select file in explorer - does not exist: {path}")
             self._open_folder(path)
             return
-        
+
         try:
             subprocess.run(['explorer', '/select,', str(path)], check=True, capture_output=True)
             LOGGER.info(f"Opened containing folder selecting file: {path}")
@@ -614,18 +656,18 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         except Exception as e:
             LOGGER.warning(f"Unexpected error opening containing folder: {e}")
             self._open_folder(path)
- 
- 
+
+
     @log_errors()
     def _show_properties(self, path: Path) -> None:
         """
         Open the Windows file properties dialog for the specified file.
-        
+
         Parameters
         ----------
         path : Path
             The absolute file path for which to show properties.
-        
+
         Notes
         -----
         Windows-specific using rundll32 shell32.dll,Control_RunDLL.
@@ -641,18 +683,18 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             LOGGER.warning(f"Failed to open properties dialog: {e}")
         except Exception as e:
             LOGGER.warning(f"Unexpected error opening properties: {e}")
- 
- 
+
+
     @log_errors()
     def _open_folder(self, path: Path) -> None:
         """
         Open the parent folder using a cross-platform method (fallback for non-Windows).
-        
+
         Parameters
         ----------
         path : Path
             The file path; opens the parent directory.
-        
+
         Notes
         -----
         Uses QDesktopServices to open the parent directory, compatible with Windows, macOS, and Linux.
@@ -668,18 +710,18 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             LOGGER.info(f"Opened parent folder: {parent_path}")
         else:
             LOGGER.warning(f"Failed to open parent folder: {parent_path}")
- 
- 
+
+
     @log_errors()
     def _show_context_menu(self, position) -> None:
         """
         Display a right-click context menu for file items in the tree widget.
-        
+
         Parameters
         ----------
         position : QPoint
             The global position where the right-click occurred.
-        
+
         Notes
         -----
         Only activates for child file items (ignores group headers and clicks outside items).
@@ -698,61 +740,61 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         item = self._group_view.tree_widget.itemAt(position)
         if item is None or item.parent() is None:
             return  # Ignore group headers and outside clicks
-        
+
         path_str = item.data(0, Qt.UserRole)
         if not path_str:
             LOGGER.warning("Right-clicked item has no associated file path")
             return
-        
+
         path = Path(path_str)
-        
+
         menu = QMenu(self)
-        
+
         # Universal actions
         open_action = menu.addAction("Open File")
         open_action.triggered.connect(lambda: self._open_file(path))
-        
+
         copy_action = menu.addAction("Copy Path")
         copy_action.triggered.connect(lambda: self._copy_path_to_clipboard(path))
-        
+
         # OS-dependent actions
         system = platform.system()
         if system == 'Windows':
             folder_action = menu.addAction("Open Containing Folder")
             folder_action.triggered.connect(lambda: self._open_containing_folder(path))
-            
+
             props_action = menu.addAction("Properties")
             props_action.triggered.connect(lambda: self._show_properties(path))
         else:
             # Cross-platform fallback
             folder_action = menu.addAction("Open Folder")
             folder_action.triggered.connect(lambda: self._open_folder(path))
-        
+
         # File management actions
         copy_action = menu.addAction("Copy To")
         copy_action.triggered.connect(lambda: self._perform_copy(path_str))
-        
+
         move_action = menu.addAction("Move To")
         move_action.triggered.connect(lambda: self._perform_move(path_str))
-        
+
         # TODO: Extend to multi-select in future by iterating over self._group_view.tree_widget.selectedItems()
         # and applying actions to each valid file item, respecting SelectionStore.
-        
+
         global_pos = self._group_view.tree_widget.viewport().mapToGlobal(position)
         action = menu.exec(global_pos)
         LOGGER.debug(f"Context menu displayed for file: {path}")
-  
-  
+
+
         @log_errors()
         def _perform_copy(self, path: str) -> None:
             """
             Perform copy operation for the selected file in the duplicate manager.
-            
+
             Parameters
             ----------
             path : str
                 The absolute file path of the file to copy.
-            
+
             Notes
             -----
             Opens a directory selection dialog using FileOperations.select_target_directory
@@ -765,20 +807,20 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             permissions, disk space, or invalid path), displays a warning QMessageBox
             with user-friendly message and returns without model changes; full error
             details are available in the application logs via the provided LOGGER.
-            
+
             This action is intended for handling duplicates by copying them to a new
             location while updating the UI immediately. The original file remains in
             its location post-copy.
-            
+
             Examples
             --------
             Typically triggered from context menu:
-            
+
             .. code-block:: python
-                
+
                 copy_action = menu.addAction("Copy To")
                 copy_action.triggered.connect(lambda: self._perform_copy(path_str))
-            
+
             Edge Cases:
             - If target_dir selection is canceled, no operation is performed.
             - Handles non-existent source files gracefully (logged as failure).
@@ -809,18 +851,18 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             except Exception as e:
                 LOGGER.error(f"Unexpected error in copy: {e}", exception=e)
                 show_selectable_error(self, "Copy Error", "An unexpected error occurred during copy.")
-  
-  
+
+
         @log_errors()
         def _perform_move(self, path: str) -> None:
             """
             Perform move operation for the selected file in the duplicate manager.
-            
+
             Parameters
             ----------
             path : str
                 The absolute file path of the file to move.
-            
+
             Notes
             -----
             Opens a directory selection dialog using FileOperations.select_target_directory
@@ -835,19 +877,19 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             Logs the operation details including target directory. If the move fails
             (e.g., permissions, cross-device issues, or invalid path), displays a
             warning QMessageBox and returns without model changes; full details in logs.
-            
+
             This action relocates the file permanently, updating the UI to reflect its
             removal from the duplicates list.
-            
+
             Examples
             --------
             Typically triggered from context menu:
-            
+
             .. code-block:: python
-                
+
                 move_action = menu.addAction("Move To")
                 move_action.triggered.connect(lambda: self._perform_move(path_str))
-            
+
             Edge Cases:
             - If target_dir selection is canceled, no operation is performed.
             - Source file is removed on success; no undo except via system recycle bin if applicable.
@@ -880,18 +922,18 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             except Exception as e:
                 LOGGER.error(f"Unexpected error in move: {e}", exception=e)
                 show_selectable_error(self, "Move Error", "An unexpected error occurred during move.")
-  
-  
+
+
         @log_errors()
         def _remove_file_from_model(self, path: str) -> None:
             """
             Remove a specific file path from the groups model and refresh the dialog view.
-            
+
             Parameters
             ----------
             path : str
                 The absolute file path to remove from the groups.
-            
+
             Notes
             -----
             Iterates through the current self._model.groups (tuple of Group instances) to
@@ -904,24 +946,24 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             rebuild the view via _update_model and FileGroupView.update_model. Logs the
             removal for auditing. If the path is not found in any group, logs a warning
             but performs no refresh.
-            
+
             This method ensures immutability by using replace and tuples, aligning with
             the composition-centric architecture. Only refreshes if a change occurred,
             optimizing UI updates.
-            
+
             Examples
             --------
             Called post-copy or post-move:
-            
+
             .. code-block:: python
-                
+
                 self._remove_file_from_model("/path/to/dupe/file.jpg")
-            
+
             Usage in Context:
             - Ensures the tree widget (self._group_view.tree_widget) reflects the model
               after file operations, maintaining consistency between UI and data.
             - Handles single-file removal; for multi-select, would need extension.
-            
+
             Edge Cases:
             - Path not in any group: Warns and skips refresh.
             - Multiple groups with same path: Unlikely in duplicate model, but would
@@ -942,7 +984,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
                             updated_groups.append(new_group)
                     else:
                         updated_groups.append(group)
-                
+
                 if path_found:
                     self.refresh_groups(tuple(updated_groups))
                     LOGGER.debug(f"Removed {path} from duplicate model and refreshed view")
@@ -957,6 +999,6 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
             except Exception as e:
                 LOGGER.error(f"Unexpected error in remove_file_from_model: {e}", exception=e)
                 show_selectable_error(self, "Model Error", "An unexpected error occurred updating the model.")
-  
-  
+
+
 __all__ = ["DuplicateManagerDialog"]
