@@ -651,7 +651,18 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         try:
             # For similarity, compute all perceptual hashes + xxh3
             all_types = ['phash', 'whash', 'xxh3']
-            hashes_dict = self._flat_cache_manager.get_hashes(list(self._flat_cache_manager.get_entries().keys()), all_types, search_type='similarity')
+
+            # Get paths from profile payload to pass to get_entries()
+            search_paths = []
+            if self._profile_payload and "pools" in self._profile_payload:
+                pools = self._profile_payload["pools"]
+                for pool_name in ["A", "B"]:
+                    if pool_name in pools:
+                        search_paths.extend(pools[pool_name].get("paths", []))
+
+            # Get entries for the search paths, fallback to empty list if no paths
+            entries = self._flat_cache_manager.get_entries(search_paths or [])
+            hashes_dict = self._flat_cache_manager.get_hashes(list(entries.keys()), all_types, search_type='similarity')
         except Exception as e:
             LOGGER.error(f"Failed to get hashes from flat cache: {e}", exception=e)
             return [], {}, 0
@@ -678,11 +689,17 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             # Extract just the paths from the hashes we already fetched
             paths = [h['path'] for h in hashes]
 
+            # Ensure settings include the correct algorithm selection
+            settings = self._profile_payload or {}
+            if 'criteria' not in settings:
+                settings['criteria'] = {}
+            settings['criteria']['similarity_hash_algorithm'] = algorithm
+
             sim_groups = find_similar_images(
                 paths=paths,  # ✅ Correct: Pass file paths as expected
                 algorithm=algorithm,
                 threshold=threshold,
-                settings=self._profile_payload,
+                settings=settings,
                 flat_cache_manager=self._flat_cache_manager,  # ✅ Ensure cache is used
                 search_type='similarity'
             )

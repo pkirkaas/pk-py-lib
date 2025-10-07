@@ -1023,7 +1023,7 @@ class MainWindow(QMainWindow):
 
         # 1. Extract algorithm and threshold from profile
         criteria = profile_payload.get("criteria", {})
-        algorithm = criteria.get("algorithm", "phash")
+        algorithm = criteria.get("similarity_hash_algorithm", "phash")
 
         # Default to 10 for phash, 12 for whash (Hamming distance)
         default_threshold = 10 if algorithm == "phash" else 12

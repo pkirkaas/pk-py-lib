@@ -384,7 +384,7 @@ def _validate_custom_rules(profile_data: Dict[str, Any]) -> List[str]:
     if mode == "duplicates" and criteria.get("algorithm") not in ["blake3", "xxh3"]:
         errors.append("Duplicates mode requires algorithm 'blake3' or 'xxh3'")
 
-    if mode == "similarity" and criteria.get("algorithm") not in ["phash", "whash"]:
+    if mode == "similarity" and criteria.get("similarity_hash_algorithm") not in ["phash", "whash"]:
         errors.append("Similarity mode requires algorithm 'phash' or 'whash'")
 
     return errors

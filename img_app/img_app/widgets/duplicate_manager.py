@@ -503,7 +503,18 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
         try:
             # For duplicate, compute only xxh3
             all_types = ['xxh3']
-            hashes_dict = self._flat_cache_manager.get_hashes(list(self._flat_cache_manager.get_entries().keys()), all_types, search_type='duplicate')
+
+            # Get paths from profile payload to pass to get_entries()
+            search_paths = []
+            if self._profile_payload and "pools" in self._profile_payload:
+                pools = self._profile_payload["pools"]
+                for pool_name in ["A", "B"]:
+                    if pool_name in pools:
+                        search_paths.extend(pools[pool_name].get("paths", []))
+
+            # Get entries for the search paths, fallback to empty list if no paths
+            entries = self._flat_cache_manager.get_entries(search_paths or [])
+            hashes_dict = self._flat_cache_manager.get_hashes(list(entries.keys()), all_types, search_type='duplicate')
         except Exception as e:
             LOGGER.error(f"Failed to get hashes from flat cache: {e}", exception=e)
             return [], {}, 0

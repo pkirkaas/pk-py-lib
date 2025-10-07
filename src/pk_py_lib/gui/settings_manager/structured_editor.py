@@ -958,7 +958,7 @@ class StructuredProfileEditorWidget(QWidget):
                 default_algo = "blake3"
             else:
                 default_algo = "phash"
-            algorithm = criteria.get("algorithm", default_algo)
+            algorithm = criteria.get("similarity_hash_algorithm", default_algo)
             self.cmb_algorithm.setCurrentText(algorithm)
             self.sld_degree.setValue(criteria.get("degree_ui", 90))
 
@@ -971,7 +971,7 @@ class StructuredProfileEditorWidget(QWidget):
             sim_hash_candidates = [
                 criteria.get("similarity_hash_algorithm"),
                 enabled_algorithms[0] if enabled_algorithms else None,
-                criteria.get("algorithm"),
+                criteria.get("similarity_hash_algorithm"),
             ]
             sim_hash = next(
                 (candidate for candidate in sim_hash_candidates if candidate in ("phash", "whash")),

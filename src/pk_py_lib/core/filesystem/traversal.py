@@ -34,7 +34,7 @@ class FileInfo:
     modified_time: float
     is_symlink: bool
     extension: str
-    
+
     @classmethod
     def from_path(cls, path: Path) -> 'FileInfo':
         """Create FileInfo from a path."""
@@ -61,15 +61,15 @@ class FileInfo:
 class DirectoryTraversal:
     """
     Efficient directory traversal with advanced filtering.
-    
+
     Provides powerful file discovery with pattern matching,
     size filtering, and smart exclusions.
     """
-    
+
     @staticmethod
     def walk_files(
         roots: Union[Path, List[Path]],
-        patterns: Optional[List[str]] = None,  # e.g., ["*.jpg", "*.png"] 
+        patterns: Optional[List[str]] = None,  # e.g., ["*.jpg", "*.png"]
         exclude_patterns: Optional[List[str]] = None,  # e.g., ["*.tmp", ".*"]
         follow_symlinks: bool = False,
         max_depth: Optional[int] = None,
@@ -79,7 +79,7 @@ class DirectoryTraversal:
     ) -> Iterator[Path]:
         """
         Walk directory tree(s) with advanced filtering.
-        
+
         Args:
             roots: Single root directory or list of root directories to traverse
             patterns: Include patterns (glob-style)
@@ -89,10 +89,10 @@ class DirectoryTraversal:
             min_size: Minimum file size in bytes
             max_size: Maximum file size in bytes (None for unlimited)
             include_hidden: Whether to include hidden files
-            
+
         Yields:
             Path objects for matching files
-            
+
         Example:
             >>> # Single root
             >>> for image in DirectoryTraversal.walk_files(
@@ -102,7 +102,7 @@ class DirectoryTraversal:
             ...     max_depth=3
             ... ):
             ...     print(image)
-            
+
             >>> # Multiple roots
             >>> for image in DirectoryTraversal.walk_files(
             ...     [Path("/photos"), Path("/backup/photos")],
@@ -115,21 +115,21 @@ class DirectoryTraversal:
             roots = [roots]
         elif not isinstance(roots, list):
             raise TypeError("roots must be a Path or list of Path objects")
-        
+
         # Compile patterns for efficiency (for single file case)
         include_compiled = None
         if patterns:
             include_compiled = [re.compile(fnmatch.translate(p)) for p in patterns]
-        
+
         exclude_compiled = None
         if exclude_patterns:
             exclude_compiled = [re.compile(fnmatch.translate(p)) for p in exclude_patterns]
-        
+
         for root in roots:
             if not root.exists():
                 log.warning(f"Root path does not exist: {root}")
                 continue
-                
+
             if root.is_file():
                 # Handle single file
                 if DirectoryTraversal._should_include_file_compiled(
@@ -149,7 +149,7 @@ class DirectoryTraversal:
                 )
             else:
                 log.warning(f"Root path is not a file or directory: {root}")
-    
+
     @staticmethod
     def _should_include_file_compiled(
         file_path: Path,
@@ -221,27 +221,27 @@ class DirectoryTraversal:
         include_compiled = None
         if patterns:
             include_compiled = [re.compile(fnmatch.translate(p)) for p in patterns]
-        
+
         exclude_compiled = None
         if exclude_patterns:
             exclude_compiled = [re.compile(fnmatch.translate(p)) for p in exclude_patterns]
-        
+
         def should_include_file(file_path: Path) -> bool:
             """Check if file matches inclusion criteria."""
             # Check hidden files
             if not include_hidden and file_path.name.startswith('.'):
                 return False
-            
+
             # Check include patterns
             if include_compiled:
                 if not any(pattern.match(file_path.name) for pattern in include_compiled):
                     return False
-            
+
             # Check exclude patterns
             if exclude_compiled:
                 if any(pattern.match(file_path.name) for pattern in exclude_compiled):
                     return False
-            
+
             # Check file size
             try:
                 file_size = file_path.stat().st_size
@@ -252,47 +252,47 @@ class DirectoryTraversal:
             except OSError:
                 # File might be a broken symlink
                 return False
-            
+
             return True
-        
+
         def walk_recursive_internal(current_path: Path, current_depth: int = 0):
             """Recursive walking function."""
             if max_depth is not None and current_depth >= max_depth:
                 return
-            
+
             try:
                 for item in current_path.iterdir():
                     # Skip broken symlinks
                     if item.is_symlink() and not follow_symlinks:
                         if not item.exists():
                             continue
-                    
+
                     if item.is_file():
                         if DirectoryTraversal._should_include_file_compiled(
                             item, include_compiled, exclude_compiled, min_size, max_size, include_hidden
                         ):
                             yield item
-                    
+
                     elif item.is_dir():
                         # Check if we should traverse this directory
                         if not include_hidden and item.name.startswith('.'):
                             continue
-                        
+
                         # Skip if directory matches exclude patterns
                         if exclude_compiled:
                             if any(pattern.match(item.name) for pattern in exclude_compiled):
                                 continue
-                        
+
                         # Recurse into subdirectory
                         yield from walk_recursive_internal(item, current_depth + 1)
-            
+
             except PermissionError:
                 log.warning(f"Permission denied accessing: {current_path}")
             except OSError as e:
                 log.warning(f"Error accessing {current_path}: {e}")
-        
+
         yield from walk_recursive_internal(root)
-    
+
     @staticmethod
     def find_duplicate_filenames(
         roots: List[Path],
@@ -301,15 +301,15 @@ class DirectoryTraversal:
     ) -> Dict[str, List[Path]]:
         """
         Find files with duplicate names across multiple directories.
-        
+
         Args:
             roots: List of root directories to search
             case_sensitive: Whether filename comparison is case-sensitive
             include_size: Whether to consider file size in duplicate detection
-            
+
         Returns:
             Dictionary mapping filenames to lists of paths with that name
-            
+
         Example:
             >>> duplicates = DirectoryTraversal.find_duplicate_filenames([
             ...     Path("/photos/2023"),
@@ -320,13 +320,13 @@ class DirectoryTraversal:
             ...         print(f"Duplicate: {filename} found in {len(paths)} locations")
         """
         filename_map = defaultdict(list)
-        
+
         for file_path in DirectoryTraversal.walk_files(roots):
             # Get filename key
             filename = file_path.name
             if not case_sensitive:
                 filename = filename.lower()
-            
+
             # Add size to key if requested
             key = filename
             if include_size:
@@ -335,24 +335,24 @@ class DirectoryTraversal:
                     key = f"{filename}_{size}"
                 except OSError:
                     continue
-            
+
             filename_map[key].append(file_path)
-        
+
         # Return only entries with duplicates
         return {k: v for k, v in filename_map.items() if len(v) > 1}
-    
+
     @staticmethod
     def calculate_directory_stats(root: Path, include_subdirs: bool = True) -> Dict[str, Any]:
         """
         Calculate comprehensive statistics for a directory tree.
-        
+
         Args:
             root: Root directory to analyze
             include_subdirs: Whether to include per-subdirectory stats
-            
+
         Returns:
             Dictionary with comprehensive directory statistics
-            
+
         Example:
             >>> stats = DirectoryTraversal.calculate_directory_stats(Path("/photos"))
             >>> print(f"Total size: {stats['total_size_mb']:.1f} MB")
@@ -360,7 +360,7 @@ class DirectoryTraversal:
         """
         if not root.exists() or not root.is_dir():
             return {"error": f"Invalid directory: {root}"}
-        
+
         stats = {
             "directory": str(root),
             "total_size": 0,
@@ -381,23 +381,23 @@ class DirectoryTraversal:
             "newest_file": None,
             "subdirectories": {} if include_subdirs else None
         }
-        
+
         oldest_time = float('inf')
         newest_time = 0
         largest_files = []  # Will keep top 10
-        
+
         try:
             for item in DirectoryTraversal.walk_files(root):
                 try:
                     file_info = FileInfo.from_path(item)
-                    
+
                     # Update totals
                     stats["file_count"] += 1
                     stats["total_size"] += file_info.size
-                    
+
                     # Update file types
                     stats["file_types"][file_info.extension] += 1
-                    
+
                     # Update size distribution
                     size_mb = file_info.size / (1024 * 1024)
                     if file_info.size < 1024:
@@ -410,29 +410,29 @@ class DirectoryTraversal:
                         stats["size_distribution"]["large"] += 1
                     else:
                         stats["size_distribution"]["huge"] += 1
-                    
+
                     # Track largest files
                     largest_files.append((file_info.size, item))
                     largest_files.sort(reverse=True)
                     largest_files = largest_files[:10]  # Keep top 10
-                    
+
                     # Track oldest/newest
                     if file_info.modified_time < oldest_time:
                         oldest_time = file_info.modified_time
                         stats["oldest_file"] = str(item)
-                    
+
                     if file_info.modified_time > newest_time:
                         newest_time = file_info.modified_time
                         stats["newest_file"] = str(item)
-                
+
                 except OSError:
                     continue
-            
+
             # Count directories
             for item in root.rglob('*'):
                 if item.is_dir():
                     stats["dir_count"] += 1
-            
+
             # Finalize stats
             stats["total_size_mb"] = stats["total_size"] / (1024 * 1024)
             stats["total_size_gb"] = stats["total_size_mb"] / 1024
@@ -440,7 +440,7 @@ class DirectoryTraversal:
                 {"path": str(path), "size": size, "size_mb": size / (1024 * 1024)}
                 for size, path in largest_files
             ]
-            
+
             # Calculate subdirectory stats if requested
             if include_subdirs:
                 for subdir in root.iterdir():
@@ -449,29 +449,29 @@ class DirectoryTraversal:
                             subdir, include_subdirs=False
                         )
                         stats["subdirectories"][subdir.name] = subdir_stats
-        
+
         except Exception as e:
             stats["error"] = str(e)
             log.error(f"Error calculating directory stats for {root}", exception=e)
-        
+
         return stats
-    
+
     @staticmethod
     def find_empty_directories(root: Path) -> List[Path]:
         """
         Find all empty directories in a tree.
-        
+
         Args:
             root: Root directory to search
-            
+
         Returns:
             List of empty directory paths
         """
         empty_dirs = []
-        
+
         if not root.exists() or not root.is_dir():
             return empty_dirs
-        
+
         try:
             for item in root.rglob('*'):
                 if item.is_dir():
@@ -482,38 +482,38 @@ class DirectoryTraversal:
                     except OSError:
                         # Permission denied or other error
                         continue
-        
+
         except Exception as e:
             log.error(f"Error finding empty directories in {root}", exception=e)
-        
+
         return empty_dirs
-    
+
     @staticmethod
     def find_broken_symlinks(root: Path) -> List[Path]:
         """
         Find all broken symbolic links in a tree.
-        
+
         Args:
             root: Root directory to search
-            
+
         Returns:
             List of broken symlink paths
         """
         broken_links = []
-        
+
         if not root.exists() or not root.is_dir():
             return broken_links
-        
+
         try:
             for item in root.rglob('*'):
                 if item.is_symlink() and not item.exists():
                     broken_links.append(item)
-        
+
         except Exception as e:
             log.error(f"Error finding broken symlinks in {root}", exception=e)
-        
+
         return broken_links
-    
+
     @staticmethod
     def find_large_files(
         root: Path,
@@ -522,21 +522,21 @@ class DirectoryTraversal:
     ) -> List[Dict[str, Any]]:
         """
         Find large files in a directory tree.
-        
+
         Args:
             root: Root directory to search
             min_size_mb: Minimum file size in MB
             limit: Maximum number of files to return
-            
+
         Returns:
             List of file info dictionaries sorted by size
         """
         large_files = []
         min_size_bytes = int(min_size_mb * 1024 * 1024)
-        
+
         try:
             for file_path in DirectoryTraversal.walk_files(
-                root, 
+                root,
                 min_size=min_size_bytes
             ):
                 try:
@@ -550,38 +550,38 @@ class DirectoryTraversal:
                     })
                 except OSError:
                     continue
-            
+
             # Sort by size (largest first)
             large_files.sort(key=lambda x: x["size"], reverse=True)
-            
+
             # Apply limit if specified
             if limit:
                 large_files = large_files[:limit]
-        
+
         except Exception as e:
             log.error(f"Error finding large files in {root}", exception=e)
-        
+
         return large_files
 
 
 class SmartTraversal:
     """
     Intelligent traversal with caching and progress tracking.
-    
+
     Provides optimized traversal for large directory trees with
     progress callbacks and result caching.
     """
-    
+
     def __init__(self, progress_callback: Optional[Callable] = None):
         """
         Initialize smart traversal.
-        
+
         Args:
             progress_callback: Function to call with progress updates
         """
         self.progress_callback = progress_callback
         self.cache = {}
-        
+
     def traverse_with_progress(
         self,
         roots: Union[Path, List[Path]],
@@ -589,33 +589,33 @@ class SmartTraversal:
     ) -> Iterator[Path]:
         """
         Traverse with progress reporting.
-        
+
         Args:
             roots: Single root directory or list of root directories
             **kwargs: Arguments passed to walk_files
-            
+
         Yields:
             Path objects with progress updates
         """
         # First pass: estimate total files for progress
         total_estimate = sum(1 for _ in DirectoryTraversal.walk_files(roots, **kwargs))
-        
+
         if self.progress_callback:
             self.progress_callback(0, total_estimate, "Starting traversal...")
-        
+
         # Second pass: actual traversal with progress
         processed = 0
         for file_path in DirectoryTraversal.walk_files(roots, **kwargs):
             yield file_path
             processed += 1
-            
+
             if self.progress_callback and processed % 100 == 0:
                 self.progress_callback(
                     processed,
                     total_estimate,
                     f"Processed {processed}/{total_estimate} files"
                 )
-        
+
         if self.progress_callback:
             self.progress_callback(
                 processed,
@@ -637,10 +637,10 @@ def walk_files(
 ) -> Iterator[Path]:
     """
     Standalone function for walking files with multiple path support.
-    
+
     This is a convenience wrapper around DirectoryTraversal.walk_files
     for backward compatibility and simpler imports.
-    
+
     Args:
         roots: Single root directory or list of root directories to traverse
         patterns: Include patterns (glob-style)
@@ -650,7 +650,7 @@ def walk_files(
         min_size: Minimum file size in bytes
         max_size: Maximum file size in bytes (None for unlimited)
         include_hidden: Whether to include hidden files
-        
+
     Yields:
         Path objects for matching files
     """
@@ -672,7 +672,7 @@ def compute_xxh3_hash(path: Path) -> str:
         import xxhash
     except ImportError:
         raise ImportError("xxhash package is required for XXH3 hashing. Install with: pdm add xxhash")
-    
+
     hasher = xxhash.xxh3_64()
     with open(path, 'rb') as f:
         while chunk := f.read(65536):
@@ -788,8 +788,10 @@ def scan_directory(
             compute_hashes = True  # Enable for xxh3 grouping
             exact_grouping = True
             log.debug("Duplicate mode: Algorithms limited to ['xxh3']")
-        elif settings and 'similarity' in settings:
-            algorithms = settings['similarity'].get('enabled_algorithms', ['phash', 'whash'])
+        elif settings and 'criteria' in settings and 'similarity_hash_algorithm' in settings['criteria']:
+            # Use the specific algorithm selected in criteria
+            selected_algorithm = settings['criteria']['similarity_hash_algorithm']
+            algorithms = [selected_algorithm]
         else:
             if search_type == 'similarity':
                 algorithms = ['phash', 'whash']
@@ -818,16 +820,16 @@ def scan_directory(
     # Ensure compute_hashes for similarity (perceptual + grouping)
     if search_type == 'similarity':
         compute_hashes = True
-   
+
     results: List[Dict[str, Any]] = []
     error_details: List[Dict[str, Any]] = []
     file_count = len(unique_paths)
     log.info(f"Scanning {file_count} files from {len(roots)} roots (search_type={search_type})")
-    
+
     processed_count = 0
     if progress_callback:
         progress_callback(processed_count, file_count, "", f"Starting {search_type} scan of {file_count} files...")
-   
+
     groups: Dict[str, List[str]] = defaultdict(list) if exact_grouping else None
 
     for path in unique_paths:
@@ -837,7 +839,7 @@ def scan_directory(
             if progress_callback:
                 progress_callback(processed_count, file_count, str(path), "Scan cancelled.")
             return None
-        
+
         try:
             file_info = FileInfo.from_path(path)
             if file_info.size == 0:
@@ -886,7 +888,7 @@ def scan_directory(
 
             results.append(result)
             processed_count += 1
-            
+
             # Progress reporting with mode-specific status
             if progress_callback:
                 status = f"Processing file {processed_count}/{file_count} ({search_type} mode)"
@@ -895,7 +897,7 @@ def scan_directory(
                 if perceptual_hashes:
                     status += f" (perceptual: {', '.join(perceptual_hashes.keys())})"
                 progress_callback(processed_count, file_count, str(path), status)
-                
+
         except Exception as e:
             import traceback
             log.error(f"Error processing {path}: {e}", exc_info=True)
@@ -938,10 +940,10 @@ def scan_directory(
 def validate_paths(paths: List[Path]) -> List[str]:
     """
     Validate that paths exist and are accessible.
-    
+
     Args:
         paths: List of paths to validate
-        
+
     Returns:
         List of error messages for invalid paths, empty list if all valid
     """

@@ -632,7 +632,8 @@ def find_similar_phash(
     threshold: Optional[int] = None,
     settings: Optional[Dict] = None,
     flat_cache_manager: Optional[FlatCacheManager] = None,
-    search_type: str = 'similarity'
+    search_type: str = 'similarity',
+    algorithm: str = 'phash'
 ) -> List[Group]:
     # Fixed duplicate mode skips
     """
@@ -840,7 +841,7 @@ def find_similar_phash(
         groups.append(group_obj)
         group_id += 1
 
-    logger.info(f"Found {len(groups)} similar pHash groups (threshold={threshold}, n={n}, search_type={search_type})")
+    logger.info(f"Found {len(groups)} similar {algorithm} groups (threshold={threshold}, n={n}, search_type={search_type})")
     return groups
 
 
@@ -1202,7 +1203,8 @@ def find_similar_whash(
     threshold: Optional[int] = None,
     settings: Optional[Dict] = None,
     flat_cache_manager: Optional[FlatCacheManager] = None,
-    search_type: str = 'similarity'
+    search_type: str = 'similarity',
+    algorithm: str = 'whash'
 ) -> List[Group]:
     # Fixed duplicate mode skips
     """
@@ -1534,11 +1536,39 @@ def get_similarity_hash(
         >>> hash_val = get_similarity_hash('/path/to/img.jpg', settings=my_settings)
         >>> print(hash_val)  # 'a1b2c3d4e5f67890'
     """
+    # DEBUG: Log settings structure and algorithm selection process
+    logger.debug(f"get_similarity_hash called for {image_path}")
+    logger.debug(f"  algorithm parameter: {algorithm}")
+    logger.debug(f"  settings provided: {settings is not None}")
+
+    if settings:
+        logger.debug(f"  settings keys: {list(settings.keys())}")
+        if 'criteria' in settings:
+            logger.debug(f"  criteria keys: {list(settings['criteria'].keys())}")
+            logger.debug(f"  similarity_hash_algorithm in criteria: {'similarity_hash_algorithm' in settings['criteria']}")
+        if 'mode' in settings:
+            logger.debug(f"  settings mode: {settings['mode']}")
+
     if algorithm is None:
+        logger.debug("  algorithm not provided, attempting to resolve from settings...")
+
         if settings and 'criteria' in settings and 'similarity_hash_algorithm' in settings['criteria']:
             algorithm = settings['criteria']['similarity_hash_algorithm']
+            logger.debug(f"  resolved algorithm from settings: {algorithm}")
         else:
             algorithm = 'phash'
+            logger.debug(f"  using default algorithm: {algorithm}")
+
+            # Additional debugging for why settings didn't work
+            if settings:
+                if 'criteria' not in settings:
+                    logger.warning("  settings missing 'criteria' key")
+                elif 'similarity_hash_algorithm' not in settings['criteria']:
+                    logger.warning("  settings['criteria'] missing 'similarity_hash_algorithm' key")
+                    if 'mode' in settings:
+                        logger.warning(f"  settings mode is '{settings['mode']}' - this might be expected if mode is 'duplicates'")
+            else:
+                logger.warning("  no settings provided")
 
     if algorithm == 'phash':
         return compute_phash(image_path, settings=settings, flat_cache_manager=flat_cache_manager)
@@ -1582,11 +1612,39 @@ def compute_similarity_hash_batch(
     if not paths:
         raise ValueError("paths list cannot be empty")
 
+    # DEBUG: Log batch algorithm selection
+    logger.debug(f"compute_similarity_hash_batch called for {len(paths)} paths, search_type={search_type}")
+    logger.debug(f"  algorithm parameter: {algorithm}")
+    logger.debug(f"  settings provided: {settings is not None}")
+
+    if settings:
+        logger.debug(f"  settings keys: {list(settings.keys())}")
+        if 'criteria' in settings:
+            logger.debug(f"  criteria keys: {list(settings['criteria'].keys())}")
+            logger.debug(f"  similarity_hash_algorithm in criteria: {'similarity_hash_algorithm' in settings['criteria']}")
+        if 'mode' in settings:
+            logger.debug(f"  settings mode: {settings['mode']}")
+
     if algorithm is None:
+        logger.debug("  algorithm not provided, attempting to resolve from settings...")
+
         if settings and 'criteria' in settings and 'similarity_hash_algorithm' in settings['criteria']:
             algorithm = settings['criteria']['similarity_hash_algorithm']
+            logger.debug(f"  resolved algorithm from settings: {algorithm}")
         else:
             algorithm = 'phash'
+            logger.debug(f"  using default algorithm: {algorithm}")
+
+            # Additional debugging for why settings didn't work
+            if settings:
+                if 'criteria' not in settings:
+                    logger.warning("  settings missing 'criteria' key")
+                elif 'similarity_hash_algorithm' not in settings['criteria']:
+                    logger.warning("  settings['criteria'] missing 'similarity_hash_algorithm' key")
+                    if 'mode' in settings:
+                        logger.warning(f"  settings mode is '{settings['mode']}' - this might be expected if mode is 'duplicates'")
+            else:
+                logger.warning("  no settings provided")
 
     if algorithm == 'phash':
         return compute_phash_batch(paths, settings=settings, flat_cache_manager=flat_cache_manager, algorithm=algorithm)
@@ -1846,11 +1904,38 @@ def find_similar_images(
         raise ValueError("paths list cannot be empty")
 
     # Determine algorithm
+    logger.debug(f"find_similar_images determining algorithm for {len(paths)} paths")
+    logger.debug(f"  algorithm parameter: {algorithm}")
+    logger.debug(f"  settings provided: {settings is not None}")
+
+    if settings:
+        logger.debug(f"  settings keys: {list(settings.keys())}")
+        if 'criteria' in settings:
+            logger.debug(f"  criteria keys: {list(settings['criteria'].keys())}")
+            logger.debug(f"  similarity_hash_algorithm in criteria: {'similarity_hash_algorithm' in settings['criteria']}")
+        if 'mode' in settings:
+            logger.debug(f"  settings mode: {settings['mode']}")
+
     if algorithm is None:
+        logger.debug("  algorithm not provided, attempting to resolve from settings...")
+
         if settings and 'criteria' in settings and 'similarity_hash_algorithm' in settings['criteria']:
             algorithm = settings['criteria']['similarity_hash_algorithm']
+            logger.debug(f"  resolved algorithm from settings: {algorithm}")
         else:
             algorithm = 'phash'
+            logger.debug(f"  using default algorithm: {algorithm}")
+
+            # Additional debugging for why settings didn't work
+            if settings:
+                if 'criteria' not in settings:
+                    logger.warning("  settings missing 'criteria' key")
+                elif 'similarity_hash_algorithm' not in settings['criteria']:
+                    logger.warning("  settings['criteria'] missing 'similarity_hash_algorithm' key")
+                    if 'mode' in settings:
+                        logger.warning(f"  settings mode is '{settings['mode']}' - this might be expected if mode is 'duplicates'")
+            else:
+                logger.warning("  no settings provided")
 
     if algorithm not in ['exact', 'phash', 'whash']:
         raise ValueError(f"Unsupported algorithm: {algorithm}. Supported: 'exact', 'phash', 'whash'")
@@ -1941,9 +2026,9 @@ def find_similar_images(
 
     # Phase 3: Perform similarity clustering on representatives
     if algorithm == 'phash':
-        rep_groups = find_similar_phash(rep_hashes, threshold, settings, flat_cache_manager, search_type=search_type)
+        rep_groups = find_similar_phash(rep_hashes, threshold, settings, flat_cache_manager, search_type=search_type, algorithm=algorithm)
     elif algorithm == 'whash':
-        rep_groups = find_similar_whash(rep_hashes, threshold, settings, flat_cache_manager, search_type=search_type)
+        rep_groups = find_similar_whash(rep_hashes, threshold, settings, flat_cache_manager, search_type=search_type, algorithm=algorithm)
     else:
         raise ValueError(f"Unexpected perceptual algorithm: {algorithm}")
 
