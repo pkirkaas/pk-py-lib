@@ -20,7 +20,7 @@ from pk_py_lib.core.image.similarity.phases import (
     phase_similarity_clustering,
     execute_all_phases
 )
-from pk_py_lib.core.image.similarity.types import SimilarityError, ExactDuplicateSet
+from pk_py_lib.core.image.similarity.similarity_types import SimilarityError, ExactDuplicateSet
 from pk_py_lib.gui.dialog_models import Group
 
 

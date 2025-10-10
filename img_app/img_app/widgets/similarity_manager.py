@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Callable
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWidgets import (
@@ -48,11 +48,13 @@ from src.pk_py_lib.core.image.similarity import (
     find_similar_images,
     get_image_metadata,
 )
+from src.pk_py_lib.core.image.similarity.phases import PhaseContext, execute_all_phases
 from src.pk_py_lib.core.settings_profiles import get_active_profile_settings
 from src.pk_py_lib.core.settings_schema import validate_settings_schema
 from src.pk_py_lib.core.utils.thresholds import internal_to_ui_percent
 from src.pk_py_lib.gui.dialog_models import FileItem, Group, GroupStats
 from src.pk_py_lib.gui.dialogs.base_file_manager_dialog import BaseFileManagerDialog
+from src.pk_py_lib.gui.dialogs.progress_dialog import ProgressDialog
 from src.pk_py_lib.gui.models import FileGroupModel, PoolDirection, SelectionStore
 from src.pk_py_lib.gui.utils.messages import show_selectable_error, show_selectable_info
 from src.pk_py_lib.gui.widgets import FileGroupView, SimilarityPreviewPane
@@ -724,6 +726,147 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
 
         dialog_groups = self._convert_similarity_groups(sim_groups)
         return dialog_groups, pool_map, total_files
+
+    @log_errors()
+    def _compute_groups_from_database_with_progress(
+        self,
+        algorithm: str,
+        threshold: int,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        cancellation_flag: Optional[List[bool]] = None,
+    ) -> Tuple[List[Group], Dict[str, str], int]:
+        """Compute similarity groups using PhaseContext with enhanced progress reporting.
+
+        Args:
+            algorithm: Hash algorithm to use ('phash' or 'whash')
+            threshold: Similarity threshold for clustering
+            progress_callback: Optional callback function for progress updates
+            cancellation_flag: Optional list for cancellation support
+
+        Returns:
+            Tuple of (groups, pool_map, total_files)
+        """
+        hashes: List[Dict[str, str]] = []
+        pool_map: Dict[str, str] = {}
+
+        # Use FlatCacheManager to get hashes instead of old cache.db
+        if not hasattr(self, '_flat_cache_manager'):
+            show_selectable_error(
+                self,
+                "Cache Unavailable",
+                "FlatCacheManager instance is required to compute similarity groups.",
+            )
+            return [], {}, 0
+
+        # Reset counters before processing
+        self._flat_cache_manager.reset_counters()
+
+        try:
+            # For similarity, compute all perceptual hashes + xxh3
+            all_types = ['phash', 'whash', 'xxh3']
+
+            # Get paths from profile payload to pass to get_entries()
+            search_paths = []
+            if self._profile_payload and "pools" in self._profile_payload:
+                pools = self._profile_payload["pools"]
+                for pool_name in ["A", "B"]:
+                    if pool_name in pools:
+                        search_paths.extend(pools[pool_name].get("paths", []))
+
+            # Get entries for the search paths, fallback to empty list if no paths
+            entries = self._flat_cache_manager.get_entries(search_paths or [])
+
+            # Get all required hashes from cache
+            hashes_dict = self._flat_cache_manager.get_hashes(list(entries.keys()), all_types, search_type='similarity')
+
+            # Extract paths for PhaseContext processing
+            paths = [path for path in entries.keys() if self._is_path_valid_for_similarity(path, hashes_dict)]
+
+        except Exception as e:
+            LOGGER.error(f"Failed to get hashes from flat cache: {e}", exception=e)
+            return [], {}, 0
+
+        if not paths:
+            LOGGER.info("No valid paths found for similarity computation")
+            return [], {}, 0
+
+        try:
+            # Create PhaseContext with progress support
+            context = PhaseContext(
+                image_paths=paths,
+                algorithm=algorithm,
+                threshold=threshold,
+                settings=self._profile_payload or {},
+                flat_cache_manager=self._flat_cache_manager,
+                search_type='similarity',
+                max_workers=4,
+                progress_callback=progress_callback,
+                cancellation_flag=cancellation_flag,
+                total_files=len(paths)
+            )
+
+            # Execute all phases with progress reporting
+            final_context = execute_all_phases(context)
+
+            # Check if operation was cancelled
+            if cancellation_flag and cancellation_flag[0]:
+                LOGGER.info("Similarity computation was cancelled")
+                return [], {}, len(paths)
+
+            # Convert core similarity groups to dialog groups
+            dialog_groups = self._convert_similarity_groups(final_context.final_groups)
+
+            # Build pool mapping for the valid paths
+            for path in paths:
+                pool = self._get_pool_for_path(path, self._profile_payload)
+                pool_map[path] = pool
+
+            total_files = len(paths)
+
+            # Print cache summary after processing
+            cache_hits, cache_misses, invalid_entries = self._flat_cache_manager.get_counters()
+            print(f"Cache Summary:\n - Hits: {cache_hits}\n - Misses: {cache_misses}\n - Invalid Entries: {invalid_entries}\nTotal Files Processed: {total_files}")
+            self._flat_cache_manager.reset_counters()
+
+            LOGGER.info(f"PhaseContext similarity computation completed: {len(dialog_groups)} groups from {len(paths)} paths")
+            return dialog_groups, pool_map, total_files
+
+        except Exception as e:
+            LOGGER.error(f"PhaseContext similarity computation failed: {e}", exception=e)
+            return [], {}, len(paths)
+
+    @log_errors()
+    def _is_path_valid_for_similarity(self, path: str, hashes_dict: Dict[str, Dict[str, str]]) -> bool:
+        """Check if a path has valid data for similarity computation.
+
+        Args:
+            path: File path to validate
+            hashes_dict: Dictionary of path -> algorithm -> hash mappings
+
+        Returns:
+            True if path has required data, False otherwise
+        """
+        if path not in hashes_dict:
+            return False
+
+        path_hashes = hashes_dict[path]
+
+        # For similarity, we need either phash or whash depending on algorithm
+        # Also need xxh3 for exact duplicate detection
+        algorithm = self._algorithm_combo.currentData() or "phash"
+        algorithm = str(algorithm).lower()
+
+        required_algorithms = ['xxh3']  # Always need for exact duplicate detection
+
+        if algorithm in ['phash', 'whash']:
+            required_algorithms.append(algorithm)
+
+        for alg in required_algorithms:
+            if alg not in path_hashes or not path_hashes[alg]:
+                LOGGER.debug(f"Path {path} missing required {alg} hash")
+                return False
+
+        return True
 
     @log_errors()
     def _convert_similarity_groups(
@@ -1449,7 +1592,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
 
     @log_errors()
     def _on_compute_clicked(self) -> None:
-        """Compute similarity groups via database hashes using ApiResponse.
+        """Compute similarity groups via database hashes using ApiResponse with ProgressDialog integration.
         GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
         """
         if self._db_manager is None:
@@ -1466,18 +1609,55 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             "Computing similarity groups",
             variables={"algorithm": algorithm, "threshold": threshold},
         )
+
+        # Create progress dialog for the similarity computation
+        progress_dialog = ProgressDialog(
+            parent=self,
+            title=f"Computing Similarity Groups - {algorithm.upper()}"
+        )
+
+        # Create cancellation flag for PhaseContext
+        cancellation_flag = [False]
+
+        # Set up cancellation handling
+        def handle_cancellation():
+            cancellation_flag[0] = True
+            LOGGER.info("Similarity computation cancelled by user")
+
+        progress_dialog.cancellation_requested.connect(handle_cancellation)
+
+        # Create progress callback bridge function
+        def progress_callback(current: int, total: int, message: str):
+            """Bridge function to convert PhaseContext progress to ProgressDialog format."""
+            try:
+                # Calculate percentage (0-100)
+                if total > 0:
+                    percentage = min(100, max(0, int((current / total) * 100)))
+                else:
+                    percentage = 0
+
+                # Update progress dialog
+                progress_dialog.set_progress(percentage, message)
+
+                LOGGER.debug(f"Progress update: {percentage}% - {message}")
+            except Exception as e:
+                LOGGER.error(f"Error updating progress dialog: {e}", exception=e)
+
         try:
-            groups, pool_map, total_files = self._compute_groups_from_database(algorithm, threshold)
+            # Show progress dialog as modal
+            progress_dialog.show()
+
+            # Compute groups with progress reporting using PhaseContext
+            groups, pool_map, total_files = self._compute_groups_from_database_with_progress(
+                algorithm,
+                threshold,
+                progress_callback,
+                cancellation_flag
+            )
+
             # Update cache statistics after computation
             self._update_cache_stats_display()
-        except sqlite3.Error as exc:
-            LOGGER.exception("Database error in similarity grouping")
-            show_selectable_error(
-                self,
-                "Database Error",
-                f"Database query failed: {exc}",
-            )
-            return
+
         except Exception as exc:  # pylint: disable=broad-except
             LOGGER.exception("Similarity grouping failed")
             show_selectable_error(
@@ -1486,6 +1666,9 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 f"Failed to compute similarity groups:\n\n{exc}",
             )
             return
+        finally:
+            # Always close the progress dialog
+            progress_dialog.accept()
 
         if not groups:
             show_selectable_info(

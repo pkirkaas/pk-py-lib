@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Tuple, Dict, Any, Optional, Set
+from typing import List, Tuple, Dict, Any, Optional, Set, Callable
 import numpy as np
 
 from pk_py_lib.core.filesystem.identity import compute_xxh3
@@ -32,10 +32,23 @@ logger = get_logger(__name__)
 
 class PhaseContext:
     """
-    Context object passed between phases to maintain state.
+    Context object passed between phases to maintain state and support progress reporting.
 
-    This class carries all the data and configuration needed
-    by the processing phases, avoiding parameter passing complexity.
+    This class carries all the data and configuration needed by the processing phases,
+    avoiding parameter passing complexity. It also provides progress callback and
+    cancellation support for long-running operations.
+
+    Attributes:
+        image_paths (List[str]): List of absolute file paths to process.
+        algorithm (Optional[str]): 'exact', 'phash', or 'whash' algorithm selection.
+        threshold (Optional[int]): Max Hamming distance for perceptual clustering.
+        settings (Optional[Dict]): Algorithm selection and threshold overrides.
+        flat_cache_manager (Optional[FlatCacheManager]): Cache manager for hash computations.
+        search_type (str): 'similarity' or 'duplicate' search type.
+        max_workers (int): Maximum number of worker threads for parallel processing.
+        progress_callback (Optional[Callable[[int, int, str], None]]): Function to call for progress updates.
+        cancellation_flag (Optional[List[bool]]): Mutable flag list for external cancellation control.
+        total_files (int): Total number of files for progress calculation.
     """
 
     def __init__(
@@ -46,10 +59,13 @@ class PhaseContext:
         settings: Optional[Dict] = None,
         flat_cache_manager: Optional[FlatCacheManager] = None,
         search_type: str = 'similarity',
-        max_workers: int = 4
+        max_workers: int = 4,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        cancellation_flag: Optional[List[bool]] = None,
+        total_files: Optional[int] = None
     ):
         """
-        Initialize phase context with all processing parameters.
+        Initialize phase context with all processing parameters and progress support.
 
         Args:
             image_paths (List[str]): List of absolute file paths to process.
@@ -59,6 +75,14 @@ class PhaseContext:
             flat_cache_manager (Optional[FlatCacheManager]): For caching all hash computations and metadata.
             search_type (str): 'similarity' or 'duplicate' (affects computations).
             max_workers (int): Maximum number of worker threads for parallel processing.
+            progress_callback (Optional[Callable[[int, int, str], None]]): Function called to report progress.
+                Should accept (current: int, total: int, message: str) parameters.
+            cancellation_flag (Optional[List[bool]]): Single-element list containing cancellation status.
+                External code can set [True] to request cancellation. Defaults to new list if None.
+            total_files (Optional[int]): Total files for progress calculation. Defaults to len(image_paths).
+
+        Note:
+            All new parameters are optional to maintain backward compatibility with existing code.
         """
         self.image_paths = image_paths
         self.algorithm = algorithm
@@ -68,6 +92,11 @@ class PhaseContext:
         self.search_type = search_type
         self.max_workers = max_workers
 
+        # Progress and cancellation support
+        self.progress_callback = progress_callback
+        self.cancellation_flag = cancellation_flag if cancellation_flag is not None else [False]
+        self.total_files = total_files if total_files is not None else len(image_paths)
+
         # Phase-specific data
         self.exact_sets: List[ExactDuplicateSet] = []
         self.path_to_set_id_map: Dict[str, Optional[int]] = {}
@@ -76,6 +105,42 @@ class PhaseContext:
         self.representative_groups: List[Group] = []
         self.final_groups: List[Group] = []
         self.stats: Dict[str, Any] = {}
+
+    def report_progress(self, current: int, message: str = "") -> None:
+        """
+        Report progress to the callback function if available.
+
+        Args:
+            current (int): Current progress count (0 to total_files).
+            message (str): Optional progress message.
+
+        Note:
+            This method handles None callback gracefully - no exception will be raised.
+        """
+        if self.progress_callback is not None:
+            try:
+                self.progress_callback(current, self.total_files, message)
+            except Exception as e:
+                logger.warning(f"Progress callback failed: {e}")
+
+    def is_cancelled(self) -> bool:
+        """
+        Check if operation has been cancelled.
+
+        Returns:
+            bool: True if cancellation has been requested, False otherwise.
+        """
+        return self.cancellation_flag[0] if self.cancellation_flag else False
+
+    def check_cancellation(self) -> None:
+        """
+        Check for cancellation and raise exception if cancelled.
+
+        Raises:
+            SimilarityError: If cancellation has been requested.
+        """
+        if self.is_cancelled():
+            raise SimilarityError("Operation cancelled by user")
 
 
 def phase_algorithm_resolution(context: PhaseContext) -> PhaseContext:
@@ -95,9 +160,13 @@ def phase_algorithm_resolution(context: PhaseContext) -> PhaseContext:
         SimilarityError: If parameters are invalid
     """
     logger.info(f"Starting Phase 1: Algorithm Resolution for {len(context.image_paths)} paths")
+    context.report_progress(0, "Starting algorithm resolution...")
 
     if not context.image_paths:
         raise SimilarityError("paths list cannot be empty")
+
+    # Check for cancellation after initial validation
+    context.check_cancellation()
 
     # Determine algorithm
     if context.algorithm is None:
@@ -115,6 +184,8 @@ def phase_algorithm_resolution(context: PhaseContext) -> PhaseContext:
     context.stats['resolved_algorithm'] = context.algorithm
     context.stats['search_type'] = context.search_type
 
+    # Report 25% progress when algorithm validation is complete
+    context.report_progress(len(context.image_paths) // 4, "Algorithm validation complete (25%)")
     logger.info("Phase 1 complete: Algorithm Resolution")
     return context
 
@@ -136,33 +207,98 @@ def phase_exact_duplicate_detection(context: PhaseContext) -> PhaseContext:
         SimilarityError: If duplicate detection fails
     """
     logger.info(f"Starting Phase 2: Exact Duplicate Detection for {len(context.image_paths)} paths")
+    context.report_progress(len(context.image_paths) // 4, "Starting exact duplicate detection...")
+
+    # Check for cancellation at start of phase
+    context.check_cancellation()
 
     # Note: We still perform exact duplicate detection even in exact mode
     # because we need to identify the duplicate sets for grouping
 
     # Compute XXH3 hashes for all paths (use cache if available)
     path_to_hash: Dict[str, Optional[str]] = {}
+
+    # File list building phase - start
+    context.report_progress(len(context.image_paths) // 4, "File list building phase started...")
+    logger.info("File list building phase: Preparing to process file list and check cache")
+
     if context.flat_cache_manager:
         try:
+            # Cache checking phase - start
+            context.report_progress(len(context.image_paths) // 4, "Cache checking phase started - checking existing hash cache...")
+            logger.info(f"Cache checking phase: Querying cache for {len(context.image_paths)} files")
+
             hashes = context.flat_cache_manager.get_hashes(context.image_paths, ['xxh3'])
             path_to_hash = {p: h.get('xxh3') for p, h in hashes.items()}
-            logger.debug(f"Retrieved {sum(1 for h in path_to_hash.values() if h is not None)}/{len(context.image_paths)} XXH3 hashes from cache")
+
+            # Cache checking phase - completion with stats
+            files_found_in_cache = sum(1 for h in path_to_hash.values() if h is not None)
+            files_to_compute = sum(1 for h in path_to_hash.values() if h is None)
+            context.report_progress(len(context.image_paths) // 4, f"Cache checking complete: {files_found_in_cache}/{len(context.image_paths)} files found in cache, {files_to_compute} files need computation")
+            logger.info(f"Cache checking complete: {files_found_in_cache} files found in cache, {files_to_compute} files require computation")
+
         except Exception as e:
             logger.warning(f"Cache failure for XXH3; falling back to direct computation: {e}")
             path_to_hash = {}
+            files_to_compute = len(context.image_paths)
+            context.report_progress(len(context.image_paths) // 4, f"Cache checking failed: {e}, falling back to direct computation for all {files_to_compute} files")
     else:
         path_to_hash = {}
+        files_to_compute = len(context.image_paths)
+        context.report_progress(len(context.image_paths) // 4, f"No cache available: Direct computation required for all {files_to_compute} files")
 
     # Direct computation for misses or no cache
-    for path in context.image_paths:
+    files_to_process = len(context.image_paths)
+    files_computed = 0
+    files_with_errors = 0
+
+    # Cache update phase - start
+    if files_to_compute > 0:
+        context.report_progress(len(context.image_paths) // 4, f"Cache update phase started - computing {files_to_compute} missing hashes...")
+        logger.info(f"Cache update phase: Computing hashes for {files_to_compute} files not found in cache")
+
+    for i, path in enumerate(context.image_paths):
         if path not in path_to_hash or path_to_hash[path] is None:
             try:
                 hash_val = compute_xxh3(Path(path))
                 path_to_hash[path] = hash_val
+                files_computed += 1
                 logger.debug(f"Computed XXH3 for {path}: {hash_val[:8]}...")
             except Exception as e:
                 logger.warning(f"Failed to compute XXH3 for {path}: {e}")
                 path_to_hash[path] = None
+                files_with_errors += 1
+
+        # Periodic progress updates during hash computation with granular cache update tracking
+        if (i + 1) % max(1, files_to_process // 20) == 0:  # Update ~5% intervals or every file for small batches
+            computed_so_far = files_computed
+            errors_so_far = files_with_errors
+            total_progress = files_to_compute
+
+            # Calculate progress between 25% and 50% during hash computation
+            phase2_progress_base = len(context.image_paths) // 4  # 25%
+            phase2_progress_range = len(context.image_paths) // 4  # 25% range for phase 2
+            current_phase2_progress = int(phase2_progress_base + (i + 1) / files_to_process * phase2_progress_range)
+
+            if files_to_compute > 0:
+                context.report_progress(current_phase2_progress, f"Cache update: {computed_so_far}/{total_progress} computed, {errors_so_far} errors ({i + 1}/{files_to_process} total)")
+            else:
+                context.report_progress(current_phase2_progress, f"Processing files... ({i + 1}/{files_to_process} files)")
+            context.check_cancellation()
+
+        # Additional cancellation check for every file (frequent but lightweight)
+        if (i + 1) % max(1, files_to_process // 100) == 0:  # Check cancellation ~1% intervals
+            context.check_cancellation()
+
+    # Cache completion status
+    if files_to_compute > 0:
+        total_cached = files_found_in_cache if context.flat_cache_manager else 0
+        context.report_progress(len(context.image_paths) // 4, f"Cache update complete: {files_computed}/{files_to_compute} computed, {files_with_errors} errors, {total_cached} from cache")
+        logger.info(f"Cache update complete: {files_computed} hashes computed, {files_with_errors} errors, {total_cached} retrieved from cache")
+
+    # File list building phase - completion
+    context.report_progress(len(context.image_paths) // 4, f"File list building phase complete: Processed {files_to_process} files")
+    logger.info(f"File list building phase complete: {files_to_process} files processed, {files_computed} hashes computed, {files_with_errors} errors")
 
     # Group by hash
     from collections import defaultdict
@@ -204,6 +340,8 @@ def phase_exact_duplicate_detection(context: PhaseContext) -> PhaseContext:
     context.stats['exact_sets_count'] = len(exact_sets)
     context.stats['exact_duplicates_count'] = sum(len(s.paths) for s in exact_sets)
 
+    # Report 50% progress when exact duplicate detection is complete
+    context.report_progress(len(context.image_paths) // 2, "Exact duplicate detection complete (50%)")
     logger.info(f"Phase 2 complete: Detected {len(exact_sets)} exact duplicate sets from {len(context.image_paths)} paths "
                 f"({context.stats['exact_duplicates_count']} duplicates total)")
     return context
@@ -226,11 +364,16 @@ def phase_perceptual_hash_computation(context: PhaseContext) -> PhaseContext:
         SimilarityError: If hash computation fails
     """
     logger.info(f"Starting Phase 3: Perceptual Hash Computation")
+    context.report_progress(len(context.image_paths) // 2, "Starting perceptual hash computation...")
+
+    # Check for cancellation at start of phase
+    context.check_cancellation()
 
     # Skip perceptual hash computation for exact mode
     if context.algorithm == 'exact':
         logger.info("Skipping perceptual hash computation in exact mode")
         context.stats['perceptual_hashes_count'] = 0
+        context.report_progress(3 * len(context.image_paths) // 4, "Skipped perceptual hashing in exact mode")
         return context
 
     # Identify unique representatives
@@ -255,6 +398,12 @@ def phase_perceptual_hash_computation(context: PhaseContext) -> PhaseContext:
                 f"{len(all_reps)} unique reps")
 
     # Compute perceptual hashes only for representatives
+    context.report_progress(3 * len(context.image_paths) // 4, f"Computing perceptual hashes for {len(all_reps)} representatives...")
+    context.check_cancellation()
+
+    # Add cancellation check before starting hash computation
+    context.check_cancellation()
+
     perceptual_hashes = compute_similarity_hash_batch(
         all_reps,
         algorithm=context.algorithm,
@@ -262,6 +411,9 @@ def phase_perceptual_hash_computation(context: PhaseContext) -> PhaseContext:
         flat_cache_manager=context.flat_cache_manager,
         search_type=context.search_type
     )
+
+    # Additional cancellation check after hash computation completes
+    context.check_cancellation()
 
     # Log sample hashes to verify correct algorithm
     logger.info(f"Computed {len(perceptual_hashes)} {context.algorithm} hashes")
@@ -276,6 +428,8 @@ def phase_perceptual_hash_computation(context: PhaseContext) -> PhaseContext:
     context.stats['perceptual_hashes_count'] = len(valid_hashes)
     context.stats['representative_paths_count'] = len(all_reps)
 
+    # Report 75% progress when perceptual hash computation is complete
+    context.report_progress(3 * len(context.image_paths) // 4, "Perceptual hash computation complete (75%)")
     logger.info(f"Phase 3 complete: Computed {len(valid_hashes)}/{len(all_reps)} valid perceptual hashes")
     return context
 
@@ -297,6 +451,10 @@ def phase_similarity_clustering(context: PhaseContext) -> PhaseContext:
         SimilarityError: If clustering fails
     """
     logger.info(f"Starting Phase 4: Similarity Clustering and Group Expansion")
+    context.report_progress(len(context.image_paths), "Starting similarity clustering...")
+
+    # Check for cancellation at start of phase
+    context.check_cancellation()
 
     # Handle exact mode
     if context.algorithm == 'exact':
@@ -370,6 +528,14 @@ def phase_similarity_clustering(context: PhaseContext) -> PhaseContext:
     # Perform similarity clustering on representatives
     from .clustering import find_similar_phash, find_similar_whash
 
+    # Comparison phase start
+    context.report_progress(len(context.image_paths), f"Comparison phase started: Clustering {len(rep_hashes)} representatives using {context.algorithm}...")
+    logger.info(f"Comparison phase started: Beginning similarity comparison for {len(rep_hashes)} representatives")
+    context.check_cancellation()
+
+    # Add cancellation check before starting clustering computation
+    context.check_cancellation()
+
     if context.algorithm == 'phash':
         rep_groups = find_similar_phash(
             rep_hashes,
@@ -391,6 +557,9 @@ def phase_similarity_clustering(context: PhaseContext) -> PhaseContext:
     else:
         raise SimilarityError(f"Unexpected perceptual algorithm: {context.algorithm}")
 
+    # Add cancellation check after clustering computation completes
+    context.check_cancellation()
+
     context.representative_groups = rep_groups
     logger.debug(f"Phase 4: Clustered {len(valid_reps)} reps into {len(rep_groups)} perceptual groups")
 
@@ -399,7 +568,11 @@ def phase_similarity_clustering(context: PhaseContext) -> PhaseContext:
     perceptual_group_id = 1
     quality_evaluator = get_active_image_quality_evaluator() if context.search_type != 'duplicate' else None
 
-    for rep_group in rep_groups:
+    for i, rep_group in enumerate(rep_groups):
+        # Periodic cancellation checks during group expansion (can be slow for many groups)
+        if i > 0 and i % max(1, len(rep_groups) // 10) == 0:  # Check every 10% of groups
+            context.check_cancellation()
+
         expanded_items = []
         ref_path = rep_group.ref_path  # Keep original ref (a rep)
 
@@ -469,11 +642,16 @@ def phase_similarity_clustering(context: PhaseContext) -> PhaseContext:
             final_groups.append(final_group)
             perceptual_group_id += 1
 
+    # Final cancellation check before completing phase
+    context.check_cancellation()
+
     # Store results in context
     context.final_groups = final_groups
     context.stats['final_groups_count'] = len(final_groups)
     context.stats['representative_groups_count'] = len(rep_groups)
 
+    # Report 100% progress when clustering is complete
+    context.report_progress(len(context.image_paths), f"Clustering complete (100%): {len(final_groups)} groups found")
     logger.info(f"Phase 4 complete: Perceptual mode ({context.algorithm}) found {len(final_groups)} expanded groups from {len(rep_groups)} rep groups")
     return context
 
@@ -511,4 +689,10 @@ def execute_all_phases(context: PhaseContext) -> PhaseContext:
             raise SimilarityError(f"Phase {phase_name} failed: {e}") from e
 
     logger.info(f"All phases completed successfully. Found {context.stats.get('final_groups_count', 0)} final groups.")
+
+    # Final progress report
+    if context.progress_callback is not None:
+        final_message = f"All phases complete! Found {context.stats.get('final_groups_count', 0)} groups."
+        context.report_progress(context.total_files, final_message)
+
     return context
