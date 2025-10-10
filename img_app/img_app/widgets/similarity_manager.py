@@ -820,7 +820,8 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         self._group_lookup = {group.ref_path: group for group in self._model.groups}
         self._group_view.update_model(model)
         self.update_groups(list(model.groups))
-        self._select_first_group()
+        # Commented out to prevent automatic preview display on initialization
+        # self._select_first_group()
 
     @log_errors()
     def _select_first_group(self) -> None:
