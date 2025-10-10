@@ -56,6 +56,85 @@ import logging
 from collections import defaultdict
 logger = logging.getLogger(__name__)
 
+# Test script for circular reference fix
+def test_circular_reference_fix():
+    """Test the circular reference path filtering."""
+    # Create a mock ScanWorker instance just to test the method
+    class MockScanWorker:
+        def __init__(self):
+            self.mode = 'duplicate'
+
+        def _is_circular_reference_path(self, path):
+            """Copy of the method from ScanWorker for testing."""
+            try:
+                path_str = str(path).lower()
+                abs_path_str = str(path.resolve()).lower()
+
+                # List of Windows system paths that commonly cause circular references
+                problematic_paths = [
+                    r"\users\*\appdata\local\application data",
+                    r"\users\*\appdata\roaming\microsoft\windows",
+                    r"\users\*\appdata\local\microsoft\windows",
+                    r"\programdata\microsoft\windows",
+                    r"\windows\system32",
+                    r"\windows\syswow64",
+                    r"\windows\winsxs",
+                    r"\users\*\application data",  # Older Windows versions
+                ]
+
+                # Check if the path matches any problematic patterns
+                for problematic in problematic_paths:
+                    # Convert Windows path pattern to a pattern that works with fnmatch
+                    import fnmatch
+                    # Use absolute path for more accurate matching
+                    if fnmatch.fnmatch(abs_path_str, f"*{problematic}"):
+                        return True
+
+                # Additional check for specific Application Data junction
+                if r"\appdata\local\application data" in abs_path_str:
+                    return True
+
+                # Check for Windows system directories that shouldn't be scanned
+                windows_system_dirs = [
+                    r"\windows",
+                    r"\program files",
+                    r"\program files (x86)",
+                    r"\programdata",
+                ]
+
+                for sys_dir in windows_system_dirs:
+                    if abs_path_str.startswith(f"c:{sys_dir}"):
+                        return True
+
+                return False
+
+            except Exception:
+                # If we can't resolve or check the path, err on the side of caution
+                return True
+
+    worker = MockScanWorker()
+
+    # Test paths
+    from pathlib import Path
+
+    # Test Application Data path
+    appdata_path = Path(r"C:\Users\pkirk\AppData\Local\Application Data")
+    print(f"Testing Application Data path: {appdata_path}")
+    print(f"Is circular reference: {worker._is_circular_reference_path(appdata_path)}")
+
+    # Test normal path
+    normal_path = Path(r"C:\Users\pkirk\Documents")
+    print(f"Testing normal path: {normal_path}")
+    print(f"Is circular reference: {worker._is_circular_reference_path(normal_path)}")
+
+    # Test Windows system path
+    windows_path = Path(r"C:\Windows\System32")
+    print(f"Testing Windows path: {windows_path}")
+    print(f"Is circular reference: {worker._is_circular_reference_path(windows_path)}")
+
+if __name__ == "__main__":
+    test_circular_reference_fix()
+
 # Module-level logger for scan workflow; ERROR+ routes to STDERR via console output
 LOGGER = get_logger("img_app.scan")
 
@@ -255,6 +334,10 @@ class ScanWorker(QThread):
         "No valid root directories provided" in duplicates mode when profile paths include files
         (e.g., [WindowsPath('V:/Cache/03_crop.jpg'), ...]).
 
+        Additionally, this method now includes validation to prevent circular reference issues
+        by filtering out Windows system paths that commonly contain junction points and circular
+        references, such as Application Data directories.
+
         After filtering, roots are normalized using PathOperations.normalize_paths() and
         deduplicated by removing contained paths with PathOperations.remove_contained_paths().
 
@@ -289,6 +372,14 @@ class ScanWorker(QThread):
         for root in roots:
             try:
                 if root.is_dir():
+                    # Check for Windows system paths that cause circular references
+                    if self._is_circular_reference_path(root):
+                        LOGGER.warning(
+                            f"Skipping Windows system path that causes circular references: {root}. "
+                            f"This path contains junction points that lead to infinite recursion."
+                        )
+                        continue
+
                     valid_roots.append(root)
                 else:
                     # Log warning for files or invalid paths (e.g., non-existent)
@@ -311,6 +402,67 @@ class ScanWorker(QThread):
             pass
 
         return roots
+
+    def _is_circular_reference_path(self, path: Path) -> bool:
+        """
+        Check if a path is likely to cause circular references due to Windows junction points.
+
+        Windows has several junction points in system directories that can cause infinite
+        recursion during directory traversal. This method identifies paths that are known
+        to contain such junction points.
+
+        Args:
+            path: Directory path to check
+
+        Returns:
+            True if the path should be excluded to prevent circular references
+        """
+        try:
+            path_str = str(path).lower()
+            abs_path_str = str(path.resolve()).lower()
+
+            # List of Windows system paths that commonly cause circular references
+            problematic_paths = [
+                r"\users\*\appdata\local\application data",
+                r"\users\*\appdata\roaming\microsoft\windows",
+                r"\users\*\appdata\local\microsoft\windows",
+                r"\programdata\microsoft\windows",
+                r"\windows\system32",
+                r"\windows\syswow64",
+                r"\windows\winsxs",
+                r"\users\*\application data",  # Older Windows versions
+                r"\users\*\appdata\*",
+            ]
+
+            # Check if the path matches any problematic patterns
+            for problematic in problematic_paths:
+                # Convert Windows path pattern to a pattern that works with fnmatch
+                import fnmatch
+                # Use absolute path for more accurate matching
+                if fnmatch.fnmatch(abs_path_str, f"*{problematic}"):
+                    return True
+
+            # Additional check for specific Application Data junction
+            if r"\appdata\local\application data" in abs_path_str or r"\application data" in abs_path_str:
+                return True
+
+            # Check for Windows system directories that shouldn't be scanned
+            windows_system_dirs = [
+                r"\windows",
+                r"\program files",
+                r"\program files (x86)",
+                r"\programdata",
+            ]
+
+            for sys_dir in windows_system_dirs:
+                if abs_path_str.startswith(f"c:{sys_dir}"):
+                    return True
+
+            return False
+
+        except Exception:
+            # If we can't resolve or check the path, err on the side of caution
+            return True
 
     def run(self) -> None:
         """

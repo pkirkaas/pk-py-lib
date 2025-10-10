@@ -273,7 +273,82 @@ class DirectoryTraversal:
 
                 # Check for circular reference
                 if resolved_path in visited:
-                    log.warning(f"Circular reference detected, skipping: {current_path}")
+                    # Capture full call stack details for debugging circular references
+                    call_stack = traceback.format_stack()
+                    call_stack_details = []
+
+                    # Parse the call stack to extract file names, function names, line numbers, and calling context
+                    for frame_info in call_stack[:-1]:  # Exclude current frame
+                        # Extract file path, line number, function name from frame info
+                        lines = frame_info.strip().split('\n')
+                        if lines:
+                            # First line contains file path, line number, and function name
+                            first_line = lines[0]
+                            # Format: '  File "filepath", line lineno, in function_name'
+                            parts = first_line.split(',')
+                            if len(parts) >= 2:
+                                file_part = parts[0].strip()
+                                line_part = parts[1].strip()
+
+                                # Extract filename from file path
+                                file_path = file_part.replace('File "', '').replace('"', '')
+                                filename = os.path.basename(file_path) if file_path else 'unknown'
+
+                                # Extract line number
+                                line_number = line_part.replace('line ', '') if line_part.startswith('line ') else 'unknown'
+
+                                # Extract function name from the third part if available
+                                function_name = 'unknown'
+                                if len(parts) >= 3:
+                                    func_part = parts[2].strip()
+                                    if 'in ' in func_part:
+                                        function_name = func_part.replace('in ', '')
+
+                                # Extract calling context (code snippet if available)
+                                calling_context = ''
+                                if len(lines) > 1:
+                                    # Get the next few lines that contain the actual code
+                                    for line in lines[1:]:
+                                        line = line.strip()
+                                        if line and not line.startswith('File "'):
+                                            calling_context = line
+                                            break
+
+                                call_stack_details.append({
+                                    'filename': filename,
+                                    'file_path': file_path,
+                                    'line_number': line_number,
+                                    'function_name': function_name,
+                                    'calling_context': calling_context
+                                })
+
+                    # Format the detailed call stack information for logging
+                    stack_summary = []
+                    for detail in call_stack_details[-5:]:  # Show last 5 frames to avoid too much output
+                        stack_summary.append(
+                            f"  {detail['filename']}:{detail['line_number']} in {detail['function_name']}()"
+                        )
+                        if detail['calling_context']:
+                            # Truncate long context lines
+                            context = detail['calling_context'][:60] + '...' if len(detail['calling_context']) > 60 else detail['calling_context']
+                            stack_summary.append(f"    Context: {context}")
+
+                    stack_info = '\n'.join(stack_summary)
+
+                    log.warning(
+                        f"Circular reference detected, skipping: {current_path}\n"
+                        f"Call stack trace (last 5 frames):\n{stack_info}\n"
+                        f"Full call stack available in debug logs"
+                    )
+
+                    # Also log the full traceback at debug level for complete analysis
+                    full_traceback = ''.join(call_stack)
+                    log.debug(
+                        f"Complete call stack for circular reference at {current_path}:\n"
+                        f"Visited paths count: {len(visited)}\n"
+                        f"Resolved path: {resolved_path}\n"
+                        f"Full traceback:\n{full_traceback}"
+                    )
                     return
 
                 # Add current directory to visited set
