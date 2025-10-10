@@ -60,7 +60,7 @@ from .structured_editor import StructuredProfileEditorWidget
 from .controller import SettingsManagerController
 from ...api import ErrorCodes
 from ..utils.messages import show_selectable_info, handle_gui_error, gui_error_handler
-from ...core.settings_schema import create_default_profile
+from ...core.settings.schema import create_default_profile
 from ...core.logging import logger
 from ...core.logging.decorators import log_errors
 
@@ -747,7 +747,7 @@ class StructuredSettingsManagerDialog(QDialog):
             profile_data = self.editor.gather_changes()
             if not profile_data:
                 return  # nothing to do
-            
+
             # Validate before applying
             is_valid, errors = self.editor.get_validation_status()
             if not is_valid:
@@ -949,7 +949,7 @@ class StructuredSettingsManagerDialog(QDialog):
             msg = str(message) if message is not None else "An unexpected error occurred."
             if code:
                 msg += f"\n\nCode: {code}"
-            
+
             handle_gui_error(
                 parent=self,
                 error=msg,

@@ -24,12 +24,12 @@ import inspect
 import traceback
 
 from pk_py_lib.api import ApiResponse, ErrorCodes
-from pk_py_lib.api.settings_profiles import SettingsProfilesAPI
+from pk_py_lib.api.settings import UnifiedSettingsAPI
 
 from pk_py_lib.core.logging.logger import get_logger
 from pk_py_lib.core.logging.decorators import log_errors
 logger = get_logger(__name__)
- 
+
 
 T = TypeVar("T")
 
@@ -61,7 +61,7 @@ class OpResult(Generic[T]):
 
 class SettingsManagerController:
     """
-    Orchestrates profile CRUD, duplicate, active selection, and KV operations via SettingsProfilesAPI.
+    Orchestrates profile CRUD, duplicate, active selection, and KV operations via UnifiedSettingsAPI.
 
     This class is intentionally free of PySide dependencies and suitable for unit-testing
     in headless environments. It should be the single point used by GUI layers to
@@ -76,8 +76,8 @@ class SettingsManagerController:
     True
     """
 
-    def __init__(self, api: Optional[SettingsProfilesAPI] = None):
-        self.api = api or SettingsProfilesAPI()
+    def __init__(self, api: Optional[UnifiedSettingsAPI] = None):
+        self.api = api or UnifiedSettingsAPI()
 
     # -------------------------------------------------------------------------
     # Bootstrap / listing / retrieval

@@ -17,8 +17,9 @@ Settings Profiles v1 standardizes two pools (Pool A, Pool B) with two Modes: dup
 - Error handling and UX patterns: [docs/roo/img-app-error-handling-edge-cases.md](docs/roo/img-app-error-handling-edge-cases.md)
 
 Intended implementation locations (design pointers only; no code edits):
-- Core schema/validator: [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1)
-- API façade: [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
+- Core schema/validator: [src/pk_py_lib/core/settings/](src/pk_py_lib/core/settings/:1) (manager.py, profiles.py, schema.py)
+- API façade: [src/pk_py_lib/api/settings/unified_api.py](src/pk_py_lib/api/settings/unified_api.py:1)
+- Legacy API (deprecated): [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
 - GUI controller: [src/pk_py_lib/gui/settings_manager/controller.py](src/pk_py_lib/gui/settings_manager/controller.py:1)
 
 ## End-to-end flows (high-level, non-code)
@@ -479,11 +480,57 @@ python -m img_app
 - Maintain clear module boundaries and avoid cross-imports from img_app into pk-py-lib
 - Ensure all new reusable logic lands in pk-py-lib and is consumed by img_app
 
-### Recent Refactoring: Phase 3 Complete (2025-10-10)
+### Recent Refactoring: Phase 3 Complete + Settings Consolidation (2025-10-10)
 
 **Status**: ✅ Complete
 
 The project has undergone major refactoring across multiple phases to improve code organization, maintainability, and quality:
+
+#### Settings Architecture Consolidation ✅
+**Status**: ✅ Phase 1 Complete (Preparation)
+
+**Overview**: The project has successfully completed Phase 1 of settings consolidation, establishing a unified architecture foundation.
+
+**New Unified Structure**:
+- **Core Models**: [`src/pk_py_lib/core/models/settings.py`](../src/pk_py_lib/core/models/settings.py:1)
+  - `AppSettings` - Global application configuration
+  - `SettingsProfile` - Named profile configurations
+  - `DEFAULT_PROFILES` - System default profiles
+- **Core Managers**: [`src/pk_py_lib/core/settings/`](../src/pk_py_lib/core/settings/:1)
+  - `manager.py` - Unified settings management
+  - `profiles.py` - Profile CRUD operations
+  - `schema.py` - Schema validation and defaults
+- **Unified API**: [`src/pk_py_lib/api/settings/unified_api.py`](../src/pk_py_lib/api/settings/unified_api.py:1)
+  - Clean, consistent API for all settings operations
+  - Comprehensive error handling and validation
+- **Legacy API**: [`src/pk_py_lib/api/settings_profiles.py`](../src/pk_py_lib/api/settings_profiles.py:1)
+  - Deprecated wrapper with deprecation warnings
+  - Maintains 100% backward compatibility
+- **Migration Framework**: [`src/pk_py_lib/core/migrations/settings_migration.py`](../src/pk_py_lib/core/migrations/settings_migration.py:1)
+  - Automated migration utilities for Phase 2
+  - Backup and rollback capabilities
+
+**Benefits Achieved**:
+- ✅ Single source of truth for all settings
+- ✅ Consistent data models and validation
+- ✅ Clear separation: AppSettings vs SettingsProfile
+- ✅ Comprehensive test coverage (45+ tests)
+- ✅ 100% backward compatibility maintained
+- ✅ Migration path established for Phase 2
+
+**Documentation**:
+- [Settings Migration Guide](../docs/roo/settings-migration-guide.md:1) - Complete migration documentation
+- [Settings Consolidation Plan](../docs/roo/settings-consolidation-plan.md:1) - Detailed implementation plan
+- [Test Suite](../tests/test_unified_settings.py:1) - Comprehensive test coverage with usage examples
+
+**Next Steps**:
+- **Phase 2**: Implement actual migration logic (database schema updates)
+- **Phase 3**: Update all consumers to new APIs
+- **Phase 4**: Remove deprecated code after migration period
+
+---
+
+#### Phase 3 Refactoring Complete ✅
 
 #### Phase 1: Similarity Module Modularization ✅
 - **What Changed**: Split monolithic [`_similarity_deprecated.py`](src/pk_py_lib/core/image/_similarity_deprecated.py:1) (2,150 lines) into focused modules
@@ -636,10 +683,15 @@ Cross-References
 - Canonical decisions: [docs/roo/canonical-decisions.md](docs/roo/canonical-decisions.md:1) (Section "Settings Profiles and Integrated Management")
 
 Implementation Status
-- Core manager and API adapter implemented: [src/pk_py_lib/core/settings_profiles.py](src/pk_py_lib/core/settings_profiles.py:1), [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
+- Unified settings architecture implemented:
+  - Core models: [src/pk_py_lib/core/models/settings.py](src/pk_py_lib/core/models/settings.py:1) (AppSettings, SettingsProfile)
+  - Core managers: [src/pk_py_lib/core/settings/](src/pk_py_lib/core/settings/:1) (manager.py, profiles.py, schema.py)
+  - Unified API: [src/pk_py_lib/api/settings/unified_api.py](src/pk_py_lib/api/settings/unified_api.py:1)
+  - Legacy API (deprecated): [src/pk_py_lib/api/settings_profiles.py](src/pk_py_lib/api/settings_profiles.py:1)
 - Settings management integrated into main window: [img_app/img_app/main_window.py](img_app/img_app/main_window.py:1)
 - App bootstrap updated for direct launch: [img_app/img_app/app.py](img_app/img_app/app.py:60)
-- Tests: core/API unit tests implemented; GUI integration tested
+- Migration framework: [src/pk_py_lib/core/migrations/settings_migration.py](src/pk_py_lib/core/migrations/settings_migration.py:1)
+- Tests: comprehensive test suite in [tests/test_unified_settings.py](tests/test_unified_settings.py:1)
 
 ## Settings Manager — Integrated Architecture and Cross-References (Updated)
 
@@ -650,8 +702,8 @@ Summary
 
 Library implementation
 - Core and API implemented:
-  - [SettingsProfilesManager](src/pk_py_lib/core/settings_profiles.py:95) — CRUD/copy/active/default/import/export, invariants
-  - [SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69) — id-centric API returning ApiResponse and ErrorCodes
+  - [UnifiedSettingsAPI](src/pk_py_lib/api/settings/unified_api.py:1) — Clean, consistent settings API
+  - [SettingsProfilesAPI](src/pk_py_lib/api/settings_profiles.py:69) — Legacy API (deprecated, with warnings)
   - Active persistence via `meta.active_profile_id` managed in [DatabaseManager.initialize()](src/pk_py_lib/core/database.py:415) and core manager logic
 - GUI components available for reuse:
   - [src/pk_py_lib/gui/settings_manager/dialog.py](src/pk_py_lib/gui/settings_manager/dialog.py:1) — Standalone dialog (optional use)

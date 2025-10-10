@@ -12,13 +12,13 @@
 This document provides a detailed analysis and consolidation plan for the fragmented settings/configuration architecture in pk-py-lib, addressing issues identified in [`docs/roo/refactoring-plan.md`](docs/roo/refactoring-plan.md:66-103) Phase 2.
 
 **Critical Findings:**
-- **Dual Parallel Systems**: [`ConfigurationManager`](src/pk_py_lib/core/configuration.py:98) and [`SettingsProfilesManager`](src/pk_py_lib/core/settings_profiles.py:146) implement overlapping functionality with different data models
+- **Dual Parallel Systems**: [`ConfigurationManager`](src/pk_py_lib/core/configuration.py:98) and [`SettingsProfilesManager`](src/pk_py_lib/core/settings/manager.py:1) implement overlapping functionality with different data models
 - **Schema Fragmentation**: Two different database schemas for profile storage (`profiles`+`settings` vs `settings_profiles`+`settings_profile_items`)
 - **Model Confusion**: Multiple Profile models ([`Profile`](src/pk_py_lib/core/configuration.py:64), [`SettingsProfile`](src/pk_py_lib/core/settings_profiles.py:78)) with different capabilities
 - **Unclear Migration Path**: Legacy system still in use while new system is being adopted
 - **API Layer Duplication**: Two API adapters ([`SettingsAPI`](src/pk_py_lib/api/settings_api.py:25), [`SettingsProfilesAPI`](src/pk_py_lib/api/settings_profiles.py:88)) with overlapping responsibilities
 
-**Recommendation:** Consolidate to single unified system based on [`SettingsProfilesManager`](src/pk_py_lib/core/settings_profiles.py:146) with clear deprecation path for legacy [`ConfigurationManager`](src/pk_py_lib/core/configuration.py:98).
+**Recommendation:** Consolidate to single unified system based on [`UnifiedSettingsAPI`](src/pk_py_lib/api/settings/unified_api.py:1) with clear deprecation path for legacy [`ConfigurationManager`](src/pk_py_lib/core/configuration.py:98).
 
 **Estimated Effort:** 38-48 hours over 4 weeks
 

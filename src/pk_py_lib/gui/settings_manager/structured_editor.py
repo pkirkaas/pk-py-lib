@@ -57,8 +57,8 @@ except Exception:  # pragma: no cover
     QWidget = QVBoxLayout = QHBoxLayout = QLabel = QLineEdit = QPlainTextEdit = QPushButton = QComboBox = QCheckBox = QSpinBox = QSlider = QGroupBox = QFormLayout = QGridLayout = QMessageBox = QSizePolicy = QDialog = Signal = Qt = QIcon = QDoubleValidator = _Missing()  # type: ignore
 
 
-from pk_py_lib.api.settings_profiles import SettingsProfilesAPI
-from pk_py_lib.core.settings_schema import (
+from pk_py_lib.api.settings import UnifiedSettingsAPI
+from pk_py_lib.core.settings.schema import (
     validate_settings_schema,
     normalize_settings,
     is_valid_for_save,
@@ -94,12 +94,12 @@ class StructuredProfileEditorWidget(QWidget):
 
     dirtyChanged = Signal(bool) if PYSIDE_AVAILABLE else None  # type: ignore[assignment]
 
-    def __init__(self, api: Optional[SettingsProfilesAPI] = None, parent: Optional[QWidget] = None):
+    def __init__(self, api: Optional[UnifiedSettingsAPI] = None, parent: Optional[QWidget] = None):
         if not PYSIDE_AVAILABLE:  # pragma: no cover
             raise RuntimeError("PySide6 is required for StructuredProfileEditorWidget")
         try:
             super().__init__(parent)
-            self._api = api or SettingsProfilesAPI()
+            self._api = api or UnifiedSettingsAPI()
 
             # Original state for diff computation
             self._original_profile: Dict[str, Any] = {}

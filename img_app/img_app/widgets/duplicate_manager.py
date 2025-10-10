@@ -39,7 +39,7 @@ from src.pk_py_lib.core.utils import format_timestamp
 from src.pk_py_lib.gui.dialog_models import Group, GroupStats, FileItem
 from collections import defaultdict
 
-from src.pk_py_lib.core.settings_schema import validate_settings_schema
+from src.pk_py_lib.core.settings.schema import validate_settings_schema
 from src.pk_py_lib.core.utils.thresholds import internal_to_ui_percent
 from src.pk_py_lib.gui.dialog_models import Group
 from src.pk_py_lib.gui.dialogs.base_file_manager_dialog import BaseFileManagerDialog

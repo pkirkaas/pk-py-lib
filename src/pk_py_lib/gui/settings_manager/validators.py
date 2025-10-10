@@ -33,7 +33,7 @@ except Exception:  # pragma: no cover - headless/test environments
     QObject = QValidator = _Missing()  # type: ignore[assignment]
 
 
-from ...api.settings_profiles import SettingsProfilesAPI
+from ...api.settings import UnifiedSettingsAPI
 from ...api import ApiResponse
 from ...gui.utils.messages import gui_error_handler
 from ...core.logging import logger
@@ -42,7 +42,7 @@ from ...core.logging.decorators import log_errors
 
 @log_errors(include_args=True, include_traceback=True)
 @gui_error_handler(component_name="validators")
-def validate_profile_name_via_api(api: SettingsProfilesAPI, name: str) -> Tuple[bool, Optional[str]]:
+def validate_profile_name_via_api(api: UnifiedSettingsAPI, name: str) -> Tuple[bool, Optional[str]]:
     """
     Validate a profile name by delegating to the API.
 
@@ -82,7 +82,7 @@ def validate_profile_name_via_api(api: SettingsProfilesAPI, name: str) -> Tuple[
 
 
 @log_errors(include_args=True, include_traceback=True)
-def validate_keys_via_api(api: SettingsProfilesAPI, keys: Iterable[str]) -> Tuple[bool, Optional[str]]:
+def validate_keys_via_api(api: UnifiedSettingsAPI, keys: Iterable[str]) -> Tuple[bool, Optional[str]]:
     """
     Validate a collection of keys by delegating to the API.
 
@@ -118,7 +118,7 @@ def validate_keys_via_api(api: SettingsProfilesAPI, keys: Iterable[str]) -> Tupl
 @log_errors(include_args=True, include_traceback=True)
 class ProfileNameValidator(QValidator):  # type: ignore[misc]
     """
-    Qt validator for profile names using SettingsProfilesAPI.validate_name().
+    Qt validator for profile names using UnifiedSettingsAPI.validate_profile_name().
 
     This validator performs live validation suitable for use with QLineEdit. It focuses
     on syntactic validity (allowed characters/length). Uniqueness is enforced when the
@@ -126,14 +126,14 @@ class ProfileNameValidator(QValidator):  # type: ignore[misc]
 
     Examples
     --------
-    >>> api = SettingsProfilesAPI()
+    >>> api = UnifiedSettingsAPI()
     >>> v = ProfileNameValidator(api)
     >>> state, text, pos = v.validate("My Profile", 10)
     >>> state == QValidator.Acceptable
     True
     """
 
-    def __init__(self, api: SettingsProfilesAPI, parent: Optional[QObject] = None):
+    def __init__(self, api: UnifiedSettingsAPI, parent: Optional[QObject] = None):
         if not PYSIDE_AVAILABLE:  # pragma: no cover
             raise RuntimeError("PySide6 is required for ProfileNameValidator")
         try:
@@ -212,7 +212,7 @@ class ProfileNameValidator(QValidator):  # type: ignore[misc]
 @log_errors(include_args=True, include_traceback=True)
 class SingleKeyValidator(QValidator):  # type: ignore[misc]
     """
-    Qt validator for a single settings key using SettingsProfilesAPI.validate_keys().
+    Qt validator for a single settings key using UnifiedSettingsAPI.validate_keys().
 
     The validator expects a single key string (no commas). It checks syntax against the
     canonical key regex via the API. Uniqueness within a profile is enforced when applying
@@ -220,14 +220,14 @@ class SingleKeyValidator(QValidator):  # type: ignore[misc]
 
     Examples
     --------
-    >>> api = SettingsProfilesAPI()
+    >>> api = UnifiedSettingsAPI()
     >>> v = SingleKeyValidator(api)
     >>> state, text, pos = v.validate("alg.threshold", 5)
     >>> state == QValidator.Acceptable
     True
     """
 
-    def __init__(self, api: SettingsProfilesAPI, parent: Optional[QObject] = None):
+    def __init__(self, api: UnifiedSettingsAPI, parent: Optional[QObject] = None):
         if not PYSIDE_AVAILABLE:  # pragma: no cover
             raise RuntimeError("PySide6 is required for SingleKeyValidator")
         try:

@@ -9,6 +9,7 @@ A comprehensive library of reusable Python components for image processing, file
 - **Flexible Logging**: Multi-output logging with variable watching and rich formatting
 - **GUI Components**: Reusable widgets and dialogs for image manipulation
 - **Persistent Caching**: FlatCacheManager provides file-stat validated cache for computed hashes and quality scores (always enabled)
+- **Unified Settings Architecture**: Consolidated settings system with AppSettings and SettingsProfile models
 - **Component Showcase**: Interactive GUI test framework for component development
 
 ## Recent Updates
@@ -21,10 +22,11 @@ A comprehensive library of reusable Python components for image processing, file
 - ✅ 100% backward compatibility maintained
 - See [`docs/roo/phase3-completion-summary.md`](docs/roo/phase3-completion-summary.md:1) for complete details
 
-**Phase 1-2 Refactoring Complete (2025-10-10)**
+**Phase 1-2 Refactoring Complete + Settings Consolidation (2025-10-10)**
 - ✅ Similarity module split into 6 focused modules for better maintainability
 - ✅ GUI models consolidated to eliminate duplication
 - ✅ Cache architecture unified (FlatCacheManager is sole solution)
+- ✅ Settings architecture consolidated into unified system
 - ✅ 433 lines of obsolete code removed
 - ✅ 100% backward compatibility maintained
 - See [`docs/refactoring-summary.md`](docs/refactoring-summary.md:1) for complete details
@@ -139,21 +141,33 @@ pk-py-lib/
 │   ├── core/                # Core utilities
 │   │   ├── filesystem/      # File operations & monitoring
 │   │   ├── logging/         # Advanced logging system
-│   │   └── image/           # Image processing
-│   │       └── similarity/  # Modular similarity detection (9 modules)
-│   │           ├── types.py           # Shared types and exceptions
-│   │           ├── validation.py      # Parameter validation
-│   │           ├── metadata.py        # Metadata extraction
-│   │           ├── hashing.py         # Hash computation
-│   │           ├── hash_utils.py      # Common hash utilities (NEW)
-│   │           ├── algorithm_utils.py # Algorithm management (NEW)
-│   │           ├── clustering.py      # Similarity detection
-│   │           ├── phases.py          # Phase-based processing (NEW)
-│   │           └── __init__.py        # Public API
+│   │   ├── image/           # Image processing
+│   │   │   └── similarity/  # Modular similarity detection (9 modules)
+│   │   │       ├── types.py           # Shared types and exceptions
+│   │   │       ├── validation.py      # Parameter validation
+│   │   │       ├── metadata.py        # Metadata extraction
+│   │   │       ├── hashing.py         # Hash computation
+│   │   │       ├── hash_utils.py      # Common hash utilities (NEW)
+│   │   │       ├── algorithm_utils.py # Algorithm management (NEW)
+│   │   │       ├── clustering.py      # Similarity detection
+│   │   │       ├── phases.py          # Phase-based processing (NEW)
+│   │   │       └── __init__.py        # Public API
+│   │   ├── models/          # Unified data models (NEW)
+│   │   │   └── settings.py  # AppSettings & SettingsProfile models
+│   │   ├── settings/        # Unified settings management (NEW)
+│   │   │   ├── manager.py   # Settings manager
+│   │   │   ├── profiles.py  # Profile CRUD operations
+│   │   │   └── schema.py    # Schema validation & defaults
+│   │   └── migrations/      # Database migration utilities (NEW)
+│   │       └── settings_migration.py # Settings migration framework
 │   ├── gui/                 # GUI components
 │   │   ├── models.py        # Shared GUI models (consolidated)
 │   │   ├── widgets.py       # Reusable widgets
 │   │   └── dialogs/         # Dialog components
+│   ├── api/                 # High-level APIs
+│   │   ├── settings/        # Unified settings API (NEW)
+│   │   │   └── unified_api.py # Clean, consistent settings API
+│   │   └── settings_profiles.py # Legacy API (deprecated, with warnings)
 │   ├── processing/          # High-level APIs (future)
 │   └── cli/                 # CLI tools (future)
 ├── img_app/                 # Development application
@@ -162,12 +176,14 @@ pk-py-lib/
 │   ├── test_hash_utils.py   # Hash utilities tests (NEW)
 │   ├── test_algorithm_utils.py # Algorithm utils tests (NEW)
 │   ├── test_phases.py       # Phase-based tests (NEW)
+│   ├── test_unified_settings.py # Unified settings tests (NEW)
 │   └── ...
 ├── docs/                    # Project documentation
 │   ├── refactoring-summary.md  # Complete refactoring details
-│   └── roo/                 # Detailed specifications
-│       ├── phase3-completion-summary.md # Phase 3 details (NEW)
-│       └── ...
+│   ├── roo/                 # Detailed specifications
+│   │   ├── phase3-completion-summary.md # Phase 3 details (NEW)
+│   │   ├── settings-migration-guide.md  # Settings migration guide (NEW)
+│   │   └── ...
 ├── run_showcase.py          # Quick launcher for GUI testing
 └── example_usage.py         # Usage demonstrations
 ```

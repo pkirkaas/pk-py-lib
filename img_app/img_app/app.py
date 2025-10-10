@@ -28,7 +28,7 @@ from src.pk_py_lib.gui.utils.messages import show_selectable_error
 
 from .main_window import MainWindow
 
-from src.pk_py_lib.api.settings_profiles import SettingsProfilesAPI
+from src.pk_py_lib.api.settings import UnifiedSettingsAPI
 from src.pk_py_lib.gui.settings_manager.structured_dialog import structured_settings_manager_dialog
 from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerController
 
@@ -81,7 +81,7 @@ def main() -> int:
     Startup sequence (direct launch with integrated settings management):
     1) Instantiate QApplication.
     2) Initialize/open database and run migrations via DatabaseManager.
-    3) Create SettingsProfilesAPI and ensure_default_profile() to guarantee an Active profile exists.
+    3) Create UnifiedSettingsAPI and ensure_default_profile() to guarantee an Active profile exists.
     4) Fetch the active profile for the main window.
     5) Create and show MainWindow, passing the active profile and managers.
 
@@ -234,7 +234,7 @@ Examples:
         db_mgr.initialize()
 
         # 3) Profiles API bound to this DB; ensure a default/active profile exists
-        api = SettingsProfilesAPI(db_mgr)
+        api = UnifiedSettingsAPI(db_mgr)
         ensured = api.ensure_default_profile()
 
         # 3.1) Initialize the Settings Manager Controller

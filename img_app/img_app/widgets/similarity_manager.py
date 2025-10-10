@@ -50,7 +50,7 @@ from src.pk_py_lib.core.image.similarity import (
 )
 from src.pk_py_lib.core.image.similarity.phases import PhaseContext, execute_all_phases
 from src.pk_py_lib.core.settings_profiles import get_active_profile_settings
-from src.pk_py_lib.core.settings_schema import validate_settings_schema
+from src.pk_py_lib.core.settings.schema import validate_settings_schema
 from src.pk_py_lib.core.utils.thresholds import internal_to_ui_percent
 from src.pk_py_lib.gui.dialog_models import FileItem, Group, GroupStats
 from src.pk_py_lib.gui.dialogs.base_file_manager_dialog import BaseFileManagerDialog

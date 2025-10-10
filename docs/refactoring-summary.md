@@ -268,6 +268,50 @@ All four refactorings were thoroughly tested to ensure no regressions:
 - **Phase 3 cleanup**: Removed 433 lines of dead code and duplicates
   - **Net change**: +1,567 lines (significant quality improvements)
 
+### 5. Settings Architecture Consolidation
+**Status**: ✅ Phase 1 Complete (Preparation)
+**Date**: 2025-10-10
+
+**What Changed**:
+- Consolidated dual settings systems into unified architecture
+- Established new data models and API foundation
+- Maintained 100% backward compatibility
+
+**New Unified Structure**:
+- **Core Models**: [`src/pk_py_lib/core/models/settings.py`](../../src/pk_py_lib/core/models/settings.py:1)
+  - `AppSettings` - Global application configuration
+  - `SettingsProfile` - Named profile configurations
+  - `DEFAULT_PROFILES` - System default profiles
+- **Core Managers**: [`src/pk_py_lib/core/settings/`](../../src/pk_py_lib/core/settings/:1)
+  - `manager.py` - Unified settings management
+  - `profiles.py` - Profile CRUD operations
+  - `schema.py` - Schema validation and defaults
+- **Unified API**: [`src/pk_py_lib/api/settings/unified_api.py`](../../src/pk_py_lib/api/settings/unified_api.py:1)
+  - Clean, consistent API for all settings operations
+- **Legacy API**: [`src/pk_py_lib/api/settings_profiles.py`](../../src/pk_py_lib/api/settings_profiles.py:1)
+  - Deprecated wrapper with deprecation warnings
+  - Maintains backward compatibility
+- **Migration Framework**: [`src/pk_py_lib/core/migrations/settings_migration.py`](../../src/pk_py_lib/core/migrations/settings_migration.py:1)
+
+**Benefits**:
+- Single source of truth for all settings
+- Consistent data models and validation
+- Clear separation: AppSettings vs SettingsProfile
+- Comprehensive test coverage (45+ tests)
+- 100% backward compatibility maintained
+- Migration path established for Phase 2
+
+**Test Coverage**: 477 lines, 45+ tests in [`tests/test_unified_settings.py`](../../tests/test_unified_settings.py:1)
+
+**Documentation**:
+- [Settings Migration Guide](../../docs/roo/settings-migration-guide.md:1) - Complete migration documentation
+- [Settings Consolidation Plan](../../docs/roo/settings-consolidation-plan.md:1) - Detailed implementation plan
+
+**Next Steps**:
+- **Phase 2**: Implement actual migration logic (database schema updates)
+- **Phase 3**: Update all consumers to new APIs
+- **Phase 4**: Remove deprecated code after migration period
+
 ### Files Modified/Created
 - **Created**: 13 new files (6 similarity + 1 migration guide + 6 Phase 3 files)
 - **Modified**: 11 existing files

@@ -54,7 +54,7 @@ except Exception:  # pragma: no cover
 
 from .models import KeyValueTableModel
 from .validators import ProfileNameValidator, SingleKeyValidator
-from ...api.settings_profiles import SettingsProfilesAPI
+from ...api.settings import UnifiedSettingsAPI
 from ...gui.utils.messages import handle_gui_error, gui_error_handler
 from ...core.logging import logger
 from ...core.logging.decorators import log_errors
@@ -66,7 +66,7 @@ class KeyValueEditDialog(QDialog):
 
     Parameters
     ----------
-    api : SettingsProfilesAPI
+    api : UnifiedSettingsAPI
         API used to validate the 'key' syntax via SingleKeyValidator.
     parent : Optional[QWidget]
         Parent widget.
@@ -77,7 +77,7 @@ class KeyValueEditDialog(QDialog):
 
     Usage
     -----
-    >>> api = SettingsProfilesAPI()
+    >>> api = UnifiedSettingsAPI()
     >>> dlg = KeyValueEditDialog(api, initial_key="alg.threshold", initial_value=0.9)
     >>> if dlg.exec() == dlg.Accepted:
     ...     k, v = dlg.result_value()
@@ -86,7 +86,7 @@ class KeyValueEditDialog(QDialog):
     @log_errors(include_args=True, include_traceback=True)
     def __init__(
         self,
-        api: SettingsProfilesAPI,
+        api: UnifiedSettingsAPI,
         parent: Optional[QWidget] = None,
         initial_key: Optional[str] = None,
         initial_value: Optional[Any] = None,
@@ -286,7 +286,7 @@ class SettingsProfileEditorWidget(QWidget):
 
     Usage
     -----
-    >>> api = SettingsProfilesAPI()
+    >>> api = UnifiedSettingsAPI()
     >>> w = SettingsProfileEditorWidget(api=api)
     >>> w.load_profile(profile={'id':'..','name':'Default','description':None}, values={'a':1})
     """
@@ -294,12 +294,12 @@ class SettingsProfileEditorWidget(QWidget):
     dirtyChanged = Signal(bool) if PYSIDE_AVAILABLE else None  # type: ignore[assignment]
 
     @log_errors(include_args=True, include_traceback=True)
-    def __init__(self, api: Optional[SettingsProfilesAPI] = None, parent: Optional[QWidget] = None):
+    def __init__(self, api: Optional[UnifiedSettingsAPI] = None, parent: Optional[QWidget] = None):
         if not PYSIDE_AVAILABLE:  # pragma: no cover
             raise RuntimeError("PySide6 is required for SettingsProfileEditorWidget")
         try:
             super().__init__(parent)
-            self._api = api or SettingsProfilesAPI()
+            self._api = api or UnifiedSettingsAPI()
 
             # Original state (used to compute diffs)
             self._profile_id: Optional[str] = None
@@ -432,7 +432,7 @@ class SettingsProfileEditorWidget(QWidget):
         Parameters
         ----------
         profile : Dict[str, Any]
-            Profile metadata as returned by SettingsProfilesAPI.get_profile or list call.
+            Profile metadata as returned by UnifiedSettingsAPI.get_profile or list call.
         values : Dict[str, Any]
             Mapping of key → Python value for the profile.
         """
