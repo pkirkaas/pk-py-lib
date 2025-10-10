@@ -19,7 +19,7 @@ from pk_py_lib.core.image.quality.provider import get_active_image_quality_evalu
 from pk_py_lib.core.logging.logger import get_logger
 from pk_py_lib.gui.models import FileItem, GroupStats
 
-from .types import InvalidImageError
+from .similarity_types import InvalidImageError
 from .validation import is_image_extension
 
 logger = get_logger(__name__)

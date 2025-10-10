@@ -398,6 +398,165 @@ class FlatCacheManager:
             self.logger.error(f"Failed to get file stats for {file_path}: {e}")
             raise
 
+    def populate_cache_for_files(
+        self,
+        file_paths: List[str],
+        compute_hashes: bool = True,
+        compute_metadata: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Populate cache entries for a list of file paths.
+
+        This method addresses the critical issues where:
+        1. Directories and drives were being cached inappropriately
+        2. XXH3 values were missing for all files
+        3. Image-specific metadata was missing for image files
+
+        Args:
+            file_paths: List of file paths to process
+            compute_hashes: Whether to compute perceptual hashes for images
+            compute_metadata: Whether to compute image metadata
+
+        Returns:
+            Dictionary with processing results and statistics
+        """
+        from pk_py_lib.core.filesystem.identity import compute_xxh3
+        from pk_py_lib.core.image.similarity.validation import is_image_extension
+        from pk_py_lib.core.image.similarity.metadata import get_image_metadata
+        from pk_py_lib.core.image.similarity.hashing import compute_phash, compute_whash
+
+        results = {
+            'processed': 0,
+            'entries_created': 0,
+            'entries_updated': 0,
+            'skipped_directories': 0,
+            'skipped_non_files': 0,
+            'errors': [],
+            'xxh3_computed': 0,
+            'phash_computed': 0,
+            'whash_computed': 0,
+            'metadata_computed': 0
+        }
+
+        self.logger.info(f"Starting cache population for {len(file_paths)} files")
+
+        for file_path in file_paths:
+            try:
+                # CRITICAL FIX: Skip directories and drives - only process actual files
+                if not os.path.isfile(file_path):
+                    if os.path.isdir(file_path):
+                        results['skipped_directories'] += 1
+                        self.logger.debug(f"Skipped directory: {file_path}")
+                    else:
+                        results['skipped_non_files'] += 1
+                        self.logger.debug(f"Skipped non-file: {file_path}")
+                    continue
+
+                # Get file stats
+                stat_info = os.stat(file_path)
+                size = stat_info.st_size
+                mtime = stat_info.st_mtime
+
+                # Skip empty files
+                if size == 0:
+                    self.logger.debug(f"Skipped empty file: {file_path}")
+                    continue
+
+                # Check if entry already exists and is valid
+                existing_entry = self.get_entry(file_path)
+                if existing_entry and existing_entry.size == size and existing_entry.mtime == mtime:
+                    self.logger.debug(f"Entry already exists and is valid: {file_path}")
+                    results['processed'] += 1
+                    continue
+
+                # Create new entry
+                entry = FlatCacheEntry(
+                    path=file_path,
+                    size=size,
+                    mtime=mtime,
+                    is_valid=True
+                )
+
+                # CRITICAL FIX: Compute XXH3 hash for ALL files (not just images)
+                try:
+                    from pathlib import Path
+                    entry.xxh3 = compute_xxh3(Path(file_path))
+                    results['xxh3_computed'] += 1
+                    self.logger.debug(f"Computed XXH3 for {file_path}: {entry.xxh3[:16] if entry.xxh3 else None}...")
+                except Exception as e:
+                    self.logger.warning(f"Failed to compute XXH3 for {file_path}: {e}")
+                    entry.xxh3 = None
+
+                # CRITICAL FIX: Compute image-specific metadata for image files only
+                if is_image_extension(file_path):
+                    try:
+                        # Get image metadata (includes dimensions)
+                        if compute_metadata:
+                            metadata = get_image_metadata(file_path, search_type='similarity')
+                            if metadata.get('resolution') != "Unknown":
+                                # Parse resolution string "WxH"
+                                try:
+                                    width_str, height_str = metadata['resolution'].split('x')
+                                    entry.width = int(width_str)
+                                    entry.height = int(height_str)
+                                    results['metadata_computed'] += 1
+                                except (ValueError, AttributeError):
+                                    entry.width = None
+                                    entry.height = None
+                    except Exception as e:
+                        self.logger.warning(f"Failed to get metadata for {file_path}: {e}")
+
+                    # Compute perceptual hashes for images
+                    if compute_hashes:
+                        try:
+                            entry.phash = compute_phash(file_path)
+                            results['phash_computed'] += 1
+                            self.logger.debug(f"Computed pHash for {file_path}: {entry.phash}")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to compute pHash for {file_path}: {e}")
+                            entry.phash = None
+
+                        try:
+                            entry.whash = compute_whash(file_path)
+                            results['whash_computed'] += 1
+                            self.logger.debug(f"Computed wHash for {file_path}: {entry.whash}")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to compute wHash for {file_path}: {e}")
+                            entry.whash = None
+
+                # Store entry in cache
+                if existing_entry:
+                    # Update existing entry
+                    if self.set_entry(entry):
+                        results['entries_updated'] += 1
+                        self.logger.debug(f"Updated cache entry for {file_path}")
+                    else:
+                        results['errors'].append(f"Failed to update cache entry for {file_path}")
+                else:
+                    # Create new entry
+                    if self.set_entry(entry):
+                        results['entries_created'] += 1
+                        self.logger.debug(f"Created cache entry for {file_path}")
+                    else:
+                        results['errors'].append(f"Failed to store cache entry for {file_path}")
+
+                results['processed'] += 1
+
+            except Exception as e:
+                results['errors'].append(f"Error processing {file_path}: {e}")
+                self.logger.error(f"Error processing {file_path}: {e}")
+
+        # Log summary
+        self.logger.info(f"Cache population complete: {results['processed']} processed, "
+                        f"{results['entries_created']} created, {results['entries_updated']} updated, "
+                        f"{results['skipped_directories']} directories skipped, "
+                        f"{len(results['errors'])} errors")
+
+        if results['errors']:
+            self.logger.warning(f"Cache population errors: {results['errors']}")
+
+        return results
+
 
 # Exceptions for error handling
 class FlatCacheError(Exception):

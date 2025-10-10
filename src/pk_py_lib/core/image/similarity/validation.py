@@ -12,7 +12,7 @@ from typing import Optional
 
 from pk_py_lib.core.logging.logger import get_logger
 
-from .types import VALID_IMAGE_EXTENSIONS, InvalidImageError, SimilarityError
+from .similarity_types import VALID_IMAGE_EXTENSIONS, InvalidImageError, SimilarityError
 
 logger = get_logger(__name__)
 

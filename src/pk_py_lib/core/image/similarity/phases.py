@@ -24,7 +24,7 @@ from pk_py_lib.gui.dialog_models import Group
 
 from .hashing import compute_similarity_hash_batch
 from .metadata import compute_group_stats, format_timestamp, get_image_metadata, get_image_quality_score
-from .types import ExactDuplicateSet, SimilarityError
+from .similarity_types import ExactDuplicateSet, SimilarityError
 from .validation import hamming_distance, validate_and_normalize_hash, validate_threshold
 
 logger = get_logger(__name__)

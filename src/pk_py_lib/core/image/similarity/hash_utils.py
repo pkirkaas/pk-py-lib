@@ -17,7 +17,7 @@ from PIL import Image
 from pk_py_lib.core.flat_cache import FlatCacheManager, FlatCacheDBError
 from pk_py_lib.core.logging.logger import get_logger
 
-from .types import InvalidImageError, SimilarityError, ErrorContext, DetailedSimilarityError
+from .similarity_types import InvalidImageError, SimilarityError, ErrorContext, DetailedSimilarityError
 from .validation import is_image_extension, validate_hash_size, validate_image_path
 
 logger = get_logger(__name__)

@@ -17,7 +17,7 @@ from ...api.response import (
 )
 
 # Types and Exceptions
-from .types import (
+from .similarity_types import (
     ExactDuplicateSet,
     InvalidImageError,
     SimilarityError,

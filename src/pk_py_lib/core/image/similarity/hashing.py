@@ -14,11 +14,11 @@ import imagehash
 from PIL import Image
 import numpy as np
 
-from pk_py_lib.core.flat_cache import FlatCacheManager, FlatCacheDBError
+from pk_py_lib.core.flat_cache import FlatCacheManager, FlatCacheEntry, FlatCacheDBError
 from pk_py_lib.core.logging.logger import get_logger
 
 from ...api.response import ApiResponse, ErrorCode
-from .types import InvalidImageError, SimilarityError, ErrorContext, DetailedSimilarityError
+from .similarity_types import InvalidImageError, SimilarityError, ErrorContext, DetailedSimilarityError
 from .validation import is_image_extension, validate_hash_size, validate_image_path
 from .hash_utils import (
     load_image_with_fallback,
@@ -196,6 +196,37 @@ def compute_phash(
 
         logger.debug(f"Computed pHash for {image_path} (size={effective_hash_size}): {hash_str}")
 
+        # CRITICAL FIX: Store computed hash in cache if cache manager is provided
+        if flat_cache_manager and hash_str is not None:
+            try:
+                # Get or create cache entry for this file
+                current_entry = flat_cache_manager.get_entry(image_path)
+                if current_entry is None:
+                    # Create new entry with file stats if it doesn't exist
+                    try:
+                        size, mtime = flat_cache_manager._get_file_stats(image_path)
+                        current_entry = FlatCacheEntry(
+                            path=image_path,
+                            size=size,
+                            mtime=mtime,
+                            is_valid=True
+                        )
+                    except OSError:
+                        # If we can't get file stats, still try to update with just the hash
+                        current_entry = FlatCacheEntry(
+                            path=image_path,
+                            size=0,
+                            mtime=0,
+                            is_valid=True
+                        )
+
+                # Update the phash field
+                current_entry.phash = hash_str
+                flat_cache_manager.set_entry(current_entry)
+                logger.debug(f"Stored pHash in cache for {image_path}: {hash_str}")
+            except Exception as e:
+                logger.warning(f"Failed to store pHash in cache for {image_path}: {e}")
+
         if return_response:
             return ApiResponse.success_response(
                 data=hash_str,
@@ -335,13 +366,48 @@ def compute_whash(
         pil_img = Image.fromarray(image_rgb)
 
         # Compute hash using imagehash
-        whash_obj = imagehash.whash(pil_img, hash_size=effective_hash_size, mode=mode, wavelet=wavelet)
+        try:
+            whash_obj = imagehash.whash(pil_img, hash_size=effective_hash_size, mode=mode, wavelet=wavelet)
+        except TypeError:
+            # Fallback for older versions of imagehash that don't support wavelet parameter
+            whash_obj = imagehash.whash(pil_img, hash_size=effective_hash_size, mode=mode)
         hash_str = str(whash_obj)
 
         # Normalize hash length
         hash_str = normalize_hash_length(hash_str)
 
         logger.info(f"Computed wHash for {image_path} (size={effective_hash_size}, mode={mode}, wavelet={wavelet}): {hash_str}")
+
+        # CRITICAL FIX: Store computed hash in cache if cache manager is provided
+        if flat_cache_manager and hash_str is not None:
+            try:
+                # Get or create cache entry for this file
+                current_entry = flat_cache_manager.get_entry(image_path)
+                if current_entry is None:
+                    # Create new entry with file stats if it doesn't exist
+                    try:
+                        size, mtime = flat_cache_manager._get_file_stats(image_path)
+                        current_entry = FlatCacheEntry(
+                            path=image_path,
+                            size=size,
+                            mtime=mtime,
+                            is_valid=True
+                        )
+                    except OSError:
+                        # If we can't get file stats, still try to update with just the hash
+                        current_entry = FlatCacheEntry(
+                            path=image_path,
+                            size=0,
+                            mtime=0,
+                            is_valid=True
+                        )
+
+                # Update the whash field
+                current_entry.whash = hash_str
+                flat_cache_manager.set_entry(current_entry)
+                logger.debug(f"Stored wHash in cache for {image_path}: {hash_str}")
+            except Exception as e:
+                logger.warning(f"Failed to store wHash in cache for {image_path}: {e}")
 
         if return_response:
             return ApiResponse.success_response(
