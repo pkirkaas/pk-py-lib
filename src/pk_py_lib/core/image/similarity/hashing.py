@@ -18,7 +18,7 @@ from pk_py_lib.core.flat_cache import FlatCacheManager, FlatCacheDBError
 from pk_py_lib.core.logging.logger import get_logger
 
 from ...api.response import ApiResponse, ErrorCode
-from .types import InvalidImageError, SimilarityError
+from .types import InvalidImageError, SimilarityError, ErrorContext, DetailedSimilarityError
 from .validation import is_image_extension, validate_hash_size, validate_image_path
 from .hash_utils import (
     load_image_with_fallback,
@@ -205,16 +205,42 @@ def compute_phash(
         return hash_str
 
     except Exception as e:
-        handle_image_loading_errors(image_path, e)
+        # Enhanced error handling with context
+        try:
+            handle_image_loading_errors(
+                image_path,
+                e,
+                operation="compute_phash",
+                backend="PIL/OpenCV",
+                additional_context={
+                    "hash_size": effective_hash_size,
+                    "algorithm": "phash",
+                    "return_response": return_response
+                }
+            )
+        except (InvalidImageError, IOError, DetailedSimilarityError):
+            # Re-raise these enhanced errors
+            if return_response:
+                return ApiResponse.from_exception(e, ErrorCode.HASH_COMPUTATION_FAILED)
+            raise
+        except Exception as handling_error:
+            # Fallback for any unexpected error in handling
+            logger.error(f"Unexpected error in error handling for {image_path}: {handling_error}")
+            if return_response:
+                return ApiResponse.from_exception(
+                    e,
+                    ErrorCode.HASH_COMPUTATION_FAILED,
+                    f"pHash computation failed for {image_path}: {e}"
+                )
+            raise SimilarityError(f"pHash computation failed: {e}") from e
 
+        # This should not be reached due to the exception handling in the utility function
         if return_response:
             return ApiResponse.from_exception(
                 e,
                 ErrorCode.HASH_COMPUTATION_FAILED,
                 f"pHash computation failed for {image_path}: {e}"
             )
-
-        # This should not be reached due to the exception handling in the utility function
         raise SimilarityError(f"pHash computation failed: {e}") from e
 
 
@@ -326,27 +352,71 @@ def compute_whash(
         return hash_str
 
     except Exception as e:
-        # Handle wavelet-specific errors
+        # Handle wavelet-specific errors with enhanced context
         error_details = str(e).lower()
         if "wavelet" in error_details or "dwt" in error_details or "pywt" in error_details:
+            wavelet_context = ErrorContext(
+                file_path=image_path,
+                operation="compute_whash",
+                original_exception=e,
+                error_type="WaveletError",
+                backend="PyWavelets",
+                additional_context={
+                    "wavelet": wavelet,
+                    "mode": mode,
+                    "hash_size": effective_hash_size,
+                    "algorithm": "whash",
+                    "return_response": return_response
+                }
+            )
+            logger.debug(f"Wavelet error context: {wavelet_context.to_dict()}")
+
             if return_response:
                 return ApiResponse.error_response(
                     ErrorCode.INVALID_HASH_ALGORITHM,
                     f"wHash computation failed due to invalid wavelet '{wavelet}' or mode '{mode}': {e}",
-                    details={'wavelet': wavelet, 'mode': mode}
+                    details={'wavelet': wavelet, 'mode': mode, 'error_context': wavelet_context.to_dict()}
                 )
-            raise SimilarityError(f"wHash computation failed due to invalid wavelet '{wavelet}' or mode '{mode}': {e}")
+            raise SimilarityError(f"wHash computation failed due to invalid wavelet '{wavelet}' or mode '{mode}': {e}") from e
 
-        handle_image_loading_errors(image_path, e)
+        # Enhanced error handling with context
+        try:
+            handle_image_loading_errors(
+                image_path,
+                e,
+                operation="compute_whash",
+                backend="PIL/OpenCV",
+                additional_context={
+                    "hash_size": effective_hash_size,
+                    "algorithm": "whash",
+                    "mode": mode,
+                    "wavelet": wavelet,
+                    "return_response": return_response
+                }
+            )
+        except (InvalidImageError, IOError, DetailedSimilarityError):
+            # Re-raise these enhanced errors
+            if return_response:
+                return ApiResponse.from_exception(e, ErrorCode.HASH_COMPUTATION_FAILED)
+            raise
+        except Exception as handling_error:
+            # Fallback for any unexpected error in handling
+            logger.error(f"Unexpected error in error handling for {image_path}: {handling_error}")
+            if return_response:
+                return ApiResponse.from_exception(
+                    e,
+                    ErrorCode.HASH_COMPUTATION_FAILED,
+                    f"wHash computation failed for {image_path}: {e}"
+                )
+            raise SimilarityError(f"wHash computation failed: {e}") from e
 
+        # This should not be reached due to the exception handling in the utility function
         if return_response:
             return ApiResponse.from_exception(
                 e,
                 ErrorCode.HASH_COMPUTATION_FAILED,
                 f"wHash computation failed for {image_path}: {e}"
             )
-
-        # This should not be reached due to the exception handling in the utility function
         raise SimilarityError(f"wHash computation failed: {e}") from e
 
 
@@ -427,8 +497,30 @@ def compute_color_hash(
         return hash_str
 
     except Exception as e:
-        handle_image_loading_errors(image_path, e)
-        # This should not be reached due to exception handling in utility function
+        # Enhanced error handling with context for color hashing
+        try:
+            handle_image_loading_errors(
+                image_path,
+                e,
+                operation=f"compute_color_{normalized_algorithm}",
+                backend="PIL/OpenCV",
+                additional_context={
+                    "hash_size": effective_hash_size,
+                    "algorithm": normalized_algorithm,
+                    "color_mode": True,
+                    "mode": mode if normalized_algorithm == 'whash' else None,
+                    "wavelet": wavelet if normalized_algorithm == 'whash' else None
+                }
+            )
+        except (InvalidImageError, IOError, DetailedSimilarityError):
+            # Re-raise these enhanced errors
+            raise
+        except Exception as handling_error:
+            # Fallback for any unexpected error in handling
+            logger.error(f"Unexpected error in color hash error handling for {image_path}: {handling_error}")
+            raise SimilarityError(f"Color {normalized_algorithm} computation failed: {e}") from e
+
+        # This should not be reached due to exception handling in the utility function
         raise SimilarityError(f"Color {normalized_algorithm} computation failed: {e}") from e
 
 
@@ -558,25 +650,102 @@ def compute_phash_batch(
 
     results: Dict[str, Optional[str]] = {}
     total = len(paths)
+    error_details: Dict[str, Dict[str, Any]] = {}
 
     logger.info(f"Starting batch {algorithm} computation for {total} images (size={hash_size}) [cache-enabled]")
 
-    # Use get_hashes for batch efficiency
+    # Step 1: Check cache first for existing hashes (keep current optimization)
     batch_results = flat_cache_manager.get_hashes(paths, [algorithm])
 
+    # Step 2: Identify missing entries that need computation
+    missing_paths = []
     for path in paths:
         hash_val = batch_results.get(path, {}).get(algorithm)
-        results[path] = hash_val
-        if hash_val is None:
-            logger.warning(f"Failed to compute {algorithm} for {path}")
+        if hash_val is not None:
+            # Cache hit - use existing hash
+            results[path] = hash_val
+        else:
+            # Cache miss - needs computation
+            missing_paths.append(path)
 
+    cache_hits = total - len(missing_paths)
+    logger.info(f"Cache check complete: {cache_hits}/{total} hits, {len(missing_paths)} need computation")
+
+    # Step 3: Fall back to individual computation for uncached images
+    if missing_paths:
+        logger.info(f"Computing {algorithm} for {len(missing_paths)} uncached images...")
+
+        for path in missing_paths:
+            try:
+                # Use the enhanced compute_phash function with error handling
+                hash_result = compute_phash(
+                    path,
+                    hash_size=hash_size,
+                    settings=settings,
+                    flat_cache_manager=flat_cache_manager,
+                    return_response=False
+                )
+
+                if hash_result is not None:
+                    # Successfully computed hash
+                    results[path] = hash_result
+                    logger.debug(f"Computed {algorithm} for {path}: {hash_result}")
+                else:
+                    # Hash computation returned None (likely non-image file)
+                    results[path] = None
+                    logger.debug(f"Skipped {algorithm} computation for {path} (non-image or unsupported format)")
+
+            except Exception as e:
+                # Handle computation errors with enhanced context
+                results[path] = None
+                error_context = {
+                    "algorithm": algorithm,
+                    "hash_size": hash_size,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "timestamp": __import__('datetime').datetime.now().isoformat()
+                }
+
+                # Try to extract more detailed error information
+                if hasattr(e, 'file_path'):
+                    error_context["file_path"] = e.file_path
+                if hasattr(e, 'error_type'):
+                    error_context["detailed_error_type"] = e.error_type
+
+                error_details[path] = error_context
+
+                # Enhanced error logging with context
+                logger.warning(f"Failed to compute {algorithm} for {path}: {e}")
+                logger.debug(f"Error context for {path}: {error_context}")
+
+    # Step 4: Calculate and report final statistics
     success_count = sum(1 for v in results.values() if v is not None)
+    failure_count = total - success_count
+    computed_count = len(missing_paths) - failure_count
 
-    # Calculate cache hit information
-    cache_hits = len([p for p in paths if p in batch_results and batch_results[p].get(algorithm) is not None])
-    cache_info = f" (cache hits: {cache_hits})"
+    # Enhanced logging with comprehensive statistics
+    if failure_count > 0:
+        logger.warning(
+            f"Batch {algorithm} completed: {success_count}/{total} successful "
+            f"({cache_hits} cache hits, {computed_count} computed, {failure_count} failed)"
+        )
 
-    logger.info(f"Batch complete: {success_count}/{total} successful{cache_info}")
+        # Log detailed error information at debug level
+        if error_details:
+            logger.debug(f"Batch {algorithm} error details: {error_details}")
+
+            # Categorize errors for better understanding
+            error_types = {}
+            for path, details in error_details.items():
+                error_type = details.get("error_type", "Unknown")
+                error_types[error_type] = error_types.get(error_type, 0) + 1
+
+            logger.debug(f"Batch {algorithm} error breakdown: {error_types}")
+    else:
+        logger.info(
+            f"Batch {algorithm} complete: {success_count}/{total} successful "
+            f"({cache_hits} cache hits, {computed_count} computed)"
+        )
 
     return results
 
@@ -636,25 +805,107 @@ def compute_whash_batch(
 
     results: Dict[str, Optional[str]] = {}
     total = len(paths)
+    error_details: Dict[str, Dict[str, Any]] = {}
 
     logger.info(f"Starting batch {algorithm} computation for {total} images (size={hash_size}, mode={mode}, wavelet={wavelet}) [cache-enabled]")
 
-    # Use get_hashes for batch efficiency
+    # Step 1: Check cache first for existing hashes (keep current optimization)
     batch_results = flat_cache_manager.get_hashes(paths, [algorithm], search_type=search_type)
 
+    # Step 2: Identify missing entries that need computation
+    missing_paths = []
     for path in paths:
         hash_val = batch_results.get(path, {}).get(algorithm)
-        results[path] = hash_val
-        if hash_val is None:
-            logger.warning(f"Failed to compute {algorithm} for {path}")
+        if hash_val is not None:
+            # Cache hit - use existing hash
+            results[path] = hash_val
+        else:
+            # Cache miss - needs computation
+            missing_paths.append(path)
 
+    cache_hits = total - len(missing_paths)
+    logger.info(f"Cache check complete: {cache_hits}/{total} hits, {len(missing_paths)} need computation")
+
+    # Step 3: Fall back to individual computation for uncached images
+    if missing_paths:
+        logger.info(f"Computing {algorithm} for {len(missing_paths)} uncached images...")
+
+        for path in missing_paths:
+            try:
+                # Use the enhanced compute_whash function with error handling
+                hash_result = compute_whash(
+                    path,
+                    hash_size=hash_size,
+                    mode=mode,
+                    wavelet=wavelet,
+                    settings=settings,
+                    flat_cache_manager=flat_cache_manager,
+                    return_response=False
+                )
+
+                if hash_result is not None:
+                    # Successfully computed hash
+                    results[path] = hash_result
+                    logger.debug(f"Computed {algorithm} for {path}: {hash_result}")
+                else:
+                    # Hash computation returned None (likely non-image file)
+                    results[path] = None
+                    logger.debug(f"Skipped {algorithm} computation for {path} (non-image or unsupported format)")
+
+            except Exception as e:
+                # Handle computation errors with enhanced context
+                results[path] = None
+                error_context = {
+                    "algorithm": algorithm,
+                    "hash_size": hash_size,
+                    "mode": mode,
+                    "wavelet": wavelet,
+                    "search_type": search_type,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "timestamp": __import__('datetime').datetime.now().isoformat()
+                }
+
+                # Try to extract more detailed error information
+                if hasattr(e, 'file_path'):
+                    error_context["file_path"] = e.file_path
+                if hasattr(e, 'error_type'):
+                    error_context["detailed_error_type"] = e.error_type
+
+                error_details[path] = error_context
+
+                # Enhanced error logging with context
+                logger.warning(f"Failed to compute {algorithm} for {path}: {e}")
+                logger.debug(f"Error context for {path}: {error_context}")
+
+    # Step 4: Calculate and report final statistics
     success_count = sum(1 for v in results.values() if v is not None)
+    failure_count = total - success_count
+    computed_count = len(missing_paths) - failure_count
 
-    # Calculate cache hit information
-    cache_hits = len([p for p in paths if p in batch_results and batch_results[p].get(algorithm) is not None])
-    cache_info = f" (cache hits: {cache_hits})"
+    # Enhanced logging with comprehensive statistics
+    if failure_count > 0:
+        logger.warning(
+            f"Batch {algorithm} completed: {success_count}/{total} successful "
+            f"({cache_hits} cache hits, {computed_count} computed, {failure_count} failed)"
+        )
 
-    logger.info(f"Batch complete: {success_count}/{total} successful{cache_info}")
+        # Log detailed error information at debug level
+        if error_details:
+            logger.debug(f"Batch {algorithm} error details: {error_details}")
+
+            # Categorize errors for better understanding
+            error_types = {}
+            for path, details in error_details.items():
+                error_type = details.get("error_type", "Unknown")
+                error_types[error_type] = error_types.get(error_type, 0) + 1
+
+            logger.debug(f"Batch {algorithm} error breakdown: {error_types}")
+    else:
+        logger.info(
+            f"Batch {algorithm} complete: {success_count}/{total} successful "
+            f"({cache_hits} cache hits, {computed_count} computed)"
+        )
 
     return results
 

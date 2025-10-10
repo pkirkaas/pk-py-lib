@@ -49,7 +49,7 @@ class TestSettingsSchema:
     def test_create_default_profile(self):
         """Test creating a default profile."""
         profile = create_default_profile("Test Profile", "Test description")
-        
+
         assert profile["name"] == "Test Profile"
         assert profile["description"] == "Test description"
         assert profile["mode"] == "duplicates"
@@ -73,7 +73,7 @@ class TestSettingsSchema:
         mock_path_instance.exists.return_value = True
         mock_path_instance.is_dir.return_value = True
         mock_path.return_value = mock_path_instance
-        
+
         profile = {
             "id": "12345678-1234-5678-1234-567812345678",
             "name": "Test Duplicates",
@@ -95,7 +95,7 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         is_valid, errors = validate_settings_schema(profile)
         assert is_valid, f"Validation failed: {errors}"
 
@@ -107,7 +107,7 @@ class TestSettingsSchema:
         mock_path_instance.exists.return_value = True
         mock_path_instance.is_dir.return_value = True
         mock_path.return_value = mock_path_instance
-        
+
         profile = {
             "id": "12345678-1234-5678-1234-567812345678",
             "name": "Test Similarity",
@@ -120,7 +120,8 @@ class TestSettingsSchema:
             },
             "mode": "similarity",
             "criteria": {
-                "algorithm": "pHash",
+                "algorithm": "phash",
+                "similarity_hash_algorithm": "phash",
                 "degree_ui": 90
             },
             "scope": {
@@ -130,7 +131,7 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         is_valid, errors = validate_settings_schema(profile)
         assert is_valid, f"Validation failed: {errors}"
 
@@ -142,7 +143,7 @@ class TestSettingsSchema:
         mock_path_instance.exists.return_value = True
         mock_path_instance.is_dir.return_value = True
         mock_path.return_value = mock_path_instance
-        
+
         profile = {
             "id": "12345678-1234-5678-1234-567812345678",
             "name": "Test Two Pool",
@@ -158,7 +159,8 @@ class TestSettingsSchema:
             },
             "mode": "similarity",
             "criteria": {
-                "algorithm": "pHash",
+                "algorithm": "phash",
+                "similarity_hash_algorithm": "phash",
                 "degree_ui": 90
             },
             "scope": {
@@ -169,7 +171,7 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         is_valid, errors = validate_settings_schema(profile)
         assert is_valid, f"Validation failed: {errors}"
 
@@ -181,7 +183,7 @@ class TestSettingsSchema:
         mock_path_instance.exists.return_value = True
         mock_path_instance.is_dir.return_value = True
         mock_path.return_value = mock_path_instance
-        
+
         profile = {
             "name": "Test Profile",
             "pools": {
@@ -190,7 +192,7 @@ class TestSettingsSchema:
                 }
             }
         }
-        
+
         is_valid, errors = validate_settings_schema(profile)
         assert not is_valid
         # JSON schema validation should catch missing required fields
@@ -206,7 +208,7 @@ class TestSettingsSchema:
         mock_path_instance.exists.return_value = True
         mock_path_instance.is_dir.return_value = True
         mock_path.return_value = mock_path_instance
-        
+
         profile = {
             "id": "12345678-1234-5678-1234-567812345678",
             "name": "Test Profile",
@@ -228,7 +230,7 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         is_valid, errors = validate_settings_schema(profile)
         assert not is_valid
         assert any("mode" in error or "enum" in error for error in errors)
@@ -241,7 +243,7 @@ class TestSettingsSchema:
         mock_path_instance.exists.return_value = True
         mock_path_instance.is_dir.return_value = True
         mock_path.return_value = mock_path_instance
-        
+
         profile = {
             "id": "12345678-1234-5678-1234-567812345678",
             "name": "Test Profile",
@@ -264,7 +266,7 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         is_valid, errors = validate_settings_schema(profile)
         assert not is_valid
         # JSON schema should catch this with "not" constraint
@@ -278,7 +280,7 @@ class TestSettingsSchema:
         mock_path_instance.exists.return_value = True
         mock_path_instance.is_dir.return_value = True
         mock_path.return_value = mock_path_instance
-        
+
         profile = {
             "id": "12345678-1234-5678-1234-567812345678",
             "name": "Test Profile",
@@ -291,7 +293,8 @@ class TestSettingsSchema:
             },
             "mode": "similarity",
             "criteria": {
-                "algorithm": "pHash"
+                "algorithm": "phash",
+                "similarity_hash_algorithm": "phash"
             },
             "scope": {
                 "kind": "single_pool"
@@ -300,7 +303,7 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         is_valid, errors = validate_settings_schema(profile)
         assert not is_valid
         # JSON schema should require degree_ui for similarity mode
@@ -314,7 +317,7 @@ class TestSettingsSchema:
         mock_path_instance.exists.return_value = True
         mock_path_instance.is_dir.return_value = True
         mock_path.return_value = mock_path_instance
-        
+
         profile = {
             "id": "12345678-1234-5678-1234-567812345678",
             "name": "Test Profile",
@@ -327,7 +330,8 @@ class TestSettingsSchema:
             },
             "mode": "similarity",
             "criteria": {
-                "algorithm": "pHash",
+                "algorithm": "phash",
+                "similarity_hash_algorithm": "phash",
                 "degree_ui": 90
             },
             "scope": {
@@ -338,7 +342,7 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         is_valid, errors = validate_settings_schema(profile)
         assert not is_valid
         # JSON schema should require Pool B for two-pool mode
@@ -367,9 +371,9 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         normalized = normalize_settings(minimal_profile)
-        
+
         # Check that defaults are applied
         assert normalized["pools"]["A"]["recurse"] is True
         assert normalized["pools"]["A"]["max_depth"] == 0
@@ -396,7 +400,8 @@ class TestSettingsSchema:
             },
             "mode": "similarity",
             "criteria": {
-                "algorithm": "pHash",
+                "algorithm": "phash",
+                "similarity_hash_algorithm": "phash",
                 "degree_ui": 90
             },
             "scope": {
@@ -407,9 +412,9 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         normalized = normalize_settings(minimal_profile)
-        
+
         # Check that defaults are applied to both pools
         assert normalized["pools"]["A"]["recurse"] is True
         assert normalized["pools"]["B"]["recurse"] is True
@@ -422,7 +427,7 @@ class TestSettingsSchema:
         mock_path_instance.exists.return_value = True
         mock_path_instance.is_dir.return_value = True
         mock_path.return_value = mock_path_instance
-        
+
         profile = {
             "id": "12345678-1234-5678-1234-567812345678",
             "name": "Test Profile",
@@ -444,7 +449,7 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         is_valid, errors = validate_settings_schema(profile)
         assert is_valid, f"Validation failed: {errors}"
 
@@ -455,7 +460,7 @@ class TestSettingsSchema:
         mock_path_instance.exists.return_value = False
         mock_path_instance.is_dir.return_value = False
         mock_path.return_value = mock_path_instance
-        
+
         profile = {
             "id": "12345678-1234-5678-1234-567812345678",
             "name": "Test Profile",
@@ -477,7 +482,7 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         is_valid, errors = validate_settings_schema(profile)
         assert not is_valid
         assert any("does not exist" in error for error in errors)
@@ -505,14 +510,14 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         # Mock path validation to avoid filesystem dependency
         with patch('src.pk_py_lib.core.settings_schema.Path') as mock_path:
             mock_path_instance = MagicMock()
             mock_path_instance.exists.return_value = True
             mock_path_instance.is_dir.return_value = True
             mock_path.return_value = mock_path_instance
-            
+
             is_valid, errors = is_valid_for_save(profile)
             assert is_valid, f"Validation failed: {errors}"
 
@@ -539,7 +544,7 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         is_valid, errors = is_valid_for_save(profile)
         assert not is_valid
         assert len(errors) > 0  # Ensure there are validation errors
@@ -567,14 +572,14 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         # Mock path validation to avoid filesystem dependency
         with patch('src.pk_py_lib.core.settings_schema.Path') as mock_path:
             mock_path_instance = MagicMock()
             mock_path_instance.exists.return_value = True
             mock_path_instance.is_dir.return_value = True
             mock_path.return_value = mock_path_instance
-            
+
             is_valid, errors = is_valid_for_run(profile)
             assert is_valid, f"Validation failed: {errors}"
 
@@ -601,14 +606,14 @@ class TestSettingsSchema:
                 "mode": "report_only"
             }
         }
-        
+
         # Mock path validation to return false
         with patch('src.pk_py_lib.core.settings_schema.Path') as mock_path:
             mock_path_instance = MagicMock()
             mock_path_instance.exists.return_value = False
             mock_path_instance.is_dir.return_value = False
             mock_path.return_value = mock_path_instance
-            
+
             is_valid, errors = is_valid_for_run(profile)
             assert not is_valid
             assert any("does not exist" in error for error in errors)

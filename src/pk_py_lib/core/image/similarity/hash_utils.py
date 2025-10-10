@@ -17,7 +17,7 @@ from PIL import Image
 from pk_py_lib.core.flat_cache import FlatCacheManager, FlatCacheDBError
 from pk_py_lib.core.logging.logger import get_logger
 
-from .types import InvalidImageError, SimilarityError
+from .types import InvalidImageError, SimilarityError, ErrorContext, DetailedSimilarityError
 from .validation import is_image_extension, validate_hash_size, validate_image_path
 
 logger = get_logger(__name__)
@@ -28,7 +28,8 @@ def load_image_with_fallback(image_path: Union[str, Path]) -> np.ndarray:
     Load image using PIL with OpenCV fallback.
 
     This function provides robust image loading with multiple backend support
-    to handle various image formats and edge cases.
+    to handle various image formats and edge cases. Enhanced with detailed
+    error reporting and context preservation.
 
     Args:
         image_path: Path to the image file
@@ -39,6 +40,7 @@ def load_image_with_fallback(image_path: Union[str, Path]) -> np.ndarray:
     Raises:
         FileNotFoundError: If image file doesn't exist
         ValueError: If image cannot be loaded by any backend
+        DetailedSimilarityError: For enhanced error reporting with context
     """
     path = validate_image_path(image_path)
 
@@ -62,17 +64,87 @@ def load_image_with_fallback(image_path: Union[str, Path]) -> np.ndarray:
             return img_array
 
     except Exception as pil_exc:
+        # Create detailed error context for PIL failure
+        pil_context = ErrorContext(
+            file_path=str(path),
+            operation="load_image",
+            original_exception=pil_exc,
+            error_type=type(pil_exc).__name__,
+            backend="PIL",
+            additional_context={
+                "image_mode": getattr(pil_exc, 'mode', 'unknown'),
+                "image_format": getattr(pil_exc, 'format', 'unknown'),
+                "fallback_attempted": True
+            }
+        )
+
+        # Log detailed debug information
+        logger.debug(f"PIL loading error context: {pil_context.to_dict()}")
         logger.warning(f"PIL loading failed for {path}: {pil_exc}, trying OpenCV fallback")
 
         # Fallback to OpenCV if PIL fails
         try:
             image = cv2.imread(str(path), cv2.IMREAD_COLOR)
             if image is None:
-                raise SimilarityError(f"Failed to load image {path} with both PIL and OpenCV")
+                # Create enhanced error for complete failure
+                complete_failure_context = ErrorContext(
+                    file_path=str(path),
+                    operation="load_image",
+                    original_exception=pil_exc,
+                    error_type="CompleteLoadFailure",
+                    backend="Multiple",
+                    additional_context={
+                        "pil_error": str(pil_exc),
+                        "pil_error_type": type(pil_exc).__name__,
+                        "opencv_result": "None",
+                        "fallback_attempted": True
+                    }
+                )
+                raise DetailedSimilarityError(
+                    f"Failed to load image {path} with both PIL and OpenCV",
+                    complete_failure_context
+                ) from pil_exc
             return image
         except Exception as cv_exc:
+            # Create detailed error context for OpenCV failure
+            opencv_context = ErrorContext(
+                file_path=str(path),
+                operation="load_image",
+                original_exception=cv_exc,
+                error_type=type(cv_exc).__name__,
+                backend="OpenCV",
+                additional_context={
+                    "pil_error": str(pil_exc),
+                    "pil_error_type": type(pil_exc).__name__,
+                    "fallback_attempted": True,
+                    "opencv_error": str(cv_exc)
+                }
+            )
+
+            # Log detailed debug information
+            logger.debug(f"OpenCV fallback error context: {opencv_context.to_dict()}")
             logger.error(f"OpenCV fallback also failed for {path}: {cv_exc}")
-            raise SimilarityError(f"Failed to load image {path} with both PIL and OpenCV: {pil_exc}")
+
+            # Create enhanced error for complete failure
+            complete_failure_context = ErrorContext(
+                file_path=str(path),
+                operation="load_image",
+                original_exception=cv_exc,
+                error_type="CompleteLoadFailure",
+                backend="Multiple",
+                additional_context={
+                    "pil_error": str(pil_exc),
+                    "pil_error_type": type(pil_exc).__name__,
+                    "opencv_error": str(cv_exc),
+                    "opencv_error_type": type(cv_exc).__name__,
+                    "fallback_attempted": True
+                }
+            )
+
+            raise DetailedSimilarityError(
+                f"Failed to load image {path} with both PIL and OpenCV",
+                complete_failure_context
+            ) from cv_exc
 
 
 def validate_hash_parameters(
@@ -271,30 +343,87 @@ def check_cache_for_hash(
 
 def handle_image_loading_errors(
     image_path: str,
-    error: Exception
+    error: Exception,
+    operation: str = "load_image",
+    backend: Optional[str] = None,
+    additional_context: Optional[Dict[str, Any]] = None
 ) -> None:
     """
-    Handle and categorize image loading errors.
+    Handle and categorize image loading errors with enhanced context preservation.
 
     Args:
         image_path: Path to the image file
         error: The exception that occurred
+        operation: Operation being performed when error occurred
+        backend: Backend being used (PIL, OpenCV, etc.)
+        additional_context: Additional context information
 
     Raises:
         InvalidImageError: If image format is unsupported or corrupted
         SimilarityError: For other computation errors
         IOError: For file access errors
+        DetailedSimilarityError: For enhanced error reporting with context
     """
+    # Create enhanced error context
+    error_context = ErrorContext(
+        file_path=image_path,
+        operation=operation,
+        original_exception=error,
+        error_type=type(error).__name__,
+        backend=backend,
+        additional_context=additional_context or {}
+    )
+
+    # Log detailed debug information
+    logger.debug(f"Error context for {image_path}: {error_context.to_dict()}")
+
     error_details = str(error).lower()
 
+    # Check if this is already a DetailedSimilarityError with context
+    if isinstance(error, DetailedSimilarityError):
+        logger.error(f"Detailed similarity error for {image_path}: {error.context.get_summary()}", exception=error)
+        raise error
+
+    # Categorize and enhance the error
     if "cannot identify" in error_details or "unidentified image" in error_details:
-        raise InvalidImageError(image_path, "Unsupported or corrupted image format")
+        enhanced_context = ErrorContext(
+            file_path=image_path,
+            operation=operation,
+            original_exception=error,
+            error_type="InvalidImageFormat",
+            backend=backend,
+            additional_context={
+                **(additional_context or {}),
+                "error_category": "unsupported_format",
+                "detection_keywords": ["cannot identify", "unidentified image"]
+            }
+        )
+        logger.error(f"Invalid image format for {image_path}: {error}", exception=error)
+        raise InvalidImageError(image_path, "Unsupported or corrupted image format") from error
     elif isinstance(error, (IOError, OSError)):
+        enhanced_context = ErrorContext(
+            file_path=image_path,
+            operation=operation,
+            original_exception=error,
+            error_type="FileAccessError",
+            backend=backend,
+            additional_context={
+                **(additional_context or {}),
+                "error_category": "io_error",
+                "errno": getattr(error, 'errno', None)
+            }
+        )
         logger.error(f"IO error loading image {image_path}: {error}", exception=error)
+        logger.debug(f"IO error context: {enhanced_context.to_dict()}")
         raise error
     else:
+        # Create enhanced similarity error with full context
         logger.error(f"Image loading failed for {image_path}: {error}", exception=error)
-        raise SimilarityError(f"Image loading failed: {error}") from error
+        logger.debug(f"General error context: {error_context.to_dict()}")
+        raise DetailedSimilarityError(
+            f"Image loading failed for {image_path}: {error}",
+            error_context
+        ) from error
 
 
 def get_effective_hash_size(

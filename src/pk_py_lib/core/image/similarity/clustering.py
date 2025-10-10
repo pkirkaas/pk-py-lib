@@ -667,7 +667,7 @@ def find_similar_images(
 
         # Prepare response data
         similarity_groups = final_context.final_groups
-        duplicate_groups = final_context.exact_duplicate_sets
+        duplicate_groups = final_context.exact_sets
 
         # Get final cache stats and calculate improvements
         cache_metadata = {}

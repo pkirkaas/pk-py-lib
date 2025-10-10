@@ -138,7 +138,21 @@ SETTINGS_PROFILE_SCHEMA = {
                     "default": ["phash"],
                     "description": "List of enabled perceptual hashing algorithms for similarity detection. Supports 'phash' (DCT-based, default) and 'whash' (wavelet-based via imagehash.whash with 8x8 resize and db1 wavelet). 'whash' is robust to structural changes like cropping or rotation but may be slower; falls back to 'phash' if computation fails. Defaults to ['phash']. Example: ['phash', 'whash'] for multi-algorithm support."
                 },
-                "max_distance": {"type": "integer", "minimum": 0, "maximum": 64, "default": 15}
+                "max_distance": {"type": "integer", "minimum": 0, "maximum": 64, "default": 15},
+                "lsh_num_perm": {
+                    "type": "integer",
+                    "minimum": 64,
+                    "maximum": 1024,
+                    "default": 128,
+                    "description": "Number of hash permutations in MinHash sketches for LSH (Locality-Sensitive Hashing). Higher values improve accuracy (fewer false negatives) but increase build/query time and memory. Used when n > 1000 images for scalable similarity detection. Default 128 provides good balance; 256 for higher precision."
+                },
+                "lsh_threshold": {
+                    "type": ["number", "null"],
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": None,
+                    "description": "Override for LSH similarity threshold (0.0-1.0). If null, defaults to 1 - (threshold / 64.0) based on Hamming threshold (e.g., for threshold=10, ~0.844). Lower values retrieve more candidates (safer but slower). Used for large-scale similarity detection with MinHashLSH."
+                }
             }
         },
 
@@ -526,6 +540,11 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
 
     similarity.setdefault("max_distance", 15)
 
+    # Set LSH defaults for scalability
+    similarity.setdefault("lsh_num_perm", 128)
+    # lsh_threshold defaults to null to use auto-calculation based on Hamming threshold
+    similarity.setdefault("lsh_threshold", None)
+
     # Ensure pools exist
     pools = normalized.setdefault("pools", {})
     pool_a = pools.setdefault("A", {})
@@ -605,7 +624,9 @@ def create_default_profile(name: str, description: Optional[str] = None) -> Dict
             "phash_threshold": 10,
             "whash_threshold": 12,
             "enabled_algorithms": ["phash"],
-            "max_distance": 15
+            "max_distance": 15,
+            "lsh_num_perm": 128,
+            "lsh_threshold": None
         },
         "pools": {
             "A": {

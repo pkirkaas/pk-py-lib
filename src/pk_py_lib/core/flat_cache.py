@@ -373,6 +373,31 @@ class FlatCacheManager:
                 'counters': self.get_counters()
             }
 
+    def _get_file_stats(self, file_path: str) -> tuple[int, float]:
+        """
+        Get file statistics (size and modification time) for a file.
+
+        This method is used by image quality evaluators to create new cache entries
+        when an existing entry is not found or is invalid.
+
+        Args:
+            file_path: Path to the file
+
+        Returns:
+            Tuple of (size, mtime) where:
+            - size: File size in bytes
+            - mtime: File modification time as a float timestamp
+
+        Raises:
+            OSError: If the file doesn't exist or cannot be accessed
+        """
+        try:
+            stat_info = os.stat(file_path)
+            return stat_info.st_size, stat_info.st_mtime
+        except OSError as e:
+            self.logger.error(f"Failed to get file stats for {file_path}: {e}")
+            raise
+
 
 # Exceptions for error handling
 class FlatCacheError(Exception):

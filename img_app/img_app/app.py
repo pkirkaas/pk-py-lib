@@ -77,22 +77,22 @@ def _ensure_application(argv: Optional[list[str]] = None) -> QApplication:
 def main() -> int:
     """
     Entry point for launching the KDC Image Organizer application.
-    
+
     Startup sequence (direct launch with integrated settings management):
     1) Instantiate QApplication.
     2) Initialize/open database and run migrations via DatabaseManager.
     3) Create SettingsProfilesAPI and ensure_default_profile() to guarantee an Active profile exists.
     4) Fetch the active profile for the main window.
     5) Create and show MainWindow, passing the active profile and managers.
-    
+
     Supports CLI mode: `imgapp -l` or `imgapp --location` to list actual local data paths used.
     Qt flags (e.g., `-platform offscreen`) are passed through to QApplication via parse_known_args().
-    
+
     Returns
     -------
     int
         Qt event loop exit code; non-zero on fatal startup error.
-    
+
     Notes
     -----
     - The application now launches directly with settings management integrated into the main window.
@@ -116,7 +116,7 @@ Examples:
         description=description,
         formatter_class=argparse.RawTextHelpFormatter
     )
-    
+
     # CLI Options
     parser.add_argument(
         "-l",
@@ -139,31 +139,31 @@ Examples:
         )
     )
     args, qt_argv = parser.parse_known_args()
-    
+
     # --- Logging Configuration (Dynamic based on app setting) ---
     # Defer logging setup until after ConfigurationManager is initialized
     # to respect the logging_to_user_dir setting (project root vs user data dir)
-    
+
     # Default to project root for early errors before config is available
     PROJECT_ROOT = Path(__file__).parent.parent.parent
     log_dir = PROJECT_ROOT / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Placeholder paths for early logging if needed
     early_cache_log_path = log_dir / "cache_process.log"
     early_log_file_path = log_dir / "img_app-terminal.log"
-    
+
     # Early cache logger setup (will be reconfigured later if needed)
     from src.pk_py_lib.core.logging.logger import get_cache_logger
     get_cache_logger(log_dir=log_dir)
-    
+
     # Early main logging (minimal, will be fully configured after settings)
     try:
         from src.pk_py_lib.core.logging.logger import configure_logging, LogLevel
         configure_logging(
             console=True,
             file_path=early_log_file_path,
-            level=LogLevel.INFO,
+            level=LogLevel.DEBUG,  # Enable debug logging for enhanced error context
             rich_console=True
         )
     except Exception as exc:
@@ -175,11 +175,11 @@ Examples:
             # Use the unified data directory for path reporting
             from src.pk_py_lib.core import get_data_dir
             data_dir = get_data_dir().resolve()
-            
+
             # Initialize DatabaseManager (uses get_data_dir internally now)
             db_mgr = DatabaseManager()
             db_mgr.initialize()
-            
+
             # Initialize ConfigurationManager to get cache size
             config_mgr = None
             try:
@@ -187,23 +187,23 @@ Examples:
                 max_mb = int(getattr(config_mgr, "get_app_setting", lambda k: 5120)("cache_size_mb") or 5120)
             except Exception:
                 max_mb = 5120
-            
+
             # Collect and print actual resolved paths with existence checks
             settings_db = db_mgr.settings_db.resolve()
             backups_dir = (data_dir / 'backups').resolve()
             sessions_db = (data_dir / 'sessions.db').resolve() # Assuming sessions.db is also in data_dir
-            
+
             # Default log file path (project root for --location since config not fully dynamic here)
             PROJECT_ROOT = Path(__file__).parent.parent.parent
             log_dir = PROJECT_ROOT / "logs"
             app_log = (log_dir / "img_app-terminal.log").resolve()
-            
+
             # Flat cache path
             flat_cache_db = (data_dir / 'flat_cache.db').resolve()
-            
+
             def status(path: Path):
                 return " ✓" if path.exists() else " ✗ (does not exist)"
-            
+
             print(f"--- Unified Data Directory ---")
             print(f"Base Data Dir: {data_dir}{status(data_dir)}")
             print(f"Settings DB: {settings_db}{status(settings_db)}")
@@ -215,7 +215,7 @@ Examples:
         except Exception as exc:
             print(f"Error initializing managers for --location: {exc}", file=sys.stderr)
             sys.exit(1)
-    
+
     # Pass through any remaining args (likely Qt flags) to QApplication
     app = _ensure_application([sys.argv[0]] + qt_argv)
 
@@ -225,7 +225,7 @@ Examples:
     flat_cache_mgr = None # Add FlatCacheManager
     controller = None # New variable for the controller
     active_profile: Optional[Dict[str, Any]] = None
-    
+
     try:
         # Core managers imported at module top; using them directly
 
@@ -236,7 +236,7 @@ Examples:
         # 3) Profiles API bound to this DB; ensure a default/active profile exists
         api = SettingsProfilesAPI(db_mgr)
         ensured = api.ensure_default_profile()
-        
+
         # 3.1) Initialize the Settings Manager Controller
         from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerController
         controller = SettingsManagerController(api)
@@ -268,25 +268,25 @@ Examples:
         # Optional managers (best-effort; failures are non-fatal)
         config_mgr = None
         flat_cache_mgr = None
-        
+
         try:
             config_mgr = ConfigurationManager(db_mgr)
             flat_cache_mgr = FlatCacheManager()
-            
+
             # Now configure dynamic logging based on app setting
             logging_to_user_dir = config_mgr.get_app_setting('logging_to_user_dir')  # Defaults to False from schema if not set.
-            
+
             if logging_to_user_dir:
                 from src.pk_py_lib.core import get_data_dir
                 log_dir = get_data_dir() / "logs"
             else:
                 log_dir = PROJECT_ROOT / "logs"
-            
+
             log_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # Reconfigure main terminal log with dynamic path and rotation
             LOG_FILE_PATH = log_dir / "img_app-terminal.log"
-            
+
             # Rotate existing main log file (similar to cache rotation)
             if LOG_FILE_PATH.exists():
                 ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -296,21 +296,21 @@ Examples:
                 except OSError as e:
                     # Log to console since main logging not fully set up yet
                     print(f"Warning: Failed to rotate main log file: {e}", file=sys.stderr)
-            
+
             # Create new main log file
             LOG_FILE_PATH.touch(exist_ok=True)
-            
+
             # Reconfigure main logging with dynamic path
             configure_logging(
                 console=True,
                 file_path=LOG_FILE_PATH,
-                level=LogLevel.INFO,
+                level=LogLevel.DEBUG,  # Enable debug logging for enhanced error context
                 rich_console=True
             )
-            
+
             # Reconfigure cache logger with dynamic log_dir
             cache_log_path = log_dir / "cache_process.log"
-            
+
             # Rotate cache log if needed (idempotent)
             if cache_log_path.exists():
                 ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -320,13 +320,13 @@ Examples:
                 except OSError as e:
                     # Already logged via main logger or early console
                     pass
-            
+
             # Create new cache log file
             cache_log_path.touch(exist_ok=True)
-            
+
             # Reinitialize cache logger with dynamic log_dir
             get_cache_logger(log_dir=log_dir)
-            
+
         except Exception as exc:
             import logging
             logging.getLogger("img_app.app").exception("Optional manager init failed: %s", exc)
@@ -347,7 +347,7 @@ Examples:
         setattr(window, "database_manager", db_mgr)
     if config_mgr is not None:
         setattr(window, "configuration_manager", config_mgr)
-    
+
     if flat_cache_mgr is not None:
         setattr(window, "flat_cache_manager", flat_cache_mgr)
 
@@ -358,11 +358,11 @@ Examples:
     window.load_profiles()
 
     window.show()
-    
+
     # Check for CLI option to automatically start the default operation
     if args.default:
         window.start_default_operation()
-        
+
     return app.exec()
 
 
