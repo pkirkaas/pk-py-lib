@@ -216,7 +216,7 @@ class DirectoryTraversal:
         max_size: Optional[int] = None,
         include_hidden: bool = False
     ) -> Iterator[Path]:
-        """Internal recursive walking function."""
+        """Internal recursive walking function with circular reference protection."""
         # Compile patterns for efficiency
         include_compiled = None
         if patterns:
@@ -255,12 +255,30 @@ class DirectoryTraversal:
 
             return True
 
-        def walk_recursive_internal(current_path: Path, current_depth: int = 0):
-            """Recursive walking function."""
+        def walk_recursive_internal(current_path: Path, current_depth: int = 0, visited: Optional[Set[Path]] = None):
+            """Recursive walking function with circular reference detection."""
+            if visited is None:
+                visited = set()
+
             if max_depth is not None and current_depth >= max_depth:
                 return
 
             try:
+                # Resolve the current path to handle symlinks properly
+                try:
+                    resolved_path = current_path.resolve()
+                except OSError:
+                    # If we can't resolve, use the original path
+                    resolved_path = current_path
+
+                # Check for circular reference
+                if resolved_path in visited:
+                    log.warning(f"Circular reference detected, skipping: {current_path}")
+                    return
+
+                # Add current directory to visited set
+                visited.add(resolved_path)
+
                 for item in current_path.iterdir():
                     # Skip broken symlinks
                     if item.is_symlink() and not follow_symlinks:
@@ -283,8 +301,8 @@ class DirectoryTraversal:
                             if any(pattern.match(item.name) for pattern in exclude_compiled):
                                 continue
 
-                        # Recurse into subdirectory
-                        yield from walk_recursive_internal(item, current_depth + 1)
+                        # Recurse into subdirectory with updated visited set
+                        yield from walk_recursive_internal(item, current_depth + 1, visited.copy())
 
             except PermissionError:
                 log.warning(f"Permission denied accessing: {current_path}")

@@ -18,7 +18,7 @@ def get_data_dir(app_name: str = "pk_py_lib", app_author: str = "Pk") -> Path:
     Determine the unified, platform-appropriate application data directory.
 
     This function uses platformdirs to find the standard user data directory
-    for the application. It respects the environment variable 
+    for the application. It respects the environment variable
     'PK_PY_LIB_HOME' for overriding the default location, which is useful
     for testing or portable installations.
 
@@ -40,12 +40,39 @@ def get_data_dir(app_name: str = "pk_py_lib", app_author: str = "Pk") -> Path:
     # 1. Check for environment variable override
     env_var = os.environ.get("PK_PY_LIB_HOME")
     if env_var:
-        data_dir = Path(env_var).resolve()
-        if not data_dir.is_dir() and data_dir.exists():
-            raise RuntimeError(
-                f"PK_PY_LIB_HOME environment variable points to an existing file, not a directory: {data_dir}"
-            )
-        return data_dir
+        try:
+            # Expand user home directory (~) and environment variables
+            expanded_path = os.path.expanduser(os.path.expandvars(env_var))
+            data_dir = Path(expanded_path)
+
+            # Check if path exists and is a file before resolving
+            if data_dir.exists() and not data_dir.is_dir():
+                raise RuntimeError(
+                    f"PK_PY_LIB_HOME environment variable points to an existing file, not a directory: {data_dir}"
+                )
+
+            # Resolve with error handling to prevent circular symlink issues
+            try:
+                resolved_dir = data_dir.resolve()
+            except (OSError, RuntimeError) as e:
+                # Handle circular symlinks, permission issues, or other path resolution errors
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Failed to resolve path {data_dir}, using unresolve path: {e}")
+                # Fall back to using the unresolved path if resolve fails
+                resolved_dir = data_dir
+
+            # Final validation
+            if resolved_dir.exists() and not resolved_dir.is_dir():
+                raise RuntimeError(
+                    f"PK_PY_LIB_HOME environment variable points to an existing file, not a directory: {resolved_dir}"
+                )
+
+            return resolved_dir
+
+        except Exception as e:
+            # If environment variable path is invalid, log warning and fall back to platformdirs
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Invalid PK_PY_LIB_HOME environment variable '{env_var}': {e}. Using default location.")
 
     # 2. Use platformdirs for OS-appropriate location
     # Ensure app_name and app_author are used correctly for platformdirs
@@ -78,7 +105,7 @@ def format_timestamp(timestamp: float | None) -> str:
     Examples:
         >>> format_timestamp(1728231226.0)
         '2025-10-06 14:53:46'
-        
+
         >>> # Invalid case
         >>> format_timestamp(-1)  # Raises ValueError: Invalid timestamp -1.0
 
@@ -97,7 +124,7 @@ def format_timestamp(timestamp: float | None) -> str:
         raise TypeError(f"Expected float timestamp, got {type(timestamp)}: {timestamp}")
     if timestamp < 0:
         raise ValueError(f"Invalid timestamp {timestamp}. Unix timestamps cannot be negative.")
-    
+
     try:
         dt = datetime.fromtimestamp(timestamp)
         return dt.strftime("%Y-%m-%d %H:%M:%S")
