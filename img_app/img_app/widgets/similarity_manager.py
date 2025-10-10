@@ -148,6 +148,9 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         self._flat_cache_manager = flat_cache_manager
         self._algorithms = tuple(algorithms or self._DEFAULT_ALGORITHMS)
 
+        # Store groups count for status line display
+        self._initial_groups_count = len(list(groups or []))
+
         super().__init__(
             groups=list(groups or []),
             selection_store=self._selection_store,
@@ -287,6 +290,12 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         except Exception:
             # Fallback to default display text
             self._quality_combo.setCurrentText("BRISQUE")
+
+        # Update status line with similarity groups count
+        if self._initial_groups_count > 0:
+            self._cache_stats_label.setText(f"Cache: Not initialized | Similarity Groups: {self._initial_groups_count}")
+        else:
+            self._cache_stats_label.setText("Cache: Not initialized")
 
         return controls_widget
 
@@ -1561,6 +1570,14 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
     @log_errors()
     def _update_cache_stats_display(self) -> None:
         """Update cache statistics display in GUI."""
+        # Get current groups count from stored value or model
+        if hasattr(self, '_initial_groups_count'):
+            groups_count = self._initial_groups_count
+        elif hasattr(self, '_model') and self._model:
+            groups_count = len(self._model.groups)
+        else:
+            groups_count = 0
+
         if hasattr(self, '_flat_cache_manager') and self._flat_cache_manager:
             if hasattr(self._flat_cache_manager, '_enhanced_cache'):
                 # Use enhanced cache if available
@@ -1572,10 +1589,12 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                         f"{stats['cache_size_mb']:.1f}MB, "
                         f"Hit rate: {stats['hit_rate']:.1f}%"
                     )
-                    self._cache_stats_label.setText(cache_info)
-                    LOGGER.info(f"Updated cache stats display: {cache_info}")
+                    groups_text = f" | Similarity Groups: {groups_count}" if groups_count > 0 else ""
+                    self._cache_stats_label.setText(f"{cache_info}{groups_text}")
+                    LOGGER.info(f"Updated cache stats display: {cache_info}{groups_text}")
                 else:
-                    self._cache_stats_label.setText("Cache: Stats unavailable")
+                    groups_text = f" | Similarity Groups: {groups_count}" if groups_count > 0 else ""
+                    self._cache_stats_label.setText(f"Cache: Stats unavailable{groups_text}")
             else:
                 # Fallback to legacy cache counters
                 counters = self._flat_cache_manager.get_counters()
@@ -1585,10 +1604,12 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                     f"Cache: {counters['hits']} hits, {counters['misses']} misses, "
                     f"Hit rate: {hit_rate:.1f}%"
                 )
-                self._cache_stats_label.setText(cache_info)
-                LOGGER.info(f"Updated legacy cache stats display: {cache_info}")
+                groups_text = f" | Similarity Groups: {groups_count}" if groups_count > 0 else ""
+                self._cache_stats_label.setText(f"{cache_info}{groups_text}")
+                LOGGER.info(f"Updated legacy cache stats display: {cache_info}{groups_text}")
         else:
-            self._cache_stats_label.setText("Cache: Not available")
+            groups_text = f" | Similarity Groups: {groups_count}" if groups_count > 0 else ""
+            self._cache_stats_label.setText(f"Cache: Not available{groups_text}")
 
     @log_errors()
     def _on_compute_clicked(self) -> None:
