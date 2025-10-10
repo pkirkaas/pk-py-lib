@@ -207,7 +207,24 @@ def set_active_evaluator(key: str) -> Optional[ImageQualityEvaluator]:
                 # No need to explicitly migrate here
                 pass
 
-            settings = active_profile.json_data.copy() if active_profile.json_data else {}
+            # Get the complete current profile data or create a minimal valid structure
+            if active_profile.json_data:
+                settings = active_profile.json_data.copy()
+            else:
+                # Create a minimal valid profile structure with required fields
+                from pathlib import Path
+                settings = {
+                    "id": active_profile.id,
+                    "name": active_profile.name,
+                    "created_at": active_profile.created_at,
+                    "updated_at": active_profile.updated_at,
+                    "pools": {"A": {"paths": [str(Path.home())]}},  # Minimal required structure with valid path
+                    "mode": "duplicates",
+                    "criteria": {"algorithm": "xxh3"},
+                    "scope": {"kind": "single_pool"},
+                    "output": {"mode": "report_only"}
+                }
+
             settings["image_quality_evaluator"] = "none"
             mgr.update_profile(active_profile.id, json_data=settings)
 
@@ -240,7 +257,24 @@ def set_active_evaluator(key: str) -> Optional[ImageQualityEvaluator]:
             # No need to explicitly migrate here
             pass
 
-        settings = active_profile.json_data.copy() if active_profile.json_data else {}
+        # Get the complete current profile data or create a minimal valid structure
+        if active_profile.json_data:
+            settings = active_profile.json_data.copy()
+        else:
+            # Create a minimal valid profile structure with required fields
+            from pathlib import Path
+            settings = {
+                "id": active_profile.id,
+                "name": active_profile.name,
+                "created_at": active_profile.created_at,
+                "updated_at": active_profile.updated_at,
+                "pools": {"A": {"paths": [str(Path.home())]}},  # Minimal required structure with valid path
+                "mode": "duplicates",
+                "criteria": {"algorithm": "xxh3"},
+                "scope": {"kind": "single_pool"},
+                "output": {"mode": "report_only"}
+            }
+
         settings["image_quality_evaluator"] = key
         mgr.update_profile(active_profile.id, json_data=settings)
 
