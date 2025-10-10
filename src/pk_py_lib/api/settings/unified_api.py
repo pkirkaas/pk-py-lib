@@ -541,6 +541,30 @@ class UnifiedSettingsAPI:
             logger.exception("set_active_profile failed id=%s", profile_id)
             return ApiResponse.fail(str(e), code=_map_exception(e))
 
+    def set_active(self, profile_id: str) -> ApiResponse[Dict[str, Any]]:
+        """
+        Set a profile as active (single active invariant).
+
+        This method is provided for backward compatibility.
+        Use set_active_profile() for new code.
+
+        Parameters
+        ----------
+        profile_id : str
+            Profile ID to set as active
+
+        Returns
+        -------
+        ApiResponse[Dict[str, Any]]
+            The newly active profile data
+        """
+        warnings.warn(
+            "set_active is deprecated. Use set_active_profile instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return self.set_active_profile(profile_id)
+
     # -------------------------------------------------------------------------
     # Validation Methods
     # -------------------------------------------------------------------------

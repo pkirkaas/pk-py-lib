@@ -35,7 +35,7 @@ from typing import Optional
 from pk_py_lib.core.image.quality.base import ImageQualityEvaluator
 from pk_py_lib.core.image.quality.registry import ImageQualityEvaluatorRegistry
 from pk_py_lib.core.logging import get_logger
-from pk_py_lib.core.settings_profiles import get_active_profile_settings
+from pk_py_lib.core.settings.manager import get_active_profile_settings
 
 
 class ImageQualityProviderError(Exception):
@@ -48,7 +48,7 @@ _logger = get_logger(__name__)
 
 def get_active_image_quality_evaluator() -> Optional[ImageQualityEvaluator]:
     """Retrieve and instantiate the active image quality evaluator based on current settings.
-    
+
     This function:
     1. Fetches the active profile settings.
     2. Extracts the 'image_quality_evaluator' key (defaults to 'brisque' if missing).
@@ -56,36 +56,36 @@ def get_active_image_quality_evaluator() -> Optional[ImageQualityEvaluator]:
     4. Otherwise, resolves the evaluator class via the registry.
     5. Instantiates and returns the evaluator.
     6. Falls back to 'brisque' on invalid keys, logging a warning.
-    
+
     All evaluators return normalized scores where higher values indicate higher image quality.
     Returns None if 'none' is selected, indicating no quality evaluation.
-    
+
     If settings retrieval fails (e.g., no active profile), initializes a default profile
     and uses 'brisque'.
-    
+
     Returns
     -------
     Optional[ImageQualityEvaluator]
         Instantiated evaluator (e.g., BRISQUEImageQualityEvaluator) or None if 'none' selected.
-    
+
     Raises
     ------
     ImageQualityProviderError
         If fallback instantiation fails (rare, as 'brisque' is always registered).
     RuntimeError
         If settings_profiles module fails critically.
-    
+
     Examples
     --------
     # Default usage
     evaluator = get_active_image_quality_evaluator()  # BRISQUE instance or None
-    
+
     # With custom settings (e.g., 'image_quality_evaluator': 'none' in profile)
     if evaluator is None:
         print("Quality evaluation disabled")
     else:
         score = evaluator.evaluate("/path/to/img.jpg")  # Normalized higher-better score
-    
+
     # Fallback logging (if settings has invalid key)
     # Logs: "Invalid evaluator 'invalid_key'; falling back to 'brisque'"
     """
@@ -193,9 +193,9 @@ def set_active_evaluator(key: str) -> Optional[ImageQualityEvaluator]:
     if key == "none":
         try:
             # Update settings without instantiation
-            from pk_py_lib.core.settings_profiles import SettingsProfilesManager, DatabaseManager
+            from pk_py_lib.core.settings.manager import SettingsManager, DatabaseManager
             db = DatabaseManager()
-            mgr = SettingsProfilesManager(db)
+            mgr = SettingsManager(db)
             active_profile = mgr.get_active_profile()
             if active_profile is None:
                 # Ensure default profile exists
@@ -203,12 +203,13 @@ def set_active_evaluator(key: str) -> Optional[ImageQualityEvaluator]:
 
             # Update json_data with 'none' (assumes JSON format; migrates if legacy)
             if not active_profile.is_json_format():
-                # Migrate legacy to JSON if needed
-                active_profile = mgr.migrate_to_json_format(active_profile.id)
+                # The new SettingsManager handles migration automatically in get_active_profile_settings
+                # No need to explicitly migrate here
+                pass
 
-            settings = active_profile.json_data.copy()
+            settings = active_profile.json_data.copy() if active_profile.json_data else {}
             settings["image_quality_evaluator"] = "none"
-            mgr.update_structured_profile(active_profile.id, settings)
+            mgr.update_profile(active_profile.id, json_data=settings)
 
             _logger.info(f"Disabled image quality evaluation ('none'); updated profile {active_profile.id}")
             return None
@@ -225,9 +226,9 @@ def set_active_evaluator(key: str) -> Optional[ImageQualityEvaluator]:
 
     try:
         # Step 3: Update settings (this handles profile creation if needed)
-        from pk_py_lib.core.settings_profiles import SettingsProfilesManager, DatabaseManager
+        from pk_py_lib.core.settings.manager import SettingsManager, DatabaseManager
         db = DatabaseManager()
-        mgr = SettingsProfilesManager(db)
+        mgr = SettingsManager(db)
         active_profile = mgr.get_active_profile()
         if active_profile is None:
             # Ensure default profile exists
@@ -235,12 +236,13 @@ def set_active_evaluator(key: str) -> Optional[ImageQualityEvaluator]:
 
         # Update json_data with new key (assumes JSON format; migrates if legacy)
         if not active_profile.is_json_format():
-            # Migrate legacy to JSON if needed
-            active_profile = mgr.migrate_to_json_format(active_profile.id)
+            # The new SettingsManager handles migration automatically in get_active_profile_settings
+            # No need to explicitly migrate here
+            pass
 
-        settings = active_profile.json_data.copy()
+        settings = active_profile.json_data.copy() if active_profile.json_data else {}
         settings["image_quality_evaluator"] = key
-        mgr.update_structured_profile(active_profile.id, settings)
+        mgr.update_profile(active_profile.id, json_data=settings)
 
         # Step 4: Instantiate and return
         evaluator = evaluator_class()
