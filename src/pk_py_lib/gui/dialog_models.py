@@ -1,17 +1,40 @@
 """
 Data models for file management dialogs with immutable data structures.
 
-This module provides the core data structures for file management dialogs,
-including FileItem, Group, GroupStats, and DialogState classes that implement
-immutable patterns for thread safety and proper MVC separation.
+DEPRECATION NOTICE:
+-------------------
+The classes FileItem, GroupStats, and DialogView have been moved to pk_py_lib.gui.models
+for consistency and to serve as the single source of truth. This module now imports them
+from models.py for backward compatibility.
+
+New code should import directly from pk_py_lib.gui.models:
+    from pk_py_lib.gui.models import FileItem, GroupStats, DialogView
+
+This module will be maintained for backward compatibility but may be removed in a future version.
+
+Current module contents:
+* FileItem, GroupStats, DialogView - DEPRECATED (imported from models.py)
+* Group, DialogState - Still defined here (use List-based groups)
+* SelectionStore - DEPRECATED (imported from models.py)
+
+For new code, prefer:
+* FileGroup from models.py (uses Tuple instead of List for immutability)
+* FileGroupModel from models.py (advanced filtering and direction support)
 """
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
-from enum import Enum
-from pathlib import Path
+
+# Import the canonical versions from models.py
+from .models import (
+    FileItem,
+    GroupStats,
+    DialogView,
+    SelectionStore,
+)
 
 from ..core.logging.decorators import log_errors
 from ..core.logging.logger import get_logger
@@ -19,120 +42,36 @@ import traceback
 import sys
 import inspect
 
-from .models import SelectionStore
-
 logger = get_logger(__name__)
 
+# Issue deprecation warning when this module is imported
+warnings.warn(
+    "Importing FileItem, GroupStats, DialogView, and SelectionStore from "
+    "pk_py_lib.gui.dialog_models is deprecated. "
+    "Import from pk_py_lib.gui.models instead. "
+    "This module will be removed in a future version.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
-class DialogView(Enum):
-    """Available view modes for dialogs."""
-    TREE = "tree"
-    PREVIEW = "preview"
-    REPORT = "report"
-
-
-@dataclass(frozen=True)
-class FileItem:
-    """
-    Immutable representation of a file item in dialogs.
-
-    Frozen dataclass ensures thread safety and prevents accidental mutation.
-    This class represents a single file with metadata used in both duplicate
-    and similarity management dialogs.
-
-    Args:
-        path: Absolute file path
-        size: File size in bytes
-        resolution: Image resolution as string (e.g., "1920x1080")
-        mod_date: Modification date as string
-        score: Similarity score (0-100) for similarity mode, None for duplicates
-        file_type: File extension/type
-        savings: Potential savings in bytes for duplicate mode
-        quality_score: Optional image quality score (normalized, higher is better)
-        quality_algorithm: Name of the quality algorithm used (e.g., 'brisque')
-
-    Example:
-        >>> item = FileItem(
-        ...     path="/path/to/image.jpg",
-        ...     size=1024,
-        ...     resolution="1920x1080",
-        ...     mod_date="2023-01-01",
-        ...     score=95.5,
-        ...     file_type="JPEG",
-        ...     savings=2048
-        ... )
-        >>> item.basename
-        'image.jpg'
-        >>> item.directory
-        '/path/to'
-    """
-
-    path: str
-    size: int
-    resolution: str
-    mod_date: str
-    score: Optional[float] = None
-    file_type: str = ""
-    savings: int = 0
-    quality_score: Optional[float] = None
-    quality_algorithm: Optional[str] = None
-    exact_set_id: Optional[int] = None
-
-    @property
-    def basename(self) -> str:
-        """Return file basename."""
-        try:
-            return Path(self.path).name
-        except (ValueError, TypeError) as e:
-            logger.error(
-                f"Error accessing basename for path '{self.path}'",
-                exception=e,
-                variables={'path': self.path, 'file': __file__, 'line': sys.exc_info()[2].tb_lineno if sys.exc_info()[2] else inspect.currentframe().f_lineno}
-            )
-            return "Invalid Path"
-
-    @property
-    def directory(self) -> str:
-        """Return parent directory."""
-        try:
-            return str(Path(self.path).parent)
-        except (ValueError, TypeError) as e:
-            logger.error(
-                f"Error accessing directory for path '{self.path}'",
-                exception=e,
-                variables={'path': self.path, 'file': __file__, 'line': sys.exc_info()[2].tb_lineno if sys.exc_info()[2] else inspect.currentframe().f_lineno}
-            )
-            return "Invalid Path"
-
-
-@dataclass(frozen=True)
-class GroupStats:
-    """
-    Statistics for a group of files.
-
-    Provides aggregated statistics for a group of duplicate or similar files.
-    Used for display purposes and group management operations.
-
-    Args:
-        total_size: Combined size of all files in the group
-        savings: Potential savings if duplicates are removed
-        min_score: Minimum similarity score in the group
-        max_score: Maximum similarity score in the group
-        avg_score: Average similarity score in the group
-        file_count: Number of files in the group
-    """
-    total_size: int
-    savings: int
-    min_score: float
-    max_score: float
-    avg_score: float
-    file_count: int
+# Export the imported classes along with locally-defined ones
+__all__ = [
+    'FileItem',      # Re-exported from models.py
+    'GroupStats',    # Re-exported from models.py
+    'DialogView',    # Re-exported from models.py
+    'SelectionStore', # Re-exported from models.py
+    'Group',         # Defined below (List-based)
+    'DialogState',   # Defined below
+]
 
 
 @dataclass(frozen=True)
 class Group:
     """
-    Immutable representation of a file group.
+    Immutable representation of a file group (List-based variant).
+
+    NOTE: For new code, consider using FileGroup from models.py which uses
+    Tuple[FileItem, ...] instead of List[FileItem] for better immutability.
 
     Groups can represent duplicates or similarity clusters.
     Each group has a reference path (typically the first file) and

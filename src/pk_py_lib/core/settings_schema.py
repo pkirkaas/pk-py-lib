@@ -6,6 +6,8 @@ JSON Schema and validation for structured settings profiles.
 This module defines the canonical JSON Schema for SettingsProfileOptionA
 and provides validation functions to ensure settings compatibility.
 
+Also includes SQL schema definitions for v2 unified settings tables.
+
 Note: Syntax validation performed per project rules using Python ast.
 """
 
@@ -20,6 +22,78 @@ import jsonschema
 from jsonschema import validate, ValidationError
 
 logger = logging.getLogger("pk_py_lib.settings_schema")
+
+# -----------------------------------------------------------------------------
+# SQL Schema Definitions for V2 Unified Settings
+# -----------------------------------------------------------------------------
+
+# Schema version tracking table
+SCHEMA_VERSION_TABLE = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL,
+    description TEXT
+)
+"""
+
+# Unified application settings table (v2)
+APP_SETTINGS_V2_SCHEMA = """
+CREATE TABLE IF NOT EXISTS app_settings_v2 (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    cache_enabled BOOLEAN NOT NULL DEFAULT 1,
+    cache_size_mb INTEGER NOT NULL DEFAULT 500,
+    max_workers INTEGER NOT NULL DEFAULT 4,
+    default_profile_id INTEGER,
+    gui_theme TEXT NOT NULL DEFAULT 'auto',
+    log_level TEXT NOT NULL DEFAULT 'INFO',
+    recent_directories TEXT,
+    window_geometry TEXT,
+    last_updated TEXT,
+    FOREIGN KEY (default_profile_id) REFERENCES settings_profiles_v2(id),
+    CHECK (cache_size_mb > 0),
+    CHECK (max_workers > 0),
+    CHECK (gui_theme IN ('light', 'dark', 'auto')),
+    CHECK (log_level IN ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'))
+)
+"""
+
+# Unified settings profiles table (v2)
+SETTINGS_PROFILES_V2_SCHEMA = """
+CREATE TABLE IF NOT EXISTS settings_profiles_v2 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    description TEXT NOT NULL DEFAULT '',
+    hash_algorithm TEXT NOT NULL DEFAULT 'phash',
+    hash_size INTEGER NOT NULL DEFAULT 8,
+    similarity_threshold REAL NOT NULL DEFAULT 0.95,
+    min_resolution INTEGER,
+    max_resolution INTEGER,
+    color_mode BOOLEAN NOT NULL DEFAULT 0,
+    clustering_method TEXT NOT NULL DEFAULT 'dbscan',
+    quality_threshold REAL,
+    is_default BOOLEAN NOT NULL DEFAULT 0,
+    is_system BOOLEAN NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK (similarity_threshold >= 0.0 AND similarity_threshold <= 1.0),
+    CHECK (hash_algorithm IN ('phash', 'whash', 'blake3', 'xxh3')),
+    CHECK (clustering_method IN ('dbscan', 'agglomerative')),
+    CHECK (hash_size > 0)
+)
+"""
+
+# Create index for profile name lookups
+SETTINGS_PROFILES_V2_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_profiles_v2_name
+ON settings_profiles_v2(name COLLATE NOCASE)
+"""
+
+# Create index for default profile lookups
+SETTINGS_PROFILES_V2_DEFAULT_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_profiles_v2_default
+ON settings_profiles_v2(is_default) WHERE is_default = 1
+"""
+
 
 # -----------------------------------------------------------------------------
 # JSON Schema Definition for SettingsProfileOptionA
@@ -57,20 +131,6 @@ SETTINGS_PROFILE_SCHEMA = {
                     "maximum": 64,
                     "default": 12,
                     "description": "Hamming distance threshold for wHash similarity (0=exact, 64=maximum for 8x8). wHash uses wavelet transform (db1 default), robust to structural changes (e.g., cropping, rotation) vs. pHash's DCT focus on frequency. Default 12 (~81% similarity). Falls back to pHash if wHash fails (e.g., unsupported format). Example: Use 8 for stricter wavelet matching."
-                },
-                "lsh_num_perm": {
-                    "type": "integer",
-                    "minimum": 64,
-                    "maximum": 256,
-                    "default": 128,
-                    "description": "Number of permutations for MinHashLSH (higher = fewer false positives but slower; default 128 for 64-bit hashes). Used to tune LSH precision vs. speed in similarity grouping. Example: 256 for stricter matching in large datasets."
-                },
-                "lsh_threshold": {
-                    "type": ["number", "null"],
-                    "minimum": 0.0,
-                    "maximum": 1.0,
-                    "default": None,
-                    "description": "Optional Jaccard similarity threshold for LSH query (0.0-1.0); if None, automatically calculated as 1 - hamming_threshold / 64. Allows overriding for fine-tuning LSH recall/precision. Example: 0.8 for high similarity candidates."
                 },
                 "enabled_algorithms": {
                     "type": "array",
@@ -447,8 +507,6 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     similarity = normalized.setdefault("similarity", {})
     similarity.setdefault("phash_threshold", 10)
     similarity.setdefault("whash_threshold", 12)
-    similarity.setdefault("lsh_num_perm", 128)
-    similarity.setdefault("lsh_threshold", None)
 
     if normalized["mode"] == "similarity":
         similarity_hash_algorithm = criteria.get("similarity_hash_algorithm")
@@ -546,8 +604,6 @@ def create_default_profile(name: str, description: Optional[str] = None) -> Dict
         "similarity": {
             "phash_threshold": 10,
             "whash_threshold": 12,
-            "lsh_num_perm": 128,
-            "lsh_threshold": None,
             "enabled_algorithms": ["phash"],
             "max_distance": 15
         },
@@ -654,11 +710,18 @@ def is_valid_for_run(profile_data: Dict[str, Any]) -> Tuple[bool, List[str]]:
 
 
 __all__ = [
+    # JSON Schema
     "SETTINGS_PROFILE_SCHEMA",
     "SettingsValidationError",
     "validate_settings_schema",
     "normalize_settings",
     "create_default_profile",
     "is_valid_for_save",
-    "is_valid_for_run"
+    "is_valid_for_run",
+    # SQL Schema v2
+    "SCHEMA_VERSION_TABLE",
+    "APP_SETTINGS_V2_SCHEMA",
+    "SETTINGS_PROFILES_V2_SCHEMA",
+    "SETTINGS_PROFILES_V2_INDEX",
+    "SETTINGS_PROFILES_V2_DEFAULT_INDEX",
 ]

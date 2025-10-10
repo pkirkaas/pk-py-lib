@@ -50,15 +50,14 @@ class ExactDuplicateSet:
     representative_path: str
 from pk_py_lib.core.flat_cache import FlatCacheManager, FlatCacheDBError
 from pk_py_lib.core.logging.logger import get_logger
-from pk_py_lib.gui.dialog_models import FileItem, Group, GroupStats
+from pk_py_lib.gui.models import FileItem, GroupStats
+from pk_py_lib.gui.dialog_models import Group  # Group still defined in dialog_models (List-based)
 from pk_py_lib.core.image.quality.provider import get_active_image_quality_evaluator
 from pk_py_lib.core.image.quality.base import ImageQualityEvaluator
-from pathlib import Path
 from pathlib import Path
 
 VALID_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp'}
 
-# LSH removed; always use brute-force
 
 
 class InvalidImageError(Exception):
@@ -639,13 +638,10 @@ def find_similar_phash(
     """
     Find groups of visually similar images using pHash Hamming distances.
 
-    Performs clustering: For n <= 1000 or if LSH unavailable, uses brute-force pairwise distances and union-find
+    Performs clustering: Uses brute-force pairwise distances and union-find
     to group images where any chain of distances <= threshold (transitive similarity).
-    For n > 1000 and datasketch available, uses MinHashLSH for candidate retrieval (approximating bit sets as MinHash signatures)
-    + exact Hamming verification on candidates, then union-find.
     Input dicts should have 'path' (str) and 'hash' (str) keys. Outputs groups of 2+ paths.
     Threshold defaults to settings['similarity']['phash_threshold'] or 10.
-    LSH uses num_perm=128, threshold=1 - (hamming_threshold / 64.0) for Jaccard approximation.
 
     Args:
         hashes (List[Dict[str, str]]): List of image records, e.g.,
@@ -682,7 +678,7 @@ def find_similar_phash(
         >>> print(groups)  # [['/img1.jpg', '/img2.jpg']]
         [['/img1.jpg', '/img2.jpg']]
 
-        # For large n (e.g., 2000 images), LSH reduces candidates from O(n^2) to ~O(n * k), where k << n
+        # For large n (e.g., 2000 images), consider external indexing to reduce O(n^2) complexity
         >>> large_hashes = [{'path': f'/img{i}.jpg', 'hash': 'a' * 16} for i in range(2000)]  # Simulate
         >>> groups_large = find_similar_phash(large_hashes, threshold=5)
         >>> print(f"Groups: {len(groups_large)}")
@@ -754,7 +750,7 @@ def find_similar_phash(
     if threshold < 0 or threshold > 64:
         raise ValueError(f"Threshold must be 0-64, got {threshold}")
 
-    # Path to index mapping for LSH
+    # Path to index mapping
     path_to_index = {h['path']: i for i, h in enumerate(hashes)}
 
     # Union-find for clustering
@@ -1210,13 +1206,10 @@ def find_similar_whash(
     """
     Find groups of visually similar images using wHash Hamming distances.
 
-    Performs clustering: For n <= 1000 or if LSH unavailable, uses brute-force pairwise distances and union-find
+    Performs clustering: Uses brute-force pairwise distances and union-find
     to group images where any chain of distances <= threshold (transitive similarity).
-    For n > 1000 and datasketch available, uses MinHashLSH for candidate retrieval (approximating bit sets as MinHash signatures)
-    + exact Hamming verification on candidates, then union-find.
     Input dicts should have 'path' (str) and 'hash' (str) keys. Outputs groups of 2+ paths.
     Threshold defaults to settings['similarity']['whash_threshold'] or 12.
-    LSH uses num_perm=128, threshold=1 - (hamming_threshold / 64.0) for Jaccard approximation.
 
     Args:
         hashes (List[Dict[str, str]]): List of image records, e.g.,
@@ -1253,7 +1246,7 @@ def find_similar_whash(
         >>> print(groups)  # [['/img1.jpg', '/img2.jpg']]
         [['/img1.jpg', '/img2.jpg']]
 
-        # For large n (e.g., 2000 images), LSH reduces candidates from O(n^2) to ~O(n * k), where k << n
+        # For large n (e.g., 2000 images), consider external indexing to reduce O(n^2) complexity
         >>> large_hashes = [{'path': f'/img{i}.jpg', 'hash': 'a' * 16} for i in range(2000)]  # Simulate
         >>> groups_large = find_similar_whash(large_hashes, threshold=5)
         >>> print(f"Groups: {len(groups_large)}")
@@ -1325,7 +1318,7 @@ def find_similar_whash(
     if threshold < 0 or threshold > 64:
         raise ValueError(f"Threshold must be 0-64, got {threshold}")
 
-    # Path to index mapping for LSH
+    # Path to index mapping
     path_to_index = {h['path']: i for i, h in enumerate(hashes)}
 
     # Union-find for clustering

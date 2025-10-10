@@ -259,6 +259,12 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
 
         layout.addStretch(1)
 
+        # Add cache statistics label
+        self._cache_stats_label = QLabel("Cache: Not initialized", controls_widget)
+        self._cache_stats_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._cache_stats_label.setStyleSheet("QLabel { color: #666; font-style: italic; }")
+        layout.addWidget(self._cache_stats_label)
+
         self._apply_direction_to_combo(PoolDirection.ALL)
 
         # Load initial quality evaluator selection
@@ -525,57 +531,6 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             self._quality_combo.setCurrentIndex(current_index)
             self._quality_combo.blockSignals(False)
 
-    @log_errors()
-    def _on_compute_clicked(self) -> None:
-        """Compute similarity groups via database hashes.
-        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
-        """
-        if self._db_manager is None:
-            show_selectable_error(
-                self,
-                "Database Unavailable",
-                "A DatabaseManager instance is required to compute similarity groups.",
-            )
-            return
-
-        algorithm = str(self._algorithm_combo.currentData() or "phash").lower()
-        threshold = int(self._threshold_spin.value())
-        LOGGER.info(
-            "Computing similarity groups",
-            variables={"algorithm": algorithm, "threshold": threshold},
-        )
-        try:
-            groups, pool_map, total_files = self._compute_groups_from_database(algorithm, threshold)
-        except sqlite3.Error as exc:
-            LOGGER.exception("Database error in similarity grouping")
-            show_selectable_error(
-                self,
-                "Database Error",
-                f"Database query failed: {exc}",
-            )
-            return
-        except Exception as exc:  # pylint: disable=broad-except
-            LOGGER.exception("Similarity grouping failed")
-            show_selectable_error(
-                self,
-                "Computation Error",
-                f"Failed to compute similarity groups:\n\n{exc}",
-            )
-            return
-
-        if not groups:
-            show_selectable_info(
-                self,
-                "No Similar Groups",
-                "No similarity clusters were found with the current algorithm/threshold.",
-            )
-            return
-
-        direction = self._direction_combo.currentData()
-        if not isinstance(direction, PoolDirection):
-            direction = PoolDirection.ALL
-        self.refresh_groups(groups, pool_map=pool_map, direction=direction)
-        self._select_first_group()
 
     @log_errors()
     def _get_pool_for_path(self, path: str, profile: Optional[dict]) -> str:
@@ -725,16 +680,40 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 settings['criteria'] = {}
             settings['criteria']['similarity_hash_algorithm'] = algorithm
 
-            # Task 1: Log final call to find_similar_images
+            # Task 1: Log final call to find_similar_images with ApiResponse
             LOGGER.info(f"Calling find_similar_images with algorithm={algorithm}, threshold={threshold}, {len(paths)} paths")
-            sim_groups = find_similar_images(
+            response = find_similar_images(
                 paths=paths,  # ✅ Correct: Pass file paths as expected
                 algorithm=algorithm,
                 threshold=threshold,
                 settings=settings,
                 flat_cache_manager=self._flat_cache_manager,  # ✅ Ensure cache is used
-                search_type='similarity'
+                search_type='similarity',
+                return_response=True  # ✅ Use new ApiResponse format
             )
+
+            # Handle ApiResponse
+            if not response.success:
+                LOGGER.error(f"Similarity detection failed: {response.error.message if response.error else 'Unknown error'}")
+                if response.error:
+                    LOGGER.error(f"Error code: {response.error.code}, details: {response.error.details}")
+                return [], pool_map, total_files
+
+            # Extract similarity groups from response data
+            sim_groups = response.data.get('similarity_groups', [])
+            duplicate_groups = response.data.get('duplicate_groups', [])
+
+            # Log warnings if any
+            if response.warnings:
+                for warning in response.warnings:
+                    LOGGER.warning(f"Similarity detection warning: {warning}")
+
+            # Log metadata
+            metadata = response.metadata
+            LOGGER.info(f"Similarity detection completed: {len(sim_groups)} groups, "
+                       f"algorithm={metadata.get('algorithm', algorithm)}, "
+                       f"threshold={metadata.get('threshold', threshold)}")
+
             LOGGER.info(f"Returned {len(sim_groups)} similarity groups")
         except (ValueError, KeyError, TypeError) as e:
             LOGGER.error(f"Similarity calculation error: {e}", exception=e)
@@ -1434,6 +1413,93 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
         except Exception as e:
             LOGGER.error(f"Unexpected error in remove_file_from_model: {e}", exception=e)
             show_selectable_error(self, "Model Error", "An unexpected error occurred updating the model.")
+
+    @log_errors()
+    def _update_cache_stats_display(self) -> None:
+        """Update cache statistics display in GUI."""
+        if hasattr(self, '_flat_cache_manager') and self._flat_cache_manager:
+            if hasattr(self._flat_cache_manager, '_enhanced_cache'):
+                # Use enhanced cache if available
+                stats_response = self._flat_cache_manager._enhanced_cache.get_stats()
+                if stats_response.success:
+                    stats = stats_response.data
+                    cache_info = (
+                        f"Cache: {stats['total_entries']} entries, "
+                        f"{stats['cache_size_mb']:.1f}MB, "
+                        f"Hit rate: {stats['hit_rate']:.1f}%"
+                    )
+                    self._cache_stats_label.setText(cache_info)
+                    LOGGER.info(f"Updated cache stats display: {cache_info}")
+                else:
+                    self._cache_stats_label.setText("Cache: Stats unavailable")
+            else:
+                # Fallback to legacy cache counters
+                counters = self._flat_cache_manager.get_counters()
+                total_requests = counters['hits'] + counters['misses']
+                hit_rate = (counters['hits'] / total_requests * 100) if total_requests > 0 else 0.0
+                cache_info = (
+                    f"Cache: {counters['hits']} hits, {counters['misses']} misses, "
+                    f"Hit rate: {hit_rate:.1f}%"
+                )
+                self._cache_stats_label.setText(cache_info)
+                LOGGER.info(f"Updated legacy cache stats display: {cache_info}")
+        else:
+            self._cache_stats_label.setText("Cache: Not available")
+
+    @log_errors()
+    def _on_compute_clicked(self) -> None:
+        """Compute similarity groups via database hashes using ApiResponse.
+        GUI Context: SimilarityManagerDialog, selected items: {self.selection_store.get_selection_count()}
+        """
+        if self._db_manager is None:
+            show_selectable_error(
+                self,
+                "Database Unavailable",
+                "A DatabaseManager instance is required to compute similarity groups.",
+            )
+            return
+
+        algorithm = str(self._algorithm_combo.currentData() or "phash").lower()
+        threshold = int(self._threshold_spin.value())
+        LOGGER.info(
+            "Computing similarity groups",
+            variables={"algorithm": algorithm, "threshold": threshold},
+        )
+        try:
+            groups, pool_map, total_files = self._compute_groups_from_database(algorithm, threshold)
+            # Update cache statistics after computation
+            self._update_cache_stats_display()
+        except sqlite3.Error as exc:
+            LOGGER.exception("Database error in similarity grouping")
+            show_selectable_error(
+                self,
+                "Database Error",
+                f"Database query failed: {exc}",
+            )
+            return
+        except Exception as exc:  # pylint: disable=broad-except
+            LOGGER.exception("Similarity grouping failed")
+            show_selectable_error(
+                self,
+                "Computation Error",
+                f"Failed to compute similarity groups:\n\n{exc}",
+            )
+            return
+
+        if not groups:
+            show_selectable_info(
+                self,
+                "No Similar Groups",
+                "No similarity clusters were found with the current algorithm/threshold.",
+            )
+            return
+
+        direction = self._direction_combo.currentData()
+        if not isinstance(direction, PoolDirection):
+            direction = PoolDirection.ALL
+        self.refresh_groups(groups, pool_map=pool_map, direction=direction)
+        self._select_first_group()
+
 # Mapping used for direction combo labels (shared between duplicates/similarity)
 DuplicateDirectionLabels: Mapping[PoolDirection, str] = {
     PoolDirection.ALL: "All Pools",

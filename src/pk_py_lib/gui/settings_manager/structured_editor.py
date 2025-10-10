@@ -67,7 +67,6 @@ from pk_py_lib.core.settings_schema import (
 )
 from ..file_selector.widgets import DirectorySelectorWidget, MultiPathSelectorWidget, PathFilterSpec
 from ...gui.utils.messages import handle_gui_error, gui_error_handler
-from ...gui.utils.messages import handle_gui_error, gui_error_handler
 from ...core.logging import logger
 from ...core.logging.decorators import log_errors
 import traceback

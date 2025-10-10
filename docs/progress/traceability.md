@@ -21,7 +21,7 @@ RTM Table
 | `LOG-001` | Logging panel integration | [`docs/gui-frame.md`](docs/gui-frame.md:3) | `src/pk_py_lib/core/logging/panel.py` |  | planned | Wire to GUI log viewer |
 | `UI-001` | File selector widget demo | [`docs/gui-file-selector.md`](docs/gui-file-selector.md:1) | `src/pk_py_lib/gui/file_selector/widgets.py`, `showcase/gallery/file_selectors_demo.py` |  | planned | Create demo entry |
 | `UI-002` | Results grouping & preview UI | [`docs/roo/img-app-ui-design.md`](docs/roo/img-app-ui-design.md:141) | `img_app/img_app/main_window.py` |  | planned | Prototype for M1 |
-| `CACHE-001` | Thumbnail & cache management | [`docs/roo/img-app-data-model.md`](docs/roo/img-app-data-model.md:316) | `src/pk_py_lib/core/cache` |  | planned | Implement CacheManager example |
+| `CACHE-001` | Thumbnail & cache management | [`docs/roo/img-app-data-model.md`](docs/roo/img-app-data-model.md:316) | `src/pk_py_lib/core/flat_cache` |  | planned | Implement FlatCacheManager example |
 | `FS-001` | Move/rename detection (inode/device + hashing) | [`docs/roo/suggested-changes.md`](docs/roo/suggested-changes.md:15) | `src/pk_py_lib/core/filesystem/paths.py`, `src/pk_py_lib/core/filesystem/traversal.py` |  | planned | Design hashed-based identity |
 
 Notes and conventions

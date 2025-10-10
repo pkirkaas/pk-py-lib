@@ -214,6 +214,12 @@ class FileItem:
     savings:
         Potential space reclaimed (in bytes) if this file is deleted in favour of
         the reference item.
+    quality_score:
+        Optional image quality score (normalized, higher is better).
+    quality_algorithm:
+        Name of the quality algorithm used (e.g., 'brisque').
+    exact_set_id:
+        Optional identifier for exact duplicate sets.
 
     The dataclass is frozen to guarantee immutability and safe sharing across
     threads or Qt signal deliveries.
@@ -226,6 +232,9 @@ class FileItem:
     score: Optional[float] = None
     file_type: str = ""
     savings: int = 0
+    quality_score: Optional[float] = None
+    quality_algorithm: Optional[str] = None
+    exact_set_id: Optional[int] = None
 
     @property
     def basename(self) -> str:

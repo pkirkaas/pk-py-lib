@@ -149,7 +149,7 @@ flowchart TD
 Implementation checklist alignment
 - Ensure DataLocations uses platformdirs with vendor Pk and app Img App and supports PK_IMG_APP_HOME
 - Ensure DatabaseManager performs quick_check integrity_check and meta schema_version checks then runs Alembic with pre migration backup and retention
-- Ensure CacheManager provides staged sha256 hashing with partial first and last 256 KiB and invalidation on path size mtime_ns inode
+- Ensure FlatCacheManager provides staged sha256 hashing with partial first and last 256 KiB and invalidation on path size mtime_ns inode
 - Ensure Results panel follows single dual and inverse display rules
 - Ensure Settings GUI provides full profile CRUD; for Option A Balanced defaults, path validation blocks Save/Run until required pool paths are valid
 
@@ -260,20 +260,20 @@ def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
-    
+
     # Create application
     app = QApplication(sys.argv)
     app.setApplicationName("KDC Image Organizer")
     app.setOrganizationName("KDC")
-    
+
     # Initialize application manager
     app_manager = ApplicationManager()
     app_manager.initialize()
-    
+
     # Create and show main window
     window = MainWindow(app_manager)
     window.show()
-    
+
     # Run event loop
     return app.exec()
 ```
@@ -287,33 +287,33 @@ from pathlib import Path
 from pk_py_lib.core.logging import AdvancedLogger
 from img_app.config.settings import ConfigurationManager
 from img_app.data.database import DatabaseManager
-from img_app.data.cache import CacheManager
+from pk_py_lib.core.flat_cache import FlatCacheManager
 
 class ApplicationManager:
     """Central application controller."""
-    
+
     def __init__(self):
         self.logger = AdvancedLogger("img_app")
         self.config_manager = None
         self.database_manager = None
         self.cache_manager = None
-        
+
     def initialize(self):
         """Initialize application components."""
         self.logger.info("Initializing application")
-        
+
         # Initialize configuration
         self.config_manager = ConfigurationManager()
         self.config_manager.load_default_profile()
-        
+
         # Initialize database
         self.database_manager = DatabaseManager()
         self.database_manager.initialize()
-        
+
         # Initialize cache
         cache_dir = self.config_manager.get_cache_directory()
-        self.cache_manager = CacheManager(cache_dir)
-        
+        self.flat_cache_manager = FlatCacheManager()
+
         self.logger.info("Application initialized successfully")
 ```
 
@@ -325,7 +325,7 @@ class ApplicationManager:
 """Main application window."""
 
 from PySide6.QtWidgets import (
-    QMainWindow, QMenuBar, QToolBar, 
+    QMainWindow, QMenuBar, QToolBar,
     QStatusBar, QDockWidget, QWidget
 )
 from PySide6.QtCore import Qt
@@ -333,43 +333,43 @@ from img_app.gui.panels import FilePanel, ResultsPanel, PreviewPanel
 
 class MainWindow(QMainWindow):
     """Main application window."""
-    
+
     def __init__(self, app_manager):
         super().__init__()
         self.app_manager = app_manager
         self.setup_ui()
-        
+
     def setup_ui(self):
         """Initialize UI components."""
         self.setWindowTitle("KDC Image Organizer")
         self.setMinimumSize(1024, 768)
-        
+
         # Create menu bar
         self.create_menus()
-        
+
         # Create toolbar
         self.create_toolbar()
-        
+
         # Create central widget
         self.create_central_widget()
-        
+
         # Create dockable panels
         self.create_panels()
-        
+
         # Create status bar
         self.create_status_bar()
-        
+
     def create_menus(self):
         """Create application menus."""
         menubar = self.menuBar()
-        
+
         # File menu
         file_menu = menubar.addMenu("&File")
         file_menu.addAction("&New Scan", self.new_scan)
         file_menu.addAction("&Open Results", self.open_results)
         file_menu.addSeparator()
         file_menu.addAction("E&xit", self.close)
-        
+
     def create_panels(self):
         """Create dockable panels."""
         # File panel
@@ -392,20 +392,20 @@ from contextlib import contextmanager
 
 class DatabaseManager:
     """Manages database connections and operations."""
-    
+
     def __init__(self):
         self.settings_db_path = None
         self.sessions_db_path = None
         self.cache_db_path = None
-        
+
     def initialize(self):
         """Initialize databases with platformdirs."""
         import os
         from platformdirs import user_data_dir, user_cache_dir
-        
+
         # Check for environment override
         base_dir = os.environ.get('PK_IMG_APP_HOME')
-        
+
         if base_dir:
             data_dir = Path(base_dir) / "data"
             cache_dir = Path(base_dir) / "cache"
@@ -413,33 +413,33 @@ class DatabaseManager:
             # Use platformdirs with Vendor "Pk" and App "Img App"
             data_dir = Path(user_data_dir("Img App", "Pk"))
             cache_dir = Path(user_cache_dir("Img App", "Pk"))
-        
+
         # Ensure directories exist
         data_dir.mkdir(parents=True, exist_ok=True)
         cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Three-database architecture per canonical decision §11
         self.settings_db_path = data_dir / "settings.db"
         self.sessions_db_path = data_dir / "sessions.db"
         self.cache_db_path = cache_dir / "cache.db"
-        
+
         # Create databases if needed
         self.create_databases()
-        
+
     def create_databases(self):
         """Create database schemas for three-database architecture."""
         # Create settings database (user configuration)
         with self.get_connection(self.settings_db_path) as conn:
             conn.executescript(SETTINGS_SCHEMA)
-            
+
         # Create sessions database (scan sessions & results)
         with self.get_connection(self.sessions_db_path) as conn:
             conn.executescript(SESSIONS_SCHEMA)
-            
+
         # Create cache database (transient data)
         with self.get_connection(self.cache_db_path) as conn:
             conn.executescript(CACHE_SCHEMA)
-            
+
     @contextmanager
     def get_connection(self, db_path):
         """Get database connection context."""
@@ -469,31 +469,31 @@ from pk_py_lib.gui.file_selector import FileSelector
 
 class FilePanel(QWidget):
     """File and folder selection panel."""
-    
+
     def __init__(self, app_manager):
         super().__init__()
         self.app_manager = app_manager
         self.setup_ui()
-        
+
     def setup_ui(self):
         layout = QVBoxLayout()
-        
+
         # Use pk-py-lib file selector
         self.file_selector = FileSelector(
             mode='multi',
             filters=['*.jpg', '*.png', '*.heic']
         )
         layout.addWidget(self.file_selector)
-        
+
         # Add control buttons
         self.add_files_btn = QPushButton("Add Files")
         self.add_folder_btn = QPushButton("Add Folder")
         self.clear_btn = QPushButton("Clear All")
-        
+
         layout.addWidget(self.add_files_btn)
         layout.addWidget(self.add_folder_btn)
         layout.addWidget(self.clear_btn)
-        
+
         self.setLayout(layout)
 ```
 
@@ -510,18 +510,18 @@ from PIL import Image
 
 class BaseAlgorithm(ABC):
     """Abstract base class for similarity algorithms."""
-    
+
     @property
     @abstractmethod
     def name(self) -> str:
         """Algorithm name."""
         pass
-        
+
     @abstractmethod
     def compute_hash(self, image: Image) -> Any:
         """Compute image hash/signature."""
         pass
-        
+
     @abstractmethod
     def compare(self, hash1: Any, hash2: Any) -> float:
         """Compare hashes, return similarity 0.0-1.0."""
@@ -529,36 +529,35 @@ class BaseAlgorithm(ABC):
 ```
 
 #### Step 8: Implement pHash Algorithm
+
+**Note**: The similarity detection functionality is now provided by the modular [`similarity`](src/pk_py_lib/core/image/similarity/__init__.py:1) package in pk-py-lib.
+
+For custom implementations, use the existing modules:
 ```python
-# img_app/img_app/core/algorithms/phash.py
-"""Perceptual hash algorithm."""
+# Use the library's modular similarity package
+from src.pk_py_lib.core.image.similarity import (
+    compute_phash,           # From hashing.py
+    compute_whash,           # From hashing.py
+    find_similar_images,     # From clustering.py
+    SimilarityConfig,        # From types.py
+    InvalidImageError        # From types.py
+)
 
-import imagehash
-from PIL import Image
-from img_app.core.algorithms.base import BaseAlgorithm
+# Example: Compute pHash for an image
+from pathlib import Path
+image_path = Path("/path/to/image.jpg")
+phash_value = compute_phash(image_path, hash_size=8)
 
-class PerceptualHashAlgorithm(BaseAlgorithm):
-    """pHash implementation."""
-    
-    @property
-    def name(self) -> str:
-        return "phash"
-        
-    def __init__(self, hash_size: int = 8):
-        self.hash_size = hash_size
-        
-    def compute_hash(self, image: Image) -> imagehash.ImageHash:
-        """Compute perceptual hash."""
-        return imagehash.phash(image, hash_size=self.hash_size)
-        
-    def compare(self, hash1: imagehash.ImageHash, 
-                hash2: imagehash.ImageHash) -> float:
-        """Compare perceptual hashes."""
-        distance = hash1 - hash2
-        max_distance = self.hash_size * self.hash_size
-        similarity = 1.0 - (distance / max_distance)
-        return max(0.0, min(1.0, similarity))
+# Example: Find similar images
+from src.pk_py_lib.core.image.similarity import find_similar_images
+similar_groups = find_similar_images(
+    image_paths=[Path("/path1.jpg"), Path("/path2.jpg")],
+    threshold=10,
+    algorithm="phash"
+)
 ```
+
+For reference, the original monolithic implementation has been deprecated but remains available at [`_similarity_deprecated.py`](src/pk_py_lib/core/image/_similarity_deprecated.py:1). See [MIGRATION_GUIDE.md](src/pk_py_lib/core/image/MIGRATION_GUIDE.md:1) for details.
 
 ### 4.3 Processing Engine
 
@@ -574,16 +573,16 @@ from PIL import Image
 
 class SimilarityEngine:
     """Orchestrates similarity detection."""
-    
+
     def __init__(self, app_manager):
         self.app_manager = app_manager
         self.algorithms = {}
         self.thread_pool = None
-        
+
     def register_algorithm(self, algorithm):
         """Register similarity algorithm."""
         self.algorithms[algorithm.name] = algorithm
-        
+
     def find_similar_images(
         self,
         images: List[Path],
@@ -591,7 +590,7 @@ class SimilarityEngine:
         algorithm_names: List[str] = None
     ) -> List[SimilarityGroup]:
         """Find similar images in collection."""
-        
+
         # Initialize thread pool
         max_threads = self.app_manager.config_manager.get_setting(
             "app_settings.max_threads",
@@ -599,16 +598,16 @@ class SimilarityEngine:
             scope="app"
         )
         self.thread_pool = ThreadPoolExecutor(max_workers=max_threads)
-        
+
         try:
             # Load and hash images
             hashes = self._compute_hashes(images, algorithm_names)
-            
+
             # Compare images
             groups = self._find_groups(hashes, threshold)
-            
+
             return groups
-            
+
         finally:
             self.thread_pool.shutdown()
 ```
@@ -623,41 +622,41 @@ class SimilarityEngine:
 """Results display panel."""
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QTreeWidget, 
+    QWidget, QVBoxLayout, QTreeWidget,
     QTreeWidgetItem, QHeaderView
 )
 from PySide6.QtCore import Qt
 
 class ResultsPanel(QWidget):
     """Display similarity detection results."""
-    
+
     def __init__(self, app_manager):
         super().__init__()
         self.app_manager = app_manager
         self.setup_ui()
-        
+
     def setup_ui(self):
         layout = QVBoxLayout()
-        
+
         # Create results tree
         self.results_tree = QTreeWidget()
         self.results_tree.setHeaderLabels([
-            "Group/File", "Size", "Dimensions", 
+            "Group/File", "Size", "Dimensions",
             "Similarity", "Actions"
         ])
-        
+
         # Configure tree
         header = self.results_tree.header()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.Stretch)
-        
+
         layout.addWidget(self.results_tree)
         self.setLayout(layout)
-        
+
     def display_results(self, groups):
         """Display similarity groups."""
         self.results_tree.clear()
-        
+
         for group_idx, group in enumerate(groups):
             # Create group header
             group_item = QTreeWidgetItem([
@@ -667,7 +666,7 @@ class ResultsPanel(QWidget):
                 f"{group.avg_similarity:.0%}",
                 ""
             ])
-            
+
             # Add member images
             for member in group.members:
                 member_item = QTreeWidgetItem([
@@ -678,7 +677,7 @@ class ResultsPanel(QWidget):
                     ""
                 ])
                 group_item.addChild(member_item)
-                
+
             self.results_tree.addTopLevelItem(group_item)
             group_item.setExpanded(True)
 ```
@@ -697,30 +696,30 @@ from pk_py_lib.gui.widgets import ImageViewer
 
 class PreviewPanel(QWidget):
     """Image preview and comparison panel."""
-    
+
     def __init__(self, app_manager):
         super().__init__()
         self.app_manager = app_manager
         self.setup_ui()
-        
+
     def setup_ui(self):
         layout = QVBoxLayout()
-        
+
         # Use pk-py-lib image viewer
         self.image_viewer = ImageViewer()
         layout.addWidget(self.image_viewer)
-        
+
         # Add info label
         self.info_label = QLabel("No image selected")
         self.info_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.info_label)
-        
+
         self.setLayout(layout)
-        
+
     def display_image(self, image_path):
         """Display single image."""
         self.image_viewer.load_image(image_path)
-        
+
     def compare_images(self, paths):
         """Display images for comparison."""
         self.image_viewer.set_comparison_mode(paths)
@@ -742,49 +741,49 @@ from img_app.core.operations.undo import UndoManager
 
 class FileOperations:
     """Handles file system operations."""
-    
+
     def __init__(self, app_manager):
         self.app_manager = app_manager
         self.undo_manager = UndoManager()
-        
+
     def delete_files(
-        self, 
+        self,
         files: List[Path],
         use_trash: bool = True,
         create_backup: bool = False
     ) -> bool:
         """Delete files with safety options."""
-        
+
         # Log operation
         self.app_manager.logger.info(
             f"Deleting {len(files)} files",
             use_trash=use_trash
         )
-        
+
         deleted = []
         errors = []
-        
+
         for file_path in files:
             try:
                 if create_backup:
                     self._create_backup(file_path)
-                    
+
                 if use_trash:
                     send2trash.send2trash(str(file_path))
                 else:
                     file_path.unlink()
-                    
+
                 deleted.append(file_path)
-                
+
             except Exception as e:
                 errors.append((file_path, str(e)))
-                
+
         # Record for undo
         self.undo_manager.record_operation(
-            "delete", 
+            "delete",
             {"files": deleted, "use_trash": use_trash}
         )
-        
+
         return len(errors) == 0
 ```
 
@@ -800,11 +799,11 @@ from typing import Any, Dict
 
 class UndoManager:
     """Manages undo/redo operations."""
-    
+
     def __init__(self, max_history: int = 50):
         self.undo_stack = deque(maxlen=max_history)
         self.redo_stack = deque(maxlen=max_history)
-        
+
     def record_operation(self, operation_type: str, data: Dict[str, Any]):
         """Record operation for undo."""
         operation = {
@@ -814,21 +813,21 @@ class UndoManager:
         }
         self.undo_stack.append(operation)
         self.redo_stack.clear()  # Clear redo on new operation
-        
+
     def undo(self) -> Optional[Dict]:
         """Undo last operation."""
         if not self.undo_stack:
             return None
-            
+
         operation = self.undo_stack.pop()
         self.redo_stack.append(operation)
         return operation
-        
+
     def redo(self) -> Optional[Dict]:
         """Redo undone operation."""
         if not self.redo_stack:
             return None
-            
+
         operation = self.redo_stack.pop()
         self.undo_stack.append(operation)
         return operation
@@ -849,27 +848,27 @@ from img_app.core.algorithms.phash import PerceptualHashAlgorithm
 
 class TestPerceptualHash:
     """Test perceptual hash algorithm."""
-    
+
     def test_identical_images(self):
         """Test identical images have similarity 1.0."""
         algo = PerceptualHashAlgorithm()
         image = Image.new('RGB', (100, 100), 'red')
-        
+
         hash1 = algo.compute_hash(image)
         hash2 = algo.compute_hash(image)
-        
+
         similarity = algo.compare(hash1, hash2)
         assert similarity == 1.0
-        
+
     def test_different_images(self):
         """Test different images have low similarity."""
         algo = PerceptualHashAlgorithm()
         image1 = Image.new('RGB', (100, 100), 'red')
         image2 = Image.new('RGB', (100, 100), 'blue')
-        
+
         hash1 = algo.compute_hash(image1)
         hash2 = algo.compute_hash(image2)
-        
+
         similarity = algo.compare(hash1, hash2)
         assert similarity < 0.5
 ```
@@ -888,28 +887,28 @@ from img_app.processing.similarity import SimilarityEngine
 
 class TestSimilarityWorkflow:
     """Test complete similarity detection workflow."""
-    
+
     @pytest.fixture
     def app_manager(self):
         """Create application manager for testing."""
         manager = ApplicationManager()
         manager.initialize()
         return manager
-        
+
     def test_find_duplicates(self, app_manager, tmp_path):
         """Test finding duplicate images."""
         # Create test images
         test_images = self.create_test_images(tmp_path)
-        
+
         # Initialize engine
         engine = SimilarityEngine(app_manager)
-        
+
         # Find similar images
         groups = engine.find_similar_images(
             test_images,
             threshold=0.90
         )
-        
+
         # Verify results
         assert len(groups) > 0
         assert all(g.avg_similarity >= 0.90 for g in groups)
@@ -930,7 +929,7 @@ import json
 
 class ConfigurationManager:
     """Manages application configuration."""
-    
+
     DEFAULT_SETTINGS = {
         "theme": "light",
         "language": "en",
@@ -941,38 +940,38 @@ class ConfigurationManager:
         "algorithms.default": ["phash"],
         "algorithms.threshold": 0.85
     }
-    
+
     def __init__(self):
         self.settings = {}
         self.profile_name = "default"
-        
+
     def load_default_profile(self):
         """Load default settings profile."""
         self.settings = self.DEFAULT_SETTINGS.copy()
-        
+
     def get_setting(self, key: str, default: Any = None) -> Any:
         """Get configuration value."""
         keys = key.split('.')
         value = self.settings
-        
+
         for k in keys:
             if isinstance(value, dict) and k in value:
                 value = value[k]
             else:
                 return default
-                
+
         return value
-        
+
     def set_setting(self, key: str, value: Any):
         """Set configuration value."""
         keys = key.split('.')
         target = self.settings
-        
+
         for k in keys[:-1]:
             if k not in target:
                 target[k] = {}
             target = target[k]
-            
+
         target[keys[-1]] = value
 ```
 
@@ -991,25 +990,25 @@ from typing import Optional
 
 class MemoryManager:
     """Monitors and manages memory usage."""
-    
+
     def __init__(self, limit_mb: int = 2048):
         self.limit_bytes = limit_mb * 1024 * 1024
         self.warning_threshold = 0.8
-        
+
     def get_current_usage(self) -> int:
         """Get current memory usage in bytes."""
         process = psutil.Process()
         return process.memory_info().rss
-        
+
     def check_memory(self) -> bool:
         """Check if memory usage is within limits."""
         current = self.get_current_usage()
         return current < self.limit_bytes
-        
+
     def cleanup_if_needed(self):
         """Perform cleanup if memory usage is high."""
         usage_ratio = self.get_current_usage() / self.limit_bytes
-        
+
         if usage_ratio > self.warning_threshold:
             gc.collect()
             return True
@@ -1028,19 +1027,19 @@ from typing import Optional, Dict
 import pickle
 from datetime import datetime, timedelta
 
-class CacheManager:
+class FlatCacheManager:
     """Manages application caching."""
-    
+
     def __init__(self, cache_dir: Path, max_size_mb: int = 5120):
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(exist_ok=True)
         self.max_size_bytes = int(max_size_mb * 1024 * 1024)
-        
+
     def get_thumbnail(self, image_path: Path, size: int) -> Optional[bytes]:
         """Retrieve cached thumbnail."""
         cache_key = self._get_cache_key(image_path, f"thumb_{size}")
         cache_file = self.cache_dir / f"{cache_key}.cache"
-        
+
         if cache_file.exists():
             # Check if still valid
             if self._is_cache_valid(cache_file, image_path):
@@ -1050,16 +1049,16 @@ class CacheManager:
                 except Exception:
                     pass
                 return cache_file.read_bytes()
-                
+
         return None
-        
+
     def cache_thumbnail(self, image_path: Path, size: int, data: bytes):
         """Store thumbnail in cache."""
         cache_key = self._get_cache_key(image_path, f"thumb_{size}")
         cache_file = self.cache_dir / f"{cache_key}.cache"
-        
+
         cache_file.write_bytes(data)
-        
+
         # Check cache size and cleanup if needed
         self._cleanup_if_needed()
 ```
@@ -1079,12 +1078,12 @@ from pathlib import Path
 
 def build_app():
     """Build standalone executable."""
-    
+
     # Clean previous builds
     for path in ['build', 'dist']:
         if Path(path).exists():
             shutil.rmtree(path)
-    
+
     # Run PyInstaller
     PyInstaller.__main__.run([
         'img_app/__main__.py',
@@ -1099,7 +1098,7 @@ def build_app():
         '--onedir',
         '--clean'
     ])
-    
+
     print("Build complete! Executable in dist/ directory")
 
 if __name__ == "__main__":
@@ -1120,7 +1119,7 @@ from pathlib import Path
 
 def install():
     """Install application."""
-    
+
     # Determine installation directory
     if sys.platform == "win32":
         install_dir = Path(os.environ["PROGRAMFILES"]) / "KDC Image Organizer"
@@ -1128,17 +1127,17 @@ def install():
         install_dir = Path("/Applications/KDC Image Organizer.app")
     else:
         install_dir = Path.home() / ".local" / "share" / "kdc-image-organizer"
-    
+
     # Copy files
     print(f"Installing to {install_dir}")
     install_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Copy executable and resources
     shutil.copytree("dist/KDC Image Organizer", install_dir, dirs_exist_ok=True)
-    
+
     # Create desktop shortcut
     create_desktop_shortcut(install_dir)
-    
+
     print("Installation complete!")
 
 def create_desktop_shortcut(install_dir):
@@ -1931,6 +1930,9 @@ Acceptance summary (this section)
 ## Image Similarity Detection
 
 ### Supported Perceptual Hash Types
+
+**Note**: As of 2025-10-10, the similarity module has been refactored into a modular structure under [`src/pk_py_lib/core/image/similarity/`](src/pk_py_lib/core/image/similarity/__init__.py:1). All functionality remains backward compatible.
+
 The similarity detection subsystem supports multiple perceptual hashing algorithms for identifying visually similar images, configurable via the profile's `similarity.enabled_algorithms` array (default: `["phash"]`) and thresholds in `similarity.phash_threshold` (default: 10) or `similarity.whash_threshold` (default: 12). Supported types include:
 
 - **phash** (default): DCT-based perceptual hash using frequency domain analysis. Computes an 8x8 (64-bit) grayscale hash, robust to minor color shifts and compression artifacts. Hamming distance threshold: 0 (exact) to 64 (maximum difference). Benefits: Fast computation, good for overall perceptual similarity. Configuration example in profile:
@@ -1940,7 +1942,7 @@ The similarity detection subsystem supports multiple perceptual hashing algorith
     "phash_threshold": 10  // ~84% similarity; stricter with lower values
   }
   ```
-  Usage: Invoked via `find_similar_phash` in `core/image/similarity.py`; groups form transitively where all pairs have distance ≤ threshold.
+  Usage: Invoked via `find_similar_phash` in [`similarity/clustering.py`](src/pk_py_lib/core/image/similarity/clustering.py:1); groups form transitively where all pairs have distance ≤ threshold.
 
 - **whash**: Wavelet-based hash using Haar wavelet transform (default db1 wavelet, 8x8 resize). Expands perceptual hashing to detect structural similarities like cropping, rotation, or scaling, where phash may fail. Hamming distance threshold: 0-64. Benefits: More robust to geometric transformations vs. phash's frequency focus, but slightly slower due to wavelet decomposition. Falls back to phash if whash computation fails (e.g., unsupported image format or library error). Configuration example:
   ```json
@@ -1965,11 +1967,11 @@ To compute hashes during directory scanning, use `scan_directory` from `core/fil
 ```python
 from src.pk_py_lib.core.filesystem.traversal import scan_directory
 from src.pk_py_lib.core.database import DatabaseManager
-from src.pk_py_lib.core.cache import CacheManager
+from src.pk_py_lib.core.flat_cache import FlatCacheManager
 from pathlib import Path
 
 db = DatabaseManager()
-cache = CacheManager(Path.home() / ".cache")
+cache = FlatCacheManager()
 settings = {"similarity": {"enabled_algorithms": ["phash"], "phash_threshold": 10}}
 
 root = Path("/photos")
@@ -2015,32 +2017,37 @@ dialog.exec()
 - Defaults: pHash threshold 10 (~similar), wHash 12; overrides via settings.
 
 ### API Examples
-#### Hash Computation (from similarity.py)
+#### Hash Computation (from similarity package)
 ```python
-from src.pk_py_lib.core.image import similarity
-from src.pk_py_lib.core.cache import CacheManager
+# Import from the modular similarity package
+from src.pk_py_lib.core.image.similarity import compute_phash, compute_phash_batch
+from src.pk_py_lib.core.flat_cache import FlatCacheManager
+from pathlib import Path
 
-cache = CacheManager(Path.home() / ".cache")
+cache = FlatCacheManager()
 settings = {"criteria": {"phash": {"hash_size": 16}}}
 
-# Single image
-phash = similarity.compute_phash("/img.jpg", hash_size=8, settings=settings, cache_manager=cache)
+# Single image - now from hashing.py
+phash = compute_phash("/img.jpg", hash_size=8, settings=settings, cache_manager=cache)
 print(phash)  # 'a1b2c3d4e5f67890'
 
-# Batch
-paths = ["/img1.jpg", "/img2.jpg"]
-hashes = similarity.compute_phash_batch(paths, settings=settings, cache_manager=cache)
+# Batch - now from hashing.py
+paths = [Path("/img1.jpg"), Path("/img2.jpg")]
+hashes = compute_phash_batch(paths, settings=settings, cache_manager=cache)
 print(hashes)  # {'/img1.jpg': 'a1b2...', '/img2.jpg': None}  # None on failure
 ```
 
 #### Grouping
 ```python
+# Import from clustering module
+from src.pk_py_lib.core.image.similarity import find_similar_phash
+
 hashes = [
     {"path": "/img1.jpg", "hash": "0000000000000000"},
     {"path": "/img2.jpg", "hash": "0000000000000001"},
     {"path": "/img3.jpg", "hash": "1111111111111111"}
 ]
-groups = similarity.find_similar_phash(hashes, threshold=1, settings={"similarity": {"phash_threshold": 1}})
+groups = find_similar_phash(hashes, threshold=1, settings={"similarity": {"phash_threshold": 1}})
 print(groups)  # [['/img1.jpg', '/img2.jpg']]  # Groups ≥2 only
 ```
 
@@ -2051,7 +2058,7 @@ print(groups)  # [['/img1.jpg', '/img2.jpg']]  # Groups ≥2 only
 - **Database Storage**: Hashes persist in `image_hashes` (image_id FK to `image_metadata`), queried for grouping. See schema in [docs/roo/img-app-data-model.md](docs/roo/img-app-data-model.md).
 - **Exact Hash Persistence**: [`scan_directory()`](src/pk_py_lib/core/filesystem/traversal.py:818) now upserts both SHA-256 identity hashes and any computed perceptual hashes into `image_hashes`, ensuring duplicate clustering works even if the in-memory results are discarded.
 - **Settings Overrides**: `hash_size` from `criteria.phash.hash_size` (default 8); thresholds from `similarity.phash_threshold` (default 10). Algorithms via `similarity.enabled_algorithms` (default ['phash']).
-- **Caching**: 1-day TTL via CacheManager; key="path:phash". Batch progress logged.
+- **Caching**: Persistent caching via FlatCacheManager; key="path:phash". Batch progress logged.
 - **Error Handling**: InvalidImageError for corrupted/unsupported formats; SimilarityError for computation failures. GUI/DB errors shown selectably; continues on skips.
 - **Edge Cases**: Non-images skipped; empty scans return []; invalid thresholds raise ValueError; >1000 images warn on O(n²). Color variants for RGB sensitivity.
 - **PoC Considerations**: Sequential processing; no parallelism/perf tests. Brute-force suitable <1000 images; future LSH/ANN for scale.

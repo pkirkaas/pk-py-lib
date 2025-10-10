@@ -4,11 +4,30 @@ A comprehensive library of reusable Python components for image processing, file
 
 ## Features
 
+- **Image Similarity Detection**: Modular package for perceptual hashing (pHash, wHash) and similarity grouping
 - **Advanced File Operations**: Path manipulation, safe operations, real-time monitoring
 - **Flexible Logging**: Multi-output logging with variable watching and rich formatting
 - **GUI Components**: Reusable widgets and dialogs for image manipulation
-- **Persistent Caching**: File-stat validated cache for computed hashes and quality scores, now enabled by default (`use_flat_cache` setting).
+- **Persistent Caching**: FlatCacheManager provides file-stat validated cache for computed hashes and quality scores (always enabled)
 - **Component Showcase**: Interactive GUI test framework for component development
+
+## Recent Updates
+
+**Phase 3 Refactoring Complete (2025-10-10)**
+- ✅ Hash computation utilities extracted - eliminated ~40% code duplication
+- ✅ find_similar_images simplified from 235 lines to ~50 lines using phase-based architecture
+- ✅ 76 new tests added (54 utilities + 22 phases) - comprehensive coverage
+- ✅ All LSH references removed and test files organized
+- ✅ 100% backward compatibility maintained
+- See [`docs/roo/phase3-completion-summary.md`](docs/roo/phase3-completion-summary.md:1) for complete details
+
+**Phase 1-2 Refactoring Complete (2025-10-10)**
+- ✅ Similarity module split into 6 focused modules for better maintainability
+- ✅ GUI models consolidated to eliminate duplication
+- ✅ Cache architecture unified (FlatCacheManager is sole solution)
+- ✅ 433 lines of obsolete code removed
+- ✅ 100% backward compatibility maintained
+- See [`docs/refactoring-summary.md`](docs/refactoring-summary.md:1) for complete details
 
 ## Quick Start
 
@@ -119,16 +138,51 @@ pk-py-lib/
 ├── src/pk_py_lib/           # Main library
 │   ├── core/                # Core utilities
 │   │   ├── filesystem/      # File operations & monitoring
-│   │   └── logging/         # Advanced logging system
-│   ├── gui/                 # GUI components (future)
+│   │   ├── logging/         # Advanced logging system
+│   │   └── image/           # Image processing
+│   │       └── similarity/  # Modular similarity detection (9 modules)
+│   │           ├── types.py           # Shared types and exceptions
+│   │           ├── validation.py      # Parameter validation
+│   │           ├── metadata.py        # Metadata extraction
+│   │           ├── hashing.py         # Hash computation
+│   │           ├── hash_utils.py      # Common hash utilities (NEW)
+│   │           ├── algorithm_utils.py # Algorithm management (NEW)
+│   │           ├── clustering.py      # Similarity detection
+│   │           ├── phases.py          # Phase-based processing (NEW)
+│   │           └── __init__.py        # Public API
+│   ├── gui/                 # GUI components
+│   │   ├── models.py        # Shared GUI models (consolidated)
+│   │   ├── widgets.py       # Reusable widgets
+│   │   └── dialogs/         # Dialog components
 │   ├── processing/          # High-level APIs (future)
 │   └── cli/                 # CLI tools (future)
+├── img_app/                 # Development application
 ├── showcase/                # Component test framework
+├── tests/                   # Test suite (150+ tests)
+│   ├── test_hash_utils.py   # Hash utilities tests (NEW)
+│   ├── test_algorithm_utils.py # Algorithm utils tests (NEW)
+│   ├── test_phases.py       # Phase-based tests (NEW)
+│   └── ...
+├── docs/                    # Project documentation
+│   ├── refactoring-summary.md  # Complete refactoring details
+│   └── roo/                 # Detailed specifications
+│       ├── phase3-completion-summary.md # Phase 3 details (NEW)
+│       └── ...
 ├── run_showcase.py          # Quick launcher for GUI testing
 └── example_usage.py         # Usage demonstrations
 ```
 
 ## Key Features
+
+### Image Similarity Detection
+- **Modular architecture**: 9 focused modules for clarity and maintainability
+- **Multiple algorithms**: pHash (DCT-based), wHash (wavelet-based), XXH3 (exact duplicates)
+- **Phase-based processing**: 4 distinct phases for improved testability and maintainability
+- **Utility extraction**: Common hash computation utilities eliminate code duplication
+- **Flexible grouping**: Transitive clustering with configurable thresholds
+- **Comprehensive**: Handles metadata extraction, validation, and batch processing
+- **High test coverage**: 150+ tests including 76 new tests for utilities and phases
+- See [`src/pk_py_lib/core/image/similarity/`](src/pk_py_lib/core/image/similarity/__init__.py:1)
 
 ### File System Operations
 - **Path normalization**: Handle mixed file/directory collections
