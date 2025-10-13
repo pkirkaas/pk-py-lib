@@ -98,6 +98,12 @@ def main() -> int:
     - The application now launches directly with settings management integrated into the main window.
     - Robust error handling: any fatal error during DB/API startup is shown via QMessageBox, and the app exits.
     """
+    # Startup message for terminal launches
+    print("\n" * 8)
+    print("=============")
+    print("Starting imgapp")
+    print("=============")
+
     description = """
 KDC Image Organizer (img_app) CLI Interface
 
