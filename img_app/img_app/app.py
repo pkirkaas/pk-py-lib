@@ -23,6 +23,8 @@ import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from src.pk_py_lib.core.logging import get_logger
+
 from PySide6.QtWidgets import QApplication
 from src.pk_py_lib.gui.utils.messages import show_selectable_error
 
@@ -33,6 +35,7 @@ from src.pk_py_lib.gui.settings_manager.structured_dialog import structured_sett
 from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerController
 
 from src.pk_py_lib.core.database import DatabaseManager
+from src.pk_py_lib.core.settings.manager import SettingsManager
 from src.pk_py_lib.core.configuration import ConfigurationManager
 from src.pk_py_lib.core.logging.logger import configure_logging, LogLevel, PKLogger
 from src.pk_py_lib.core.logging.decorators import log_errors
@@ -85,10 +88,10 @@ def main() -> int:
         traceback_details = "".join(
             traceback.format_exception(exc_type, exc_value, exc_traceback)
         )
-        
+
         # Print to stderr as a fallback
         print(f"Unhandled exception:\n{traceback_details}", file=sys.stderr)
-        
+
         # Log the exception
         try:
             from src.pk_py_lib.core.logging import get_logger
@@ -102,7 +105,7 @@ def main() -> int:
         except Exception:
             # If logging fails, the stderr output will have to suffice
             pass
-        
+
         # Show the error in a message box
         show_selectable_error(
             None,
@@ -200,6 +203,8 @@ Examples:
     except Exception as exc:
         print(f"Warning: Failed to configure early logging: {exc}", file=sys.stderr)
 
+    logger = get_logger("img_app.app")
+
     if args.location:
         # CLI mode: initialize managers and print actual paths
         try:
@@ -214,7 +219,7 @@ Examples:
             # Initialize ConfigurationManager to get cache size (now that DB is initialized)
             config_mgr = None
             try:
-                config_mgr = ConfigurationManager(db_mgr)
+                config_mgr = ConfigurationManager(db_mgr.settings_db)
                 max_mb = int(getattr(config_mgr, "get_app_setting", lambda k: 5120)("cache_size_mb") or 5120)
             except Exception:
                 max_mb = 5120
@@ -267,26 +272,38 @@ Examples:
 
             # Trigger profiles schema migration
             from src.pk_py_lib.core.settings.profiles import ProfilesManager
-            profiles_mgr = ProfilesManager(db_mgr.settings_db)
+            db_path = Path(db_mgr.settings_db)
+            profiles_mgr = ProfilesManager(db_path)
 
             # 2.1) Initialize cache logger now that database is ready
             from src.pk_py_lib.core.logging.logger import get_cache_logger
             get_cache_logger(log_dir=log_dir)
 
             # 3) Profiles API bound to this DB; ensure a default/active profile exists
-            api = UnifiedSettingsAPI(db_mgr)
+            settings_path = Path(db_mgr.settings_db)
+            api = UnifiedSettingsAPI(SettingsManager(settings_path))
             ensured = api.ensure_default_profile()
+
+            if not ensured.success:
+                logger.error(
+                    "Failed to ensure default profile",
+                    exception=ValueError(ensured.message or 'Unknown error'),
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno,
+                    function_name="main",
+                    db_path=str(db_mgr.settings_db) if db_mgr else "unknown",
+                    api_response=ensured.message
+                )
+                show_selectable_error(
+                    None,
+                    "Startup Error",
+                    f"Failed to ensure default settings profile: {ensured.message or 'Unknown error'}"
+                )
+                return 1
 
             # 3.1) Initialize the Settings Manager Controller
             from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerController
             controller = SettingsManagerController(api)
-            if not ensured.success:
-                show_selectable_error(
-                    None,
-                    "Startup Error",
-                    f"Failed to ensure default settings profile:\n{ensured.message or 'Unknown error'}",
-                )
-                return 1
 
             # 4) Get the active profile for the main window
             active_resp = api.get_active()
@@ -298,10 +315,19 @@ Examples:
                 if list_resp.success and list_resp.data and len(list_resp.data) > 0:
                     active_profile = list_resp.data[0]
                 else:
+                    logger.error(
+                        "No settings profiles available",
+                        exception=ValueError("No settings profiles available. Please create a profile to continue."),
+                        file_path=__file__,
+                        line_number=inspect.currentframe().f_lineno,
+                        function_name="main",
+                        db_path=str(db_mgr.settings_db) if db_mgr else "unknown",
+                        profiles_count=0
+                    )
                     show_selectable_error(
                         None,
                         "Startup Error",
-                        "No settings profiles available. Please create a profile to continue.",
+                        "No settings profiles available. Please create a profile to continue."
                     )
                     return 1
 
@@ -310,7 +336,7 @@ Examples:
             flat_cache_mgr = None
 
             try:
-                config_mgr = ConfigurationManager(db_mgr)
+                config_mgr = ConfigurationManager(db_mgr.settings_db)
                 flat_cache_mgr = FlatCacheManager()
 
                 # Now configure dynamic logging based on app setting
@@ -368,16 +394,34 @@ Examples:
                 get_cache_logger(log_dir=log_dir)
 
             except Exception as exc:
-                import logging
-                logging.getLogger("img_app.app").exception("Optional manager init failed: %s", exc)
+                logger.error(
+                    "Optional manager init failed",
+                    exception=exc,
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno,
+                    function_name="main",
+                    db_path=str(db_mgr.settings_db) if db_mgr else "unknown",
+                    stack_trace=traceback.format_exc()
+                )
                 # If config fails, logging remains in project root (fallback)
 
         except Exception as exc:
             # Any fatal initialization error -> show and exit
+            logger.error(
+                "Fatal initialization error",
+                exception=exc,
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno,
+                function_name="main",
+                db_path=str(db_mgr.settings_db) if 'db_mgr' in locals() else "unknown",
+                config_state="partial" if config_mgr else "failed",
+                profiles_count=len(api.list_profiles().data) if 'api' in locals() else 0,
+                stack_trace=traceback.format_exc()
+            )
             show_selectable_error(
                 None,
                 "Startup Error",
-                f"Initialization failed:\n{exc}",
+                f"Fatal initialization error: {str(exc)}"
             )
             return 1
 

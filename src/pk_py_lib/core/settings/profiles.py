@@ -192,6 +192,53 @@ class ProfilesManager:
             logger.error(f"Error getting default profile: {e}")
             raise
 
+    def get_active(self) -> Optional[SettingsProfile]:
+        """
+        Get the active settings profile.
+
+        Queries the database for the profile marked as active (is_default = 1).
+        Returns the first matching profile or None if no active profile is found.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        Optional[SettingsProfile]
+            The active SettingsProfile instance, or None if no active profile exists.
+
+        Raises
+        ------
+        sqlite3.Error
+            If the database query fails due to a SQLite error.
+
+        Examples
+        --------
+        >>> profiles_mgr = ProfilesManager(db_path)
+        >>> active_profile = profiles_mgr.get_active()
+        >>> if active_profile:
+        ...     print(f"Active profile: {active_profile.name}")
+        ... else:
+        ...     print("No active profile set")
+        """
+        try:
+            with self.db.get_connection(self.db_path) as conn:
+                # Query for the profile where is_default = 1 (assuming 'active' maps to 'is_default')
+                # This follows the existing schema; if a separate 'is_active' field is needed,
+                # the schema would require migration.
+                cursor = conn.execute("SELECT * FROM settings_profiles_v2 WHERE is_default = 1 LIMIT 1")
+                row = cursor.fetchone()
+                if row:
+                    return self._row_to_profile(row)
+                else:
+                    # No active profile found; return None without raising
+                    logger.debug("No active profile found")
+                    return None
+        except sqlite3.Error as e:
+            logger.error(f"Database error while querying active profile: {e}")
+            raise sqlite3.Error(f"Failed to query active profile: {e}") from e
+
     def update(self, profile: SettingsProfile) -> None:
         """
         Update an existing profile.
