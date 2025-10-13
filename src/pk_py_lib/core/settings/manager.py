@@ -34,7 +34,8 @@ from .schema import (
     create_default_profile,
     is_valid_for_save,
     is_valid_for_run,
-    SettingsValidationError
+    SettingsValidationError,
+    CURRENT_SETTINGS_SCHEMA_VERSION
 )
 
 logger = logging.getLogger("pk_py_lib.settings.manager")
@@ -262,8 +263,88 @@ class SettingsManager:
         self._app_settings_cache: Optional[AppSettings] = None
         self._ensure_initialized()
 
+    def _get_settings_schema_version(self) -> Optional[str]:
+        """
+        Get the current settings schema version from the database.
+
+        Returns
+        -------
+        Optional[str]
+            The settings schema version or None if not found
+        """
+        try:
+            with self.db.get_connection(self.db.settings_db) as conn:
+                cur = conn.execute("SELECT value FROM meta WHERE key='settings_schema_version'")
+                row = cur.fetchone()
+                return row[0] if row else None
+        except Exception as e:
+            logger.warning(f"Failed to get settings schema version: {e}")
+            return None
+
+    def _set_settings_schema_version(self, version: str) -> None:
+        """
+        Set the settings schema version in the database.
+
+        Parameters
+        ----------
+        version : str
+            The version string to set
+        """
+        try:
+            with self.db.get_connection(self.db.settings_db) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value, notes, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                    ("settings_schema_version", version, "Set by SettingsManager"),
+                )
+                logger.info(f"Set settings schema version to {version}")
+        except Exception as e:
+            logger.error(f"Failed to set settings schema version: {e}")
+            raise StorageError(f"Failed to set settings schema version: {e}") from e
+
+    def _recreate_settings_database(self) -> None:
+        """
+        Delete and recreate the settings database with current schema.
+        This is called when the settings schema version doesn't match the expected version.
+        """
+        try:
+            # Backup the current database if it exists
+            if self.db.settings_db.exists():
+                logger.warning(f"Settings schema version mismatch - backing up and recreating database")
+                backup_path = self.db.backup_db(self.db.settings_db)
+                logger.info(f"Database backed up to {backup_path}")
+
+            # Remove the existing database file
+            if self.db.settings_db.exists():
+                self.db.settings_db.unlink()
+                logger.info("Removed existing settings database")
+
+            # Reinitialize the database (this will create a fresh database with current schema)
+            self.db.initialize()
+            logger.info("Recreated settings database with current schema")
+
+            # Set the current settings schema version
+            self._set_settings_schema_version(CURRENT_SETTINGS_SCHEMA_VERSION)
+
+        except Exception as e:
+            logger.error(f"Failed to recreate settings database: {e}")
+            raise StorageError(f"Failed to recreate settings database: {e}") from e
+
     def _ensure_initialized(self) -> None:
         """Ensure database tables and default data exist."""
+        # Check if database exists and has correct settings schema version
+        current_version = self._get_settings_schema_version()
+
+        if current_version != CURRENT_SETTINGS_SCHEMA_VERSION:
+            if current_version is not None:
+                logger.warning(f"Settings schema version mismatch: current={current_version}, expected={CURRENT_SETTINGS_SCHEMA_VERSION}")
+                logger.info("Recreating settings database due to schema version mismatch")
+                self._recreate_settings_database()
+            else:
+                logger.info("No settings schema version found - initializing new database")
+                # This is a new database, but we still need to ensure it's properly initialized
+                # The DatabaseManager.initialize() should handle this, but we'll set the version
+
+        # Ensure database is properly initialized
         with self.db.get_connection(self.db.settings_db) as conn:
             # Ensure app_settings table exists with required columns
             self._ensure_app_settings_table(conn)
@@ -276,6 +357,10 @@ class SettingsManager:
 
             # Ensure default profile exists
             self._ensure_default_profile(conn)
+
+        # Ensure the settings schema version is set (in case it wasn't set during recreation)
+        if self._get_settings_schema_version() != CURRENT_SETTINGS_SCHEMA_VERSION:
+            self._set_settings_schema_version(CURRENT_SETTINGS_SCHEMA_VERSION)
 
     def _ensure_app_settings_table(self, conn: sqlite3.Connection) -> None:
         """Ensure app_settings table exists with all required columns."""
@@ -1073,6 +1158,27 @@ class SettingsManager:
                 raise ConcurrencyError("Database is locked") from e
             raise StorageError(str(e)) from e
 
+    def get_settings_schema_version(self) -> Optional[str]:
+        """
+        Get the current settings schema version.
+
+        Returns
+        -------
+        Optional[str]
+            The current settings schema version or None if not found
+        """
+        return self._get_settings_schema_version()
+
+    def check_and_recreate_database(self) -> None:
+        """
+        Manually trigger database version checking and recreation if needed.
+        Useful for testing and debugging.
+        """
+        current_version = self._get_settings_schema_version()
+        if current_version != CURRENT_SETTINGS_SCHEMA_VERSION:
+            logger.info(f"Manual database recreation triggered: current={current_version}, expected={CURRENT_SETTINGS_SCHEMA_VERSION}")
+            self._recreate_settings_database()
+
 
 # ---------------------------------------------------------------------------
 # Backward Compatibility Functions
@@ -1143,4 +1249,5 @@ __all__ = [
     "create_default_profile",
     "is_valid_for_save",
     "is_valid_for_run",
+    "CURRENT_SETTINGS_SCHEMA_VERSION",
 ]

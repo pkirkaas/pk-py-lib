@@ -23,6 +23,9 @@ from jsonschema import validate, ValidationError
 
 logger = logging.getLogger("pk_py_lib.settings_schema")
 
+# Settings schema version for version checking and database recreation
+CURRENT_SETTINGS_SCHEMA_VERSION = "2.0.0"
+
 # -----------------------------------------------------------------------------
 # SQL Schema Definitions for V2 Unified Settings
 # -----------------------------------------------------------------------------

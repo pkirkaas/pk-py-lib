@@ -158,14 +158,28 @@ Examples:
     get_cache_logger(log_dir=log_dir)
 
     # Early main logging (minimal, will be fully configured after settings)
+    # Create FileOutput directly with rotate_existing=False to prevent double renaming
     try:
-        from src.pk_py_lib.core.logging.logger import configure_logging, LogLevel
+        from src.pk_py_lib.core.logging.logger import configure_logging, LogLevel, _global_outputs
+        from src.pk_py_lib.core.logging.outputs.file import FileOutput
+
+        # Create early file output with rotation disabled to avoid double rename conflict
+        early_file_output = FileOutput(
+            file_path=early_log_file_path,
+            rotate_existing=False  # Disable automatic rotation for early logging
+        )
+
+        # Configure logging with console only (file output added manually)
         configure_logging(
             console=True,
-            file_path=early_log_file_path,
-            level=LogLevel.DEBUG,  # Enable debug logging for enhanced error context
+            file_path=None,  # No file path since we're adding FileOutput manually
+            level=LogLevel.DEBUG,
             rich_console=True
         )
+
+        # Add the early file output to global outputs
+        _global_outputs.append(early_file_output)
+
     except Exception as exc:
         print(f"Warning: Failed to configure early logging: {exc}", file=sys.stderr)
 

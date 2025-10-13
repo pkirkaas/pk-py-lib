@@ -305,11 +305,11 @@ class SchemaManager:
 
         # 5) Update schema version
         self.set_version(conn, "1.1.0")
-    
+
     def migrate_to_1_2_0(self, conn: sqlite3.Connection) -> None:
         """
         Migrate to 1.2.0: introduce normalized settings profiles and meta key.
-        
+
         This migration is designed to be idempotent and safe to re-run. It ensures:
           - Presence of normalized tables:
               settings_profiles(id TEXT UUID PK, name TEXT UNIQUE (CI), description TEXT, is_active INT, created_at, updated_at)
@@ -325,10 +325,10 @@ class SchemaManager:
           - Update meta.schema_version to "1.2.0"
         """
         logger.info("Applying migration to schema 1.2.0 (normalized settings profiles)")
-    
+
         def _now_iso() -> str:
             return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    
+
         # Ensure target tables exist (no-ops if they already do)
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS settings_profiles (
@@ -340,7 +340,7 @@ class SchemaManager:
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
         );
         CREATE UNIQUE INDEX IF NOT EXISTS ux_settings_profiles_name_lower ON settings_profiles (lower(name));
-    
+
         CREATE TABLE IF NOT EXISTS settings_profile_items (
             id TEXT PRIMARY KEY,
             profile_id TEXT NOT NULL,
@@ -353,7 +353,7 @@ class SchemaManager:
         CREATE UNIQUE INDEX IF NOT EXISTS ux_settings_profile_items_profile_key ON settings_profile_items (profile_id, lower(key));
         CREATE INDEX IF NOT EXISTS ix_settings_profile_items_profile ON settings_profile_items (profile_id);
         """)
-    
+
         # Detect legacy schema for settings_profiles (presence of 'data' or 'is_default' columns)
         legacy = False
         try:
@@ -363,7 +363,7 @@ class SchemaManager:
         except sqlite3.OperationalError:
             # Table might not exist yet (fresh install) - already created above
             legacy = False
-    
+
         if legacy:
             logger.info("Legacy settings_profiles schema detected; migrating to normalized v2")
             # Determine legacy active id if present
@@ -375,7 +375,7 @@ class SchemaManager:
                     old_active_id = int(str(row[0]).strip())
             except sqlite3.OperationalError:
                 old_active_id = None
-    
+
             # Create a new table with the v2 schema using a temp name to allow rename
             conn.executescript("""
             CREATE TABLE IF NOT EXISTS settings_profiles_new_v2 (
@@ -387,7 +387,7 @@ class SchemaManager:
                 updated_at TEXT NOT NULL
             );
             """)
-    
+
             # Read legacy rows
             cur = conn.execute("SELECT id, name, data, created_at, updated_at FROM settings_profiles")
             rows = cur.fetchall()
@@ -401,7 +401,7 @@ class SchemaManager:
                 new_id = str(uuid.uuid4())
                 id_map[old_id] = new_id
                 is_active = 1 if (old_active_id is not None and old_id == old_active_id) else 0
-    
+
                 conn.execute(
                     "INSERT INTO settings_profiles_new_v2 (id, name, description, is_active, created_at, updated_at) VALUES (?, ?, NULL, ?, ?, ?)",
                     (new_id, name, is_active, created, updated),
@@ -423,18 +423,18 @@ class SchemaManager:
                 except Exception:
                     # Ignore malformed legacy JSON; continue
                     pass
-    
+
             # Replace legacy table atomically
             conn.execute("DROP TABLE settings_profiles")
             conn.execute("ALTER TABLE settings_profiles_new_v2 RENAME TO settings_profiles")
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_settings_profiles_name_lower ON settings_profiles (lower(name))")
             logger.info("Legacy settings_profiles migration complete; normalized tables ready")
-    
+
         # Ensure at least one profile exists and exactly one is active
         cur = conn.execute("SELECT id FROM settings_profiles ORDER BY name COLLATE NOCASE")
         all_ids = [r[0] for r in cur.fetchall()]
         active_id: Optional[str] = None
-    
+
         if not all_ids:
             # Create a default profile
             pid = str(uuid.uuid4())
@@ -468,7 +468,7 @@ class SchemaManager:
                             pass
                 except sqlite3.OperationalError:
                     pass
-    
+
                 if fallback_id is None:
                     cur = conn.execute("SELECT id FROM settings_profiles ORDER BY name COLLATE NOCASE LIMIT 1")
                     r = cur.fetchone()
@@ -481,13 +481,13 @@ class SchemaManager:
                 active_id = str(actives[0])
                 if len(actives) > 1:
                     conn.execute("UPDATE settings_profiles SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END", (active_id,))
-    
+
         # If still unresolved, compute from single active row
         if active_id is None:
             cur = conn.execute("SELECT id FROM settings_profiles WHERE is_active = 1 LIMIT 1")
             r = cur.fetchone()
             active_id = str(r[0]) if r else None
-    
+
         # Upsert meta key 'pk.settings_profiles'
         cfg = {
             "schema_version": 1,
@@ -498,11 +498,11 @@ class SchemaManager:
             "INSERT OR REPLACE INTO meta (key, value, notes, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
             ("pk.settings_profiles", json.dumps(cfg, sort_keys=True, separators=(",", ":")), "Settings profiles manager state"),
         )
-    
+
         # Bump global schema version to 1.2.0
         self.set_version(conn, "1.2.0")
-    
-    
+
+
 class DatabaseManager:
     """
     DatabaseManager creates and initializes the canonical settings database.
@@ -547,12 +547,12 @@ class DatabaseManager:
     def initialize(self) -> None:
         """
         Ensure base directory exists and create database and required tables.
-     
+
         This is idempotent and safe to call multiple times.
         """
         logger.info("Initializing settings database under data=%s", self.data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Initialize settings DB (includes meta table)
         logger.info(f"Settings DB path: {self.settings_db}")
         with self.get_connection(self.settings_db) as conn:
@@ -611,10 +611,10 @@ class DatabaseManager:
     def get_version(self, db_path: Optional[Path] = None) -> str:
         """
         Get the current schema version of the specified database or settings by default.
-        
+
         Args:
             db_path (Optional[Path]): Path to the database file. If None, uses settings.db.
-        
+
         Returns:
             str: The schema version from meta table, or '0.0.0' if not set.
         """
