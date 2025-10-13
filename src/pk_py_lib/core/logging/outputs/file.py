@@ -57,13 +57,33 @@ class FileOutput(LogOutput):
         self.json_format = json_format
         self.rotate_existing = rotate_existing
 
-        # Development mode check: Use Unix line endings (\n) for logs when development flag is True
-        # This ensures consistent line endings for cross-platform analysis (git diffs, Linux tools)
-        # even on Windows, without affecting other modes or platforms unnecessarily.
-        # On non-Windows platforms, open() defaults to \n, so this primarily impacts Windows.
-        db_mgr = DatabaseManager()
-        config = ConfigurationManager(db_mgr)
-        self.is_dev_mode = config.get_app_setting("development") or False
+        # Development mode check: Deferred until first write to avoid database dependency issues
+        # during early logging setup when the database may not be initialized yet.
+        self._dev_mode_checked = False
+        self._is_dev_mode = False
+
+    def _ensure_dev_mode_checked(self) -> None:
+        """Lazily check development mode when first needed."""
+        if not self._dev_mode_checked:
+            try:
+                # Development mode check: Use Unix line endings (\n) for logs when development flag is True
+                # This ensures consistent line endings for cross-platform analysis (git diffs, Linux tools)
+                # even on Windows, without affecting other modes or platforms unnecessarily.
+                # On non-Windows platforms, open() defaults to \n, so this primarily impacts Windows.
+                db_mgr = DatabaseManager()
+                config = ConfigurationManager(db_mgr)
+                self._is_dev_mode = config.get_app_setting("development") or False
+            except Exception:
+                # If database/settings are not available, default to False (normal mode)
+                self._is_dev_mode = False
+            finally:
+                self._dev_mode_checked = True
+
+    @property
+    def is_dev_mode(self) -> bool:
+        """Get development mode status, checking lazily if needed."""
+        self._ensure_dev_mode_checked()
+        return self._is_dev_mode
 
         # Create directory if it doesn't exist
         self.file_path.parent.mkdir(parents=True, exist_ok=True)

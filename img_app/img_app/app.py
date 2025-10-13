@@ -153,10 +153,6 @@ Examples:
     early_cache_log_path = log_dir / "cache_process.log"
     early_log_file_path = log_dir / "img_app-terminal.log"
 
-    # Early cache logger setup (will be reconfigured later if needed)
-    from src.pk_py_lib.core.logging.logger import get_cache_logger
-    get_cache_logger(log_dir=log_dir)
-
     # Early main logging (minimal, will be fully configured after settings)
     # Create FileOutput directly with rotate_existing=False to prevent double renaming
     try:
@@ -194,7 +190,7 @@ Examples:
             db_mgr = DatabaseManager()
             db_mgr.initialize()
 
-            # Initialize ConfigurationManager to get cache size
+            # Initialize ConfigurationManager to get cache size (now that DB is initialized)
             config_mgr = None
             try:
                 config_mgr = ConfigurationManager(db_mgr)
@@ -246,6 +242,10 @@ Examples:
         # 2) Initialize/open DBs and run migrations
         db_mgr = DatabaseManager()
         db_mgr.initialize()
+
+        # 2.1) Initialize cache logger now that database is ready
+        from src.pk_py_lib.core.logging.logger import get_cache_logger
+        get_cache_logger(log_dir=log_dir)
 
         # 3) Profiles API bound to this DB; ensure a default/active profile exists
         api = UnifiedSettingsAPI(db_mgr)
