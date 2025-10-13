@@ -58,6 +58,7 @@ except Exception:  # pragma: no cover
 
 
 from pk_py_lib.api.settings import UnifiedSettingsAPI
+from pk_py_lib.core.models.settings import SettingsProfile
 from pk_py_lib.core.settings.schema import (
     validate_settings_schema,
     normalize_settings,
@@ -884,6 +885,17 @@ class StructuredProfileEditorWidget(QWidget):
     def load_profile(self, profile: Dict[str, Any]) -> None:
         """Load a profile into the editor."""
         try:
+            # Type guard: If SettingsProfile, convert to json_data or {} if is_json_format(), else {}
+            if hasattr(profile, 'to_dict'):
+                profile = profile.to_dict()
+            elif isinstance(profile, SettingsProfile):
+                if profile.is_json_format():
+                    profile = getattr(profile, 'json_data', {}) or {}
+                else:
+                    profile = {}
+            elif isinstance(profile, dict) and profile.get('format') == 'json' and 'json_data' in profile:
+                profile = profile.get('json_data', {})
+
             # Normalize legacy direction tokens so original/current match UI and avoid false dirty state
             loaded = profile.copy()
 

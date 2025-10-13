@@ -25,6 +25,7 @@ import traceback
 
 from pk_py_lib.api import ApiResponse, ErrorCodes
 from pk_py_lib.api.settings import UnifiedSettingsAPI
+from pk_py_lib.core.models.settings import SettingsProfile
 
 from pk_py_lib.core.logging.logger import get_logger
 from pk_py_lib.core.logging.decorators import log_errors
@@ -96,7 +97,15 @@ class SettingsManagerController:
     @log_errors(include_args=True, include_traceback=True)
     def get_profile(self, profile_id: str) -> OpResult[Dict[str, Any]]:
         """Get a profile by id, enriched with item_count."""
-        return OpResult.from_api(self.api.get_profile(profile_id))
+        resp = self.api.get_profile(profile_id)
+        if not resp.success or not resp.data:
+            return OpResult.from_api(resp)
+        data = resp.data
+        if hasattr(data, 'to_dict'):
+            data = data.to_dict()
+        elif isinstance(data, SettingsProfile):
+            data = dict(data.data) if hasattr(data, 'data') else {}
+        return OpResult(success=True, data=data)
 
     @log_errors(include_args=True, include_traceback=True)
     def get_profile_with_values(self, profile_id: str) -> OpResult[Dict[str, Any]]:
@@ -111,10 +120,16 @@ class SettingsManagerController:
         p = self.api.get_profile(profile_id)
         if not p.success or not p.data:
             return OpResult.from_api(p)  # propagate error
+        if hasattr(p.data, 'to_dict'):
+            profile_dict = p.data.to_dict()
+        elif isinstance(p.data, SettingsProfile):
+            profile_dict = dict(p.data.data) if hasattr(p.data, 'data') else {}
+        else:
+            profile_dict = p.data
         vals = self.api.get_values(profile_id)
         if not vals.success:
             return OpResult.from_api(vals)
-        return OpResult(success=True, data={"profile": p.data, "values": vals.data or {}})
+        return OpResult(success=True, data={"profile": profile_dict, "values": vals.data or {}})
 
     @log_errors(include_args=True, include_traceback=True)
     def get_active(self) -> OpResult[Optional[Dict[str, Any]]]:
@@ -295,6 +310,7 @@ class SettingsManagerController:
         try:
             # Defensive copy and sanitization
             payload = dict(profile_json or {})
+            payload["format"] = "json"
 
             # Ensure name/description are strings (no None)
             name = str((payload.get("name") or "")).strip()
@@ -385,6 +401,7 @@ class SettingsManagerController:
 
             # Build payload and sanitize
             payload = dict(profile_json or {})
+            payload["format"] = "json"
             name = str((payload.get("name") or current.get("name", ""))).strip()
             desc = payload.get("description", current.get("description", ""))
             desc = "" if desc is None else str(desc)

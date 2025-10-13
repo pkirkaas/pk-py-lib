@@ -142,10 +142,12 @@ LOGGER = get_logger("img_app.scan")
 try:
     from src.pk_py_lib.gui.settings_manager.structured_editor import StructuredProfileEditorWidget
     from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerController
+    from pk_py_lib.core.models.settings import SettingsProfile
 except ImportError:
     # Fallback imports if not available
     StructuredProfileEditorWidget = None
     SettingsManagerController = None
+    SettingsProfile = None
 
 
 class _NamePromptDialog(QDialog):
@@ -1665,7 +1667,16 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(f"Failed to load profile data for editor: {resp.message}")
                 return
 
-            profile_data = resp.data.get('json_data') if isinstance(resp.data, dict) and resp.data.get('format') == 'json' and 'json_data' in resp.data else resp.data
+            # Handle dict vs SettingsProfile, extract json_data if is_json_format(), fallback to {}
+            if hasattr(resp.data, 'to_dict'):
+                profile_data = resp.data.to_dict()
+            elif isinstance(resp.data, SettingsProfile):
+                if resp.data.is_json_format():
+                    profile_data = getattr(resp.data, 'json_data', {}) or {}
+                else:
+                    profile_data = {}
+            else:
+                profile_data = resp.data.get('json_data') if isinstance(resp.data, dict) and resp.data.get('format') == 'json' and 'json_data' in resp.data else resp.data
 
             if not profile_data:
                 self.status_label.setText("Profile data is empty or invalid")

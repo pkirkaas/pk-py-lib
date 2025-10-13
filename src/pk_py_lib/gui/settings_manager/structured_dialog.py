@@ -333,7 +333,7 @@ class StructuredSettingsManagerDialog(QDialog):
             p = resp.data
             data: Dict[str, Any]
             try:
-                if p.get("format") == "json" and isinstance(p.get("json_data"), dict):
+                if isinstance(p.get("json_data"), dict) or p.get("format") == "json":
                     data = dict(p.get("json_data") or {})
                     # Align identifiers and timestamps with DB metadata
                     data["id"] = p.get("id") or data.get("id")

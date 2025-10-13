@@ -116,6 +116,7 @@ SETTINGS_PROFILE_SCHEMA = {
         "created_at": {"type": "string", "format": "date-time"},
         "updated_at": {"type": "string", "format": "date-time"},
         "schema_version": {"type": "string", "default": "1.0"},
+        "format": {"type": "string", "enum": ["json"], "default": "json"},
 
         "similarity": {
             "type": "object",
