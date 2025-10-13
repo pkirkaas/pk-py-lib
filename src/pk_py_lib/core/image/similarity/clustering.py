@@ -557,12 +557,12 @@ def cluster_with_hdbscan(
         try:
             # Sample distances for parameter tuning (avoid full matrix computation)
             # Use better sampling strategy: sample more records with fewer comparisons each
-            sample_size = min(2000, n * (n - 1) // 2)  # Increased sample size
+            sample_size = min(5000, n * (n - 1) // 2)  # Further increased sample size for better density estimation
             distances = []
 
             # Collect sample of pairwise distances with better coverage
-            samples_per_record = max(10, min(100, sample_size // min(200, n)))  # Adaptive samples per record
-            for i in range(min(200, n)):  # Sample from more records but fewer comparisons each
+            samples_per_record = max(20, min(200, sample_size // min(300, n)))  # More comprehensive sampling
+            for i in range(min(300, n)):  # Sample from more records
                 for j in range(i + 1, min(i + samples_per_record, n)):
                     dist = hamming_distance(hash_records[i]['hash'], hash_records[j]['hash'])
                     distances.append(dist)
@@ -592,33 +592,34 @@ def cluster_with_hdbscan(
                           f"normalized distance {normalized_threshold:.3f} -> ~{similarity_percentage:.1f}% similarity")
 
                 # Adaptive parameter setting based on distance distribution and similarity requirements
-                # Made less aggressive for real-world image similarity scenarios
+                # Adjusted to favor more small clusters for strict similarity thresholds
                 if min_samples is None:
                     # Set min_samples based on data density and similarity requirements
-                    # Reduced strictness for real-world scenarios where images may be more varied
-                    if threshold <= 5:  # Very strict similarity (95%+)
-                        min_samples = max(2, min(5, int(n * 0.02)))  # At least 2% of data or 2
-                    elif threshold <= 10:  # Strict similarity (85%+)
-                        min_samples = max(2, min(4, int(n * 0.015)))  # At least 1.5% of data or 2
+                    # For strict similarity, use lower min_samples to allow small dense clusters
+                    if threshold <= 6:  # Strict similarity (90%+)
+                        min_samples = 2  # Fixed low value to encourage small clusters
+                    elif threshold <= 10:  # Moderately strict (85%+)
+                        min_samples = max(2, min(3, int(n * 0.01)))  # Even lower percentage
                     else:  # Looser similarity
                         min_samples = max(2, int(p50 * 0.3))  # Based on median distance
 
                     # Ensure min_samples doesn't get too high for small datasets
-                    min_samples = min(min_samples, min(20, n // 10))
+                    min_samples = min(min_samples, min(10, n // 20))  # Further reduced cap
                     logger.debug(f"Adaptive min_samples: {min_samples} (threshold={threshold}, n={n}, p50={p50})")
 
-                # Adjust epsilon based on similarity requirements and data distribution
+                # Adjust epsilon to use 'leaf' method for better small cluster detection in strict similarity
                 if cluster_selection_epsilon == 0.0:
-                    # Use eom method (epsilon=0) for better noise handling with strict similarity
-                    pass
+                    if threshold <= 6:  # For strict similarity, use leaf method with small epsilon
+                        cluster_selection_epsilon = 0.05  # Small epsilon to split potential large clusters
+                        logger.info("Strict similarity: Switching to 'leaf' method with epsilon=0.05 for better small cluster detection")
                 else:
                     # For leaf method, set epsilon based on similarity threshold and data distribution
-                    if threshold <= 5:  # Very strict similarity
-                        adaptive_epsilon = max(0.01, min(0.1, p95 / 64.0 * 0.5))
+                    if threshold <= 6:  # Very strict similarity
+                        adaptive_epsilon = max(0.02, min(0.08, p95 / 64.0 * 0.4))  # Smaller epsilon for finer splitting
                     elif threshold <= 10:  # Strict similarity
-                        adaptive_epsilon = max(0.05, min(0.2, p95 / 64.0 * 0.7))
+                        adaptive_epsilon = max(0.03, min(0.12, p95 / 64.0 * 0.6))
                     else:  # Looser similarity
-                        adaptive_epsilon = max(0.1, min(0.3, normalized_threshold * 0.8))
+                        adaptive_epsilon = max(0.05, min(0.2, normalized_threshold * 0.7))
 
                     cluster_selection_epsilon = adaptive_epsilon
                     logger.debug(f"Adaptive epsilon: {cluster_selection_epsilon} (threshold={threshold}, p95={p95})")
@@ -628,6 +629,10 @@ def cluster_with_hdbscan(
         except Exception as e:
             logger.warning(f"Adaptive tuning failed, using default parameters: {e}")
             # Fall back to provided/default parameters
+            # For strict thresholds, ensure low min_samples
+            if threshold <= 6 and min_samples is None:
+                min_samples = 2
+                logger.info("Fallback: Set min_samples=2 for strict threshold")
 
     # Validate parameters
     if not isinstance(min_cluster_size, int) or min_cluster_size < 2:
@@ -677,7 +682,7 @@ def cluster_with_hdbscan(
         cluster_labels = clusterer.fit_predict(distances)
         clustering_time = time.time() - start_time
 
-        # Log clustering statistics
+        # Log initial clustering statistics
         unique_labels = set(cluster_labels)
         noise_points = sum(1 for label in cluster_labels if label == -1)
         clusters_found = len([label for label in unique_labels if label != -1])
@@ -686,24 +691,33 @@ def cluster_with_hdbscan(
                    f"{clusters_found} clusters, {noise_points} noise points, "
                    f"total_time={matrix_build_time + clustering_time:.2f}s")
 
-        # Enhanced logging for under-clustering diagnosis
-        if clusters_found == 0:
-            logger.warning(f"HDBSCAN found 0 clusters! This indicates under-clustering. "
-                          f"Consider: increasing threshold (current={threshold}), "
-                          f"decreasing min_cluster_size (current={min_cluster_size}), "
-                          f"or decreasing min_samples (current={min_samples})")
-        elif clusters_found < n * 0.1:  # Less than 10% clustering
-            logger.info(f"HDBSCAN clustering rate: {clusters_found}/{n} ({clusters_found/n*100:.1f}%). "
-                       f"This may indicate strict parameters for the dataset")
-        else:
-            logger.info(f"HDBSCAN clustering successful: {clusters_found} clusters from {n} images")
-
         # Build cluster index mapping (cluster_id -> list of indices)
         clusters = {}
         for idx, label in enumerate(cluster_labels):
             if label not in clusters:
                 clusters[label] = []
             clusters[label].append(idx)
+
+        # Now calculate average cluster size after clusters is built
+        total_clustered_points = sum(len(indices) for label, indices in clusters.items() if label != -1)
+        avg_cluster_size = total_clustered_points / clusters_found if clusters_found > 0 else 0
+
+        # Enhanced logging for clustering diagnosis
+        if clusters_found == 0:
+            logger.warning(f"HDBSCAN found 0 clusters! This indicates under-clustering. "
+                          f"Consider: increasing threshold (current={threshold}), "
+                          f"decreasing min_cluster_size (current={min_cluster_size}), "
+                          f"or setting min_samples=None (auto)")
+        elif avg_cluster_size > n * 0.05:  # Average cluster >5% of data may indicate over-clustering
+            logger.warning(f"HDBSCAN average cluster size {avg_cluster_size:.1f} may indicate over-clustering "
+                          f"for strict threshold {threshold}. Consider: increasing min_samples, "
+                          f"using 'leaf' method with higher epsilon, or switching to Union-Find")
+        elif clusters_found < n * 0.05:  # Less than 5% clustering rate
+            logger.info(f"HDBSCAN clustering rate: {clusters_found}/{n} ({clusters_found/n*100:.1f}%). "
+                       f"Strict parameters producing small clusters as expected for threshold {threshold}")
+        else:
+            logger.info(f"HDBSCAN clustering successful: {clusters_found} clusters from {n} images, "
+                       f"avg size {avg_cluster_size:.1f}")
 
         # Filter out noise and small clusters
         filtered_clusters = []
