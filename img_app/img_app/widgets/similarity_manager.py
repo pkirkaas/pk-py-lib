@@ -1054,7 +1054,28 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
             if threshold is None:
                 degree_ui = criteria.get("degree_ui")
                 if degree_ui is not None:
-                    threshold = float(degree_ui) / 100.0
+                    # Validate degree_ui range (0-100)
+                    if not isinstance(degree_ui, (int, float)) or degree_ui < 0 or degree_ui > 100:
+                        LOGGER.warning(f"Invalid degree_ui value: {degree_ui}, must be 0-100")
+                        return None
+
+                    # Convert similarity percentage (0-100) to Hamming distance (0-64)
+                    # 90% similarity = 10% difference = 6.4 Hamming distance for 64-bit hash
+                    similarity_fraction = float(degree_ui) / 100.0
+                    threshold = max(1, min(32, int(64 * (1.0 - similarity_fraction))))
+
+                    # Log the conversion for debugging
+                    LOGGER.info(f"Similarity conversion: {degree_ui}% similarity -> "
+                              f"{similarity_fraction:.3f} fraction -> "
+                              f"{64 * (1.0 - similarity_fraction):.1f} Hamming distance -> "
+                              f"threshold {threshold}")
+
+                    # Additional validation for HDBSCAN clustering
+                    if threshold <= 3:
+                        LOGGER.warning(f"Very strict threshold ({threshold}) may result in few or no clusters")
+                    elif threshold >= 20:
+                        LOGGER.warning(f"Very loose threshold ({threshold}) may result in over-clustering")
+
             return float(threshold) if threshold is not None else None
         except (ValueError, KeyError, TypeError) as e:
             LOGGER.warning(f"Failed to extract similarity threshold: {e}")

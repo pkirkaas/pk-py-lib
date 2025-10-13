@@ -492,6 +492,7 @@ def cluster_with_hdbscan(
         - Builds full distance matrix (O(n²) memory), but HDBSCAN is O(n log n) for fitting.
         - For large n (>5000), consider sampling or external indexing for scalability.
         - Adaptive tuning automatically sets min_samples based on distance percentiles if enabled.
+        - Similarity threshold is properly converted from Hamming distance to normalized distance for HDBSCAN.
     """
     if not hash_records:
         raise ValueError("hash_records list cannot be empty")
@@ -511,16 +512,44 @@ def cluster_with_hdbscan(
     cluster_selection_epsilon = similarity_settings.get('hdbscan_cluster_selection_epsilon', 0.0)
     adaptive_tuning = similarity_settings.get('hdbscan_adaptive_tuning', True)
 
+    # Convert similarity threshold to appropriate Hamming distance for HDBSCAN
+    # The threshold parameter represents Hamming distance, but we need to ensure it's reasonable
+    # For very high thresholds (like 90), we should cap them to avoid over-clustering
+    effective_threshold = min(threshold, 32)  # Cap at 32 to avoid excessive clustering
+
+    # Log threshold analysis for debugging over-clustering issues
+    if threshold > 32:
+        logger.warning(f"HDBSCAN threshold {threshold} capped to {effective_threshold} to prevent over-clustering")
+    elif threshold <= 3:
+        logger.info(f"HDBSCAN using very strict threshold {effective_threshold} (95%+ similarity)")
+    elif threshold <= 6:
+        logger.info(f"HDBSCAN using strict threshold {effective_threshold} (90%+ similarity)")
+    elif threshold >= 20:
+        logger.warning(f"HDBSCAN using loose threshold {effective_threshold} (may cause over-clustering)")
+
+    # Adjust min_cluster_size based on similarity strictness
+    if threshold <= 3:  # Very strict similarity (95%+)
+        if min_cluster_size == 2:  # Only adjust if using default
+            min_cluster_size = max(2, min(5, n // 100))  # Larger clusters for strict similarity
+    elif threshold <= 6:  # Strict similarity (90%+)
+        if min_cluster_size == 2:  # Only adjust if using default
+            min_cluster_size = max(2, min(4, n // 150))  # Moderately larger clusters
+
+    logger.info(f"HDBSCAN parameters: threshold={threshold}->{effective_threshold}, min_cluster_size={min_cluster_size}, "
+                f"min_samples={min_samples}, epsilon={cluster_selection_epsilon}, adaptive_tuning={adaptive_tuning}")
+
     # Adaptive tuning: compute distance statistics to set parameters
     if adaptive_tuning and n > 10:
         try:
             # Sample distances for parameter tuning (avoid full matrix computation)
-            sample_size = min(1000, n * (n - 1) // 2)
+            # Use better sampling strategy: sample more records with fewer comparisons each
+            sample_size = min(2000, n * (n - 1) // 2)  # Increased sample size
             distances = []
 
-            # Collect sample of pairwise distances
-            for i in range(min(100, n)):  # Sample from first 100 records
-                for j in range(i + 1, min(i + 50, n)):  # Sample up to 50 comparisons per record
+            # Collect sample of pairwise distances with better coverage
+            samples_per_record = max(10, min(100, sample_size // min(200, n)))  # Adaptive samples per record
+            for i in range(min(200, n)):  # Sample from more records but fewer comparisons each
+                for j in range(i + 1, min(i + samples_per_record, n)):
                     dist = hamming_distance(hash_records[i]['hash'], hash_records[j]['hash'])
                     distances.append(dist)
                     if len(distances) >= sample_size:
@@ -528,29 +557,59 @@ def cluster_with_hdbscan(
                 if len(distances) >= sample_size:
                     break
 
+            # Ensure we have at least some distances for tuning
+            if not distances:
+                logger.warning("No distances collected for adaptive tuning, using defaults")
+                distances = [threshold]  # Fallback to threshold value
+
             if distances:
                 distances_array = np.array(distances)
                 p5 = np.percentile(distances_array, 5)
                 p50 = np.percentile(distances_array, 50)
                 p95 = np.percentile(distances_array, 95)
 
-                # Adaptive parameter setting based on distance distribution
-                if min_samples is None:
-                    # Set min_samples based on median distance and threshold
-                    min_samples = max(2, int(p50 * 0.5))  # Adaptive based on data density
-                    logger.debug(f"Adaptive min_samples: {min_samples} (based on p50={p50})")
+                # Convert similarity threshold to normalized distance for HDBSCAN
+                # similarity_degree of 90% should map to Hamming distance of ~6-7 (64 * 0.1)
+                normalized_threshold = effective_threshold / 64.0
 
-                # Adjust epsilon if using leaf method (epsilon > 0)
+                # Calculate what similarity percentage this threshold represents for debugging
+                similarity_percentage = (1.0 - normalized_threshold) * 100.0
+                logger.info(f"HDBSCAN similarity conversion: threshold {threshold}->{effective_threshold} -> "
+                          f"normalized distance {normalized_threshold:.3f} -> ~{similarity_percentage:.1f}% similarity")
+
+                # Adaptive parameter setting based on distance distribution and similarity requirements
+                if min_samples is None:
+                    # Set min_samples based on data density and similarity requirements
+                    # For high similarity (low threshold), need higher min_samples to avoid over-clustering
+                    if threshold <= 5:  # Very strict similarity (95%+)
+                        min_samples = max(3, min(10, int(n * 0.05)))  # At least 5% of data or 3
+                    elif threshold <= 10:  # Strict similarity (85%+)
+                        min_samples = max(2, min(8, int(n * 0.03)))   # At least 3% of data or 2
+                    else:  # Looser similarity
+                        min_samples = max(2, int(p50 * 0.3))  # Based on median distance
+
+                    # Ensure min_samples doesn't get too high for small datasets
+                    min_samples = min(min_samples, min(20, n // 10))
+                    logger.debug(f"Adaptive min_samples: {min_samples} (threshold={threshold}, n={n}, p50={p50})")
+
+                # Adjust epsilon based on similarity requirements and data distribution
                 if cluster_selection_epsilon == 0.0:
-                    # Use eom method (epsilon=0) for better noise handling
+                    # Use eom method (epsilon=0) for better noise handling with strict similarity
                     pass
                 else:
-                    # For leaf method, set epsilon based on threshold and data
-                    adaptive_epsilon = max(0.0, min(1.0, threshold * 0.1))
-                    cluster_selection_epsilon = adaptive_epsilon
-                    logger.debug(f"Adaptive epsilon: {cluster_selection_epsilon} (based on threshold={threshold})")
+                    # For leaf method, set epsilon based on similarity threshold and data distribution
+                    if threshold <= 5:  # Very strict similarity
+                        adaptive_epsilon = max(0.01, min(0.1, p95 / 64.0 * 0.5))
+                    elif threshold <= 10:  # Strict similarity
+                        adaptive_epsilon = max(0.05, min(0.2, p95 / 64.0 * 0.7))
+                    else:  # Looser similarity
+                        adaptive_epsilon = max(0.1, min(0.3, normalized_threshold * 0.8))
 
-                logger.info(f"HDBSCAN adaptive tuning: n={n}, p5={p5:.2f}, p50={p50:.2f}, p95={p95:.2f}")
+                    cluster_selection_epsilon = adaptive_epsilon
+                    logger.debug(f"Adaptive epsilon: {cluster_selection_epsilon} (threshold={threshold}, p95={p95})")
+
+                logger.info(f"HDBSCAN adaptive tuning: n={n}, threshold={threshold}, norm_threshold={normalized_threshold:.3f}")
+                logger.info(f"Distance stats: p5={p5:.2f}, p50={p50:.2f}, p95={p95:.2f}")
         except Exception as e:
             logger.warning(f"Adaptive tuning failed, using default parameters: {e}")
             # Fall back to provided/default parameters
@@ -587,8 +646,8 @@ def cluster_with_hdbscan(
     logger.debug(f"Distance matrix built in {matrix_build_time:.2f}s ({n*n/2:.0f} comparisons)")
 
     # Apply HDBSCAN clustering
-    logger.info(f"Applying HDBSCAN clustering: n={n}, min_cluster_size={min_cluster_size}, "
-                f"min_samples={min_samples}, epsilon={cluster_selection_epsilon}")
+    logger.info(f"Applying HDBSCAN clustering: n={n}, threshold={threshold}->{effective_threshold}, "
+                f"min_cluster_size={min_cluster_size}, min_samples={min_samples}, epsilon={cluster_selection_epsilon}")
 
     try:
         clusterer = hdbscan.HDBSCAN(
