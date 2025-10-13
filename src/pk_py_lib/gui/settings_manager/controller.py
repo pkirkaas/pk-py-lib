@@ -142,22 +142,22 @@ class SettingsManagerController:
     @log_errors(include_args=True, include_traceback=True)
     def create_profile(self, name: str, description: Optional[str] = None, make_active: bool = False) -> OpResult[Dict[str, Any]]:
         """Create a new profile."""
-        return OpResult.from_api(self.api.create(name=name, description=description, make_active=make_active))
+        return OpResult.from_api(self.api.create_profile(name=name, description=description, make_active=make_active))
 
     @log_errors(include_args=True, include_traceback=True)
     def rename_profile(self, profile_id: str, new_name: str) -> OpResult[Dict[str, Any]]:
         """Rename an existing profile (update name only)."""
-        return OpResult.from_api(self.api.update(profile_id=profile_id, name=new_name, description=None))
+        return OpResult.from_api(self.api.update_profile(profile_id=profile_id, name=new_name, description=None))
 
     @log_errors(include_args=True, include_traceback=True)
     def update_description(self, profile_id: str, description: Optional[str]) -> OpResult[Dict[str, Any]]:
         """Update description only."""
-        return OpResult.from_api(self.api.update(profile_id=profile_id, name=None, description=description))
+        return OpResult.from_api(self.api.update_profile(profile_id=profile_id, name=None, description=description))
 
     @log_errors(include_args=True, include_traceback=True)
     def update_profile(self, profile_id: str, name: Optional[str] = None, description: Optional[str] = None) -> OpResult[Dict[str, Any]]:
         """Update name and/or description."""
-        return OpResult.from_api(self.api.update(profile_id=profile_id, name=name, description=description))
+        return OpResult.from_api(self.api.update_profile(profile_id=profile_id, name=name, description=description))
 
     @log_errors(include_args=True, include_traceback=True)
     def duplicate_profile(self, source_profile_id: str, new_name: str, description: Optional[str] = None, make_active: bool = False) -> OpResult[Dict[str, Any]]:
@@ -259,7 +259,7 @@ class SettingsManagerController:
         """
         # 1) Metadata
         if name is not None or description is not None:
-            upd = self.api.update(profile_id=profile_id, name=name, description=description)
+            upd = self.api.update_profile(profile_id=profile_id, name=name, description=description)
             if not upd.success:
                 return OpResult.from_api(upd)
 
@@ -316,12 +316,12 @@ class SettingsManagerController:
             payload.setdefault("profile_version", "1.0.0")
             payload.setdefault("schema_version", "1.0")
 
-            from pk_py_lib.core.settings_schema import normalize_settings
+            from pk_py_lib.core.settings.schema import normalize_settings
             logger.info(f"create_structured_profile before normalize: similarity_hash_algorithm={payload.get('criteria', {}).get('similarity_hash_algorithm')}, algorithm={payload.get('criteria', {}).get('algorithm')}")
             payload = normalize_settings(payload)
             logger.info(f"create_structured_profile after normalize: similarity_hash_algorithm={payload.get('criteria', {}).get('similarity_hash_algorithm')}, algorithm={payload.get('criteria', {}).get('algorithm')}")
             # Initial create
-            resp = self.api.create(name=name, description=desc, make_active=make_active, json_data=payload)
+            resp = self.api.create_profile(name=name, description=desc, make_active=make_active, json_data=payload)
             if not resp.success or not resp.data:
                 return OpResult.from_api(resp)
 
@@ -403,11 +403,11 @@ class SettingsManagerController:
             payload.setdefault("profile_version", cur_json.get("profile_version") or "1.0.0")
             payload.setdefault("schema_version", cur_json.get("schema_version") or "1.0")
 
-            from pk_py_lib.core.settings_schema import normalize_settings
+            from pk_py_lib.core.settings.schema import normalize_settings
             logger.info(f"update_structured_profile before normalize: similarity_hash_algorithm={payload.get('criteria', {}).get('similarity_hash_algorithm')}, algorithm={payload.get('criteria', {}).get('algorithm')}")
             payload = normalize_settings(payload)
             logger.info(f"update_structured_profile after normalize: similarity_hash_algorithm={payload.get('criteria', {}).get('similarity_hash_algorithm')}, algorithm={payload.get('criteria', {}).get('algorithm')}")
-            resp = self.api.update(profile_id=profile_id, name=name, description=desc, json_data=payload)
+            resp = self.api.update_profile(profile_id=profile_id, name=name, description=desc, json_data=payload)
             if resp.success and resp.data:
                 loaded = resp.data.get('json_data', {}).get('criteria', {}).get('similarity_hash_algorithm')
                 logger.info(f"After update: loaded similarity_hash_algorithm={loaded}")

@@ -279,6 +279,19 @@ class SettingsManager:
 
     def _ensure_app_settings_table(self, conn: sqlite3.Connection) -> None:
         """Ensure app_settings table exists with all required columns."""
+        # First check if app_settings table exists
+        cur = conn.execute("""
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type='table' AND name='app_settings'
+        """)
+        table_exists = cur.fetchone()[0] > 0
+
+        if not table_exists:
+            # Table doesn't exist - it should be created by SETTINGS_SCHEMA
+            # This shouldn't happen if database.py initialization is working correctly
+            logger.warning("app_settings table does not exist - this indicates a database initialization issue")
+            return
+
         # Check if logging_to_user_dir column exists
         cur = conn.execute("""
             SELECT COUNT(*) FROM pragma_table_info('app_settings')
@@ -310,15 +323,31 @@ class SettingsManager:
                     max_threads, max_memory_mb, cache_size_mb, logging_to_user_dir, development
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, ("light", "en", 1.0, 4, 2048, 5120, False, False))
+            logger.info("Created default app_settings row")
 
     def _ensure_profiles_table(self, conn: sqlite3.Connection) -> None:
         """Ensure settings_profiles table exists with json_data column."""
         try:
+            # First check if table exists
+            cur = conn.execute("""
+                SELECT COUNT(*) FROM sqlite_master
+                WHERE type='table' AND name='settings_profiles'
+            """)
+            table_exists = cur.fetchone()[0] > 0
+
+            if not table_exists:
+                logger.warning("settings_profiles table does not exist - this indicates a database initialization issue")
+                return
+
             conn.execute("SELECT json_data FROM settings_profiles LIMIT 1")
-        except sqlite3.OperationalError:
-            # Column doesn't exist, add it
-            conn.execute("ALTER TABLE settings_profiles ADD COLUMN json_data TEXT")
-            logger.info("Added json_data column to settings_profiles table")
+        except sqlite3.OperationalError as e:
+            if "no such column: json_data" in str(e):
+                # Column doesn't exist, add it
+                conn.execute("ALTER TABLE settings_profiles ADD COLUMN json_data TEXT")
+                logger.info("Added json_data column to settings_profiles table")
+            else:
+                logger.error("Error checking settings_profiles table: %s", e)
+                raise
 
     def _ensure_default_app_settings(self, conn: sqlite3.Connection) -> None:
         """Ensure default application settings exist."""
