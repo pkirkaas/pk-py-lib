@@ -90,6 +90,12 @@ class ProfilesManager:
                     )
                 """)
 
+                cur = conn.execute("PRAGMA table_info(settings_profiles_v2)")
+                columns = [row[1] for row in cur.fetchall()]
+                if 'json_data' not in columns:
+                    conn.execute("ALTER TABLE settings_profiles_v2 ADD COLUMN json_data TEXT")
+                    logger.info("Added json_data column to settings_profiles_v2")
+
                 logger.debug("settings_profiles_v2 schema verified")
         except sqlite3.Error as e:
             logger.error(f"Error ensuring schema: {e}")

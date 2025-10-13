@@ -249,6 +249,10 @@ Examples:
         db_mgr = DatabaseManager()
         db_mgr.initialize()
 
+        # Trigger profiles schema migration
+        from src.pk_py_lib.core.managers.profiles import ProfilesManager
+        profiles_mgr = ProfilesManager(db_mgr.settings_db)
+
         # 2.1) Initialize cache logger now that database is ready
         from src.pk_py_lib.core.logging.logger import get_cache_logger
         get_cache_logger(log_dir=log_dir)

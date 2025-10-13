@@ -22,6 +22,22 @@ This guide documents migration steps for settings profiles between legacy format
 
 ## Recent Fixes
 
+### Schema Migration for json_data Column (2025-10-13)
+
+**Issue**: Missing `json_data` column in settings profiles table caused fallback to legacy mode and overwrite to defaults during operations like similarity runs (via `set_active_evaluator` in quality provider).
+
+**Fix Applied**:
+- Added ALTER TABLE ADD COLUMN json_data TEXT in the schema initialization (_ensure_schema in profiles.py and equivalent in unified manager.py).
+- The migration runs safely on every startup (idempotent for SQLite).
+- Triggers on profile manager instantiation or unified settings initialization.
+
+**Verification**:
+- Column added on first run (logged: "Added json_data column to settings_profiles_v2").
+- Custom similarity profiles (e.g., mode="similarity", custom paths in pools.A) now save to json_data and persist after run/close/restart without reset to defaults or home dir.
+- No errors in logs; similarity comparisons succeed with updated evaluators.
+
+**Impact**: Existing DBs are automatically migrated without data loss. New DBs include the column from creation.
+
 ### Type Mismatch Fix (2025-10-13)
 
 **Issue**: SettingsProfile dataclass instances were passed directly to the editor instead of dicts, causing failure to restore `json_data` (custom pools/mode) on load after restart. The editor expected dict format but received dataclass objects without proper conversion.
@@ -74,3 +90,9 @@ If issues arise:
 - [x] Restart app → custom values persist (no defaults)
 - [ ] Two-pool mode with direction mapping
 - [ ] Invalid data → graceful fallback to defaults
+
+## Recent Migration: json_data Column Addition (2025-10-13)
+
+To support structured JSON profiles and prevent reversion after similarity comparisons, added `json_data TEXT` column to `settings_profiles_v2` table via ALTER TABLE in `profiles.py` (_ensure_schema). This migration runs on app init if the column is missing.
+
+**Impact**: Existing legacy profiles remain compatible; new saves use JSON for custom pools/mode. Resolves overwrite to defaults in quality evaluator during runs. No data loss; run app to auto-migrate DB.
