@@ -345,7 +345,7 @@ class DuplicateManagerDialog(BaseFileManagerDialog):
                 profile_name = self._profile_payload.get("name", "default")
             else:
                 try:
-                    from src.pk_py_lib.core.settings_profiles import get_active_profile_settings
+                    from src.pk_py_lib.core.settings.manager import get_active_profile_settings
                     settings = get_active_profile_settings()
                     profile_name = settings.get("name", "default") if isinstance(settings, dict) else "default"
                 except Exception:

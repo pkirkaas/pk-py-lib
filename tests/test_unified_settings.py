@@ -14,7 +14,8 @@ import pytest
 from datetime import datetime
 from pathlib import Path
 
-from pk_py_lib.core.models.settings import AppSettings, SettingsProfile, DEFAULT_PROFILES
+from pk_py_lib.core.settings.app_settings import AppSettingsManager
+from pk_py_lib.core.settings.profiles import ProfilesManager
 
 
 class TestAppSettings:
@@ -556,7 +557,7 @@ class TestAppSettingsManager:
 
     def test_init_creates_schema(self, tmp_path):
         """Test initialization creates database schema."""
-        from pk_py_lib.core.managers.app_settings import AppSettingsManager
+        from pk_py_lib.core.settings.app_settings import AppSettingsManager
 
         db_path = tmp_path / "settings.db"
         manager = AppSettingsManager(db_path)
@@ -572,7 +573,7 @@ class TestAppSettingsManager:
 
     def test_load_creates_defaults(self, tmp_path):
         """Test load creates default settings if none exist."""
-        from pk_py_lib.core.managers.app_settings import AppSettingsManager
+        from pk_py_lib.core.settings.app_settings import AppSettingsManager
 
         db_path = tmp_path / "settings.db"
         manager = AppSettingsManager(db_path)
@@ -586,7 +587,7 @@ class TestAppSettingsManager:
 
     def test_save_and_load(self, tmp_path):
         """Test saving and loading settings."""
-        from pk_py_lib.core.managers.app_settings import AppSettingsManager
+        from pk_py_lib.core.settings.app_settings import AppSettingsManager
         from pk_py_lib.core.models.settings import AppSettings
 
         db_path = tmp_path / "settings.db"
@@ -617,7 +618,7 @@ class TestAppSettingsManager:
 
     def test_cache_enabled_getset(self, tmp_path):
         """Test cache enabled getter/setter."""
-        from pk_py_lib.core.managers.app_settings import AppSettingsManager
+        from pk_py_lib.core.settings.app_settings import AppSettingsManager
 
         db_path = tmp_path / "settings.db"
         manager = AppSettingsManager(db_path)
@@ -630,7 +631,7 @@ class TestAppSettingsManager:
 
     def test_theme_validation(self, tmp_path):
         """Test theme validation."""
-        from pk_py_lib.core.managers.app_settings import AppSettingsManager
+        from pk_py_lib.core.settings.app_settings import AppSettingsManager
         import pytest
 
         db_path = tmp_path / "settings.db"
@@ -653,7 +654,7 @@ class TestProfilesManager:
 
     def test_init_creates_defaults(self, tmp_path):
         """Test initialization creates default profiles."""
-        from pk_py_lib.core.managers.profiles import ProfilesManager
+        from pk_py_lib.core.settings.profiles import ProfilesManager
 
         db_path = tmp_path / "settings.db"
         manager = ProfilesManager(db_path)
@@ -670,7 +671,7 @@ class TestProfilesManager:
 
     def test_create_profile(self, tmp_path):
         """Test creating a new profile."""
-        from pk_py_lib.core.managers.profiles import ProfilesManager
+        from pk_py_lib.core.settings.profiles import ProfilesManager
         from pk_py_lib.core.models.settings import SettingsProfile
 
         db_path = tmp_path / "settings.db"
@@ -694,7 +695,7 @@ class TestProfilesManager:
 
     def test_create_duplicate_name_fails(self, tmp_path):
         """Test creating profile with duplicate name fails."""
-        from pk_py_lib.core.managers.profiles import ProfilesManager
+        from pk_py_lib.core.settings.profiles import ProfilesManager
         from pk_py_lib.core.models.settings import SettingsProfile
         import pytest
 
@@ -712,7 +713,7 @@ class TestProfilesManager:
 
     def test_get_by_name_case_insensitive(self, tmp_path):
         """Test get_by_name is case-insensitive."""
-        from pk_py_lib.core.managers.profiles import ProfilesManager
+        from pk_py_lib.core.settings.profiles import ProfilesManager
 
         db_path = tmp_path / "settings.db"
         manager = ProfilesManager(db_path)
@@ -730,7 +731,7 @@ class TestProfilesManager:
 
     def test_update_profile(self, tmp_path):
         """Test updating a profile."""
-        from pk_py_lib.core.managers.profiles import ProfilesManager
+        from pk_py_lib.core.settings.profiles import ProfilesManager
         from pk_py_lib.core.models.settings import SettingsProfile
 
         db_path = tmp_path / "settings.db"
@@ -752,7 +753,7 @@ class TestProfilesManager:
 
     def test_cannot_modify_system_profile(self, tmp_path):
         """Test that system profiles cannot be modified."""
-        from pk_py_lib.core.managers.profiles import ProfilesManager
+        from pk_py_lib.core.settings.profiles import ProfilesManager
         import pytest
 
         db_path = tmp_path / "settings.db"
@@ -769,7 +770,7 @@ class TestProfilesManager:
 
     def test_delete_profile(self, tmp_path):
         """Test deleting a profile."""
-        from pk_py_lib.core.managers.profiles import ProfilesManager
+        from pk_py_lib.core.settings.profiles import ProfilesManager
         from pk_py_lib.core.models.settings import SettingsProfile
 
         db_path = tmp_path / "settings.db"
@@ -788,7 +789,7 @@ class TestProfilesManager:
 
     def test_cannot_delete_system_profile(self, tmp_path):
         """Test that system profiles cannot be deleted."""
-        from pk_py_lib.core.managers.profiles import ProfilesManager
+        from pk_py_lib.core.settings.profiles import ProfilesManager
         import pytest
 
         db_path = tmp_path / "settings.db"
@@ -803,7 +804,7 @@ class TestProfilesManager:
 
     def test_get_default_profile(self, tmp_path):
         """Test getting the default profile."""
-        from pk_py_lib.core.managers.profiles import ProfilesManager
+        from pk_py_lib.core.settings.profiles import ProfilesManager
 
         db_path = tmp_path / "settings.db"
         manager = ProfilesManager(db_path)
@@ -817,7 +818,7 @@ class TestProfilesManager:
 
     def test_set_default_profile(self, tmp_path):
         """Test setting a profile as default."""
-        from pk_py_lib.core.managers.profiles import ProfilesManager
+        from pk_py_lib.core.settings.profiles import ProfilesManager
 
         db_path = tmp_path / "settings.db"
         manager = ProfilesManager(db_path)
@@ -832,3 +833,16 @@ class TestProfilesManager:
         # Verify
         default = manager.get_default()
         assert default.id == profile.id
+
+class TestSettingsManager:
+    """Tests for the unified SettingsManager."""
+
+    def test_init(self, tmp_path):
+        """Test that SettingsManager initializes correctly."""
+        from pk_py_lib.core.settings.manager import SettingsManager
+
+        db_path = tmp_path / "settings.db"
+        manager = SettingsManager(db_path)
+
+        assert isinstance(manager.app_settings, AppSettingsManager)
+        assert isinstance(manager.profiles, ProfilesManager)

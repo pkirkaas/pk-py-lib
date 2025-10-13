@@ -49,7 +49,11 @@ from src.pk_py_lib.core.image.similarity import (
     get_image_metadata,
 )
 from src.pk_py_lib.core.image.similarity.phases import PhaseContext, execute_all_phases
-from src.pk_py_lib.core.settings_profiles import get_active_profile_settings
+try:
+    from src.pk_py_lib.core.settings.manager import get_active_profile_settings
+except ImportError:
+    # Fallback for older versions or different project structures
+    from pk_py_lib.core.settings.manager import get_active_profile_settings
 from src.pk_py_lib.core.settings.schema import validate_settings_schema
 from src.pk_py_lib.core.utils.thresholds import internal_to_ui_percent
 from src.pk_py_lib.gui.dialog_models import FileItem, Group, GroupStats
@@ -461,7 +465,7 @@ class SimilarityManagerDialog(BaseFileManagerDialog):
                 profile_name = self._profile_payload.get("name", "default")
             else:
                 try:
-                    from src.pk_py_lib.core.settings_profiles import get_active_profile_settings
+                    from src.pk_py_lib.core.settings.manager import get_active_profile_settings
                     settings = get_active_profile_settings()
                     profile_name = settings.get("name", "default") if isinstance(settings, dict) else "default"
                 except Exception:

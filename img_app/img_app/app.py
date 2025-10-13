@@ -77,27 +77,42 @@ def _ensure_application(argv: Optional[list[str]] = None) -> QApplication:
 def main() -> int:
     """
     Entry point for launching the KDC Image Organizer application.
-
-    Startup sequence (direct launch with integrated settings management):
-    1) Instantiate QApplication.
-    2) Initialize/open database and run migrations via DatabaseManager.
-    3) Create UnifiedSettingsAPI and ensure_default_profile() to guarantee an Active profile exists.
-    4) Fetch the active profile for the main window.
-    5) Create and show MainWindow, passing the active profile and managers.
-
-    Supports CLI mode: `imgapp -l` or `imgapp --location` to list actual local data paths used.
-    Qt flags (e.g., `-platform offscreen`) are passed through to QApplication via parse_known_args().
-
-    Returns
-    -------
-    int
-        Qt event loop exit code; non-zero on fatal startup error.
-
-    Notes
-    -----
-    - The application now launches directly with settings management integrated into the main window.
-    - Robust error handling: any fatal error during DB/API startup is shown via QMessageBox, and the app exits.
     """
+    # --- Global Exception Hook ---
+    def log_exceptions(exc_type, exc_value, exc_traceback):
+        """Log unhandled exceptions to the terminal and show a message box."""
+        # Format the traceback
+        traceback_details = "".join(
+            traceback.format_exception(exc_type, exc_value, exc_traceback)
+        )
+        
+        # Print to stderr as a fallback
+        print(f"Unhandled exception:\n{traceback_details}", file=sys.stderr)
+        
+        # Log the exception
+        try:
+            from src.pk_py_lib.core.logging import get_logger
+            logger = get_logger("img_app.global_errors")
+            logger.error(
+                "Unhandled exception caught:\n"
+                f"Type: {exc_type.__name__}\n"
+                f"Value: {exc_value}\n"
+                f"Traceback:\n{traceback_details}"
+            )
+        except Exception:
+            # If logging fails, the stderr output will have to suffice
+            pass
+        
+        # Show the error in a message box
+        show_selectable_error(
+            None,
+            "Unhandled Exception",
+            f"An unexpected error occurred:\n\n{exc_value}\n\n"
+            "Please check the logs for more details.",
+        )
+
+    sys.excepthook = log_exceptions
+
     # Startup message for terminal launches
     print("\n" * 8)
     print("=============")
@@ -232,162 +247,166 @@ Examples:
             print(f"Error initializing managers for --location: {exc}", file=sys.stderr)
             sys.exit(1)
 
-    # Pass through any remaining args (likely Qt flags) to QApplication
-    app = _ensure_application([sys.argv[0]] + qt_argv)
-
-    # Will be attached to the MainWindow if initialized successfully
-    db_mgr = None
-    config_mgr = None
-    flat_cache_mgr = None # Add FlatCacheManager
-    controller = None # New variable for the controller
-    active_profile: Optional[Dict[str, Any]] = None
-
     try:
-        # Core managers imported at module top; using them directly
+        # Pass through any remaining args (likely Qt flags) to QApplication
+        app = _ensure_application([sys.argv[0]] + qt_argv)
 
-        # 2) Initialize/open DBs and run migrations
-        db_mgr = DatabaseManager()
-        db_mgr.initialize()
+        # Will be attached to the MainWindow if initialized successfully
+        db_mgr = None
+        config_mgr = None
+        flat_cache_mgr = None # Add FlatCacheManager
+        controller = None # New variable for the controller
+        active_profile: Optional[Dict[str, Any]] = None
 
-        # Trigger profiles schema migration
-        from src.pk_py_lib.core.managers.profiles import ProfilesManager
-        profiles_mgr = ProfilesManager(db_mgr.settings_db)
+        try:
+            # Core managers imported at module top; using them directly
 
-        # 2.1) Initialize cache logger now that database is ready
-        from src.pk_py_lib.core.logging.logger import get_cache_logger
-        get_cache_logger(log_dir=log_dir)
+            # 2) Initialize/open DBs and run migrations
+            db_mgr = DatabaseManager()
+            db_mgr.initialize()
 
-        # 3) Profiles API bound to this DB; ensure a default/active profile exists
-        api = UnifiedSettingsAPI(db_mgr)
-        ensured = api.ensure_default_profile()
+            # Trigger profiles schema migration
+            from src.pk_py_lib.core.settings.profiles import ProfilesManager
+            profiles_mgr = ProfilesManager(db_mgr.settings_db)
 
-        # 3.1) Initialize the Settings Manager Controller
-        from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerController
-        controller = SettingsManagerController(api)
-        if not ensured.success:
-            show_selectable_error(
-                None,
-                "Startup Error",
-                f"Failed to ensure default settings profile:\n{ensured.message or 'Unknown error'}",
-            )
-            return 1
+            # 2.1) Initialize cache logger now that database is ready
+            from src.pk_py_lib.core.logging.logger import get_cache_logger
+            get_cache_logger(log_dir=log_dir)
 
-        # 4) Get the active profile for the main window
-        active_resp = api.get_active()
-        if active_resp.success and active_resp.data:
-            active_profile = active_resp.data
-        else:
-            # Fallback: get first profile if active not set
-            list_resp = api.list_profiles()
-            if list_resp.success and list_resp.data and len(list_resp.data) > 0:
-                active_profile = list_resp.data[0]
-            else:
+            # 3) Profiles API bound to this DB; ensure a default/active profile exists
+            api = UnifiedSettingsAPI(db_mgr)
+            ensured = api.ensure_default_profile()
+
+            # 3.1) Initialize the Settings Manager Controller
+            from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerController
+            controller = SettingsManagerController(api)
+            if not ensured.success:
                 show_selectable_error(
                     None,
                     "Startup Error",
-                    "No settings profiles available. Please create a profile to continue.",
+                    f"Failed to ensure default settings profile:\n{ensured.message or 'Unknown error'}",
                 )
                 return 1
 
-        # Optional managers (best-effort; failures are non-fatal)
-        config_mgr = None
-        flat_cache_mgr = None
-
-        try:
-            config_mgr = ConfigurationManager(db_mgr)
-            flat_cache_mgr = FlatCacheManager()
-
-            # Now configure dynamic logging based on app setting
-            logging_to_user_dir = config_mgr.get_app_setting('logging_to_user_dir')  # Defaults to False from schema if not set.
-
-            if logging_to_user_dir:
-                from src.pk_py_lib.core import get_data_dir
-                log_dir = get_data_dir() / "logs"
+            # 4) Get the active profile for the main window
+            active_resp = api.get_active()
+            if active_resp.success and active_resp.data:
+                active_profile = active_resp.data
             else:
-                log_dir = PROJECT_ROOT / "logs"
+                # Fallback: get first profile if active not set
+                list_resp = api.list_profiles()
+                if list_resp.success and list_resp.data and len(list_resp.data) > 0:
+                    active_profile = list_resp.data[0]
+                else:
+                    show_selectable_error(
+                        None,
+                        "Startup Error",
+                        "No settings profiles available. Please create a profile to continue.",
+                    )
+                    return 1
 
-            log_dir.mkdir(parents=True, exist_ok=True)
+            # Optional managers (best-effort; failures are non-fatal)
+            config_mgr = None
+            flat_cache_mgr = None
 
-            # Reconfigure main terminal log with dynamic path and rotation
-            LOG_FILE_PATH = log_dir / "img_app-terminal.log"
+            try:
+                config_mgr = ConfigurationManager(db_mgr)
+                flat_cache_mgr = FlatCacheManager()
 
-            # Rotate existing main log file (similar to cache rotation)
-            if LOG_FILE_PATH.exists():
-                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                new_name = LOG_FILE_PATH.with_name(f"img_app-terminal_{ts}.log")
-                try:
-                    LOG_FILE_PATH.rename(new_name)
-                except OSError as e:
-                    # Log to console since main logging not fully set up yet
-                    print(f"Warning: Failed to rotate main log file: {e}", file=sys.stderr)
+                # Now configure dynamic logging based on app setting
+                logging_to_user_dir = config_mgr.get_app_setting('logging_to_user_dir')  # Defaults to False from schema if not set.
 
-            # Create new main log file
-            LOG_FILE_PATH.touch(exist_ok=True)
+                if logging_to_user_dir:
+                    from src.pk_py_lib.core import get_data_dir
+                    log_dir = get_data_dir() / "logs"
+                else:
+                    log_dir = PROJECT_ROOT / "logs"
 
-            # Reconfigure main logging with dynamic path
-            configure_logging(
-                console=True,
-                file_path=LOG_FILE_PATH,
-                level=LogLevel.DEBUG,  # Enable debug logging for enhanced error context
-                rich_console=True
-            )
+                log_dir.mkdir(parents=True, exist_ok=True)
 
-            # Reconfigure cache logger with dynamic log_dir
-            cache_log_path = log_dir / "cache_process.log"
+                # Reconfigure main terminal log with dynamic path and rotation
+                LOG_FILE_PATH = log_dir / "img_app-terminal.log"
 
-            # Rotate cache log if needed (idempotent)
-            if cache_log_path.exists():
-                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                new_name = cache_log_path.with_name(f"cache_process_{ts}.log")
-                try:
-                    cache_log_path.rename(new_name)
-                except OSError as e:
-                    # Already logged via main logger or early console
-                    pass
+                # Rotate existing main log file (similar to cache rotation)
+                if LOG_FILE_PATH.exists():
+                    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    new_name = LOG_FILE_PATH.with_name(f"img_app-terminal_{ts}.log")
+                    try:
+                        LOG_FILE_PATH.rename(new_name)
+                    except OSError as e:
+                        # Log to console since main logging not fully set up yet
+                        print(f"Warning: Failed to rotate main log file: {e}", file=sys.stderr)
 
-            # Create new cache log file
-            cache_log_path.touch(exist_ok=True)
+                # Create new main log file
+                LOG_FILE_PATH.touch(exist_ok=True)
 
-            # Reinitialize cache logger with dynamic log_dir
-            get_cache_logger(log_dir=log_dir)
+                # Reconfigure main logging with dynamic path
+                configure_logging(
+                    console=True,
+                    file_path=LOG_FILE_PATH,
+                    level=LogLevel.DEBUG,  # Enable debug logging for enhanced error context
+                    rich_console=True
+                )
+
+                # Reconfigure cache logger with dynamic log_dir
+                cache_log_path = log_dir / "cache_process.log"
+
+                # Rotate cache log if needed (idempotent)
+                if cache_log_path.exists():
+                    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    new_name = cache_log_path.with_name(f"cache_process_{ts}.log")
+                    try:
+                        cache_log_path.rename(new_name)
+                    except OSError as e:
+                        # Already logged via main logger or early console
+                        pass
+
+                # Create new cache log file
+                cache_log_path.touch(exist_ok=True)
+
+                # Reinitialize cache logger with dynamic log_dir
+                get_cache_logger(log_dir=log_dir)
+
+            except Exception as exc:
+                import logging
+                logging.getLogger("img_app.app").exception("Optional manager init failed: %s", exc)
+                # If config fails, logging remains in project root (fallback)
 
         except Exception as exc:
-            import logging
-            logging.getLogger("img_app.app").exception("Optional manager init failed: %s", exc)
-            # If config fails, logging remains in project root (fallback)
+            # Any fatal initialization error -> show and exit
+            show_selectable_error(
+                None,
+                "Startup Error",
+                f"Initialization failed:\n{exc}",
+            )
+            return 1
 
-    except Exception as exc:
-        # Any fatal initialization error -> show and exit
-        show_selectable_error(
-            None,
-            "Startup Error",
-            f"Initialization failed:\n{exc}",
-        )
-        return 1
+        # 5) Create main window, pass active profile, and attach managers
+        window = MainWindow(active_profile=active_profile, cli_args=args)
+        if db_mgr is not None:
+            setattr(window, "database_manager", db_mgr)
+        if config_mgr is not None:
+            setattr(window, "configuration_manager", config_mgr)
 
-    # 5) Create main window, pass active profile, and attach managers
-    window = MainWindow(active_profile=active_profile, cli_args=args)
-    if db_mgr is not None:
-        setattr(window, "database_manager", db_mgr)
-    if config_mgr is not None:
-        setattr(window, "configuration_manager", config_mgr)
+        if flat_cache_mgr is not None:
+            setattr(window, "flat_cache_manager", flat_cache_mgr)
 
-    if flat_cache_mgr is not None:
-        setattr(window, "flat_cache_manager", flat_cache_mgr)
+        if controller is not None:
+            setattr(window, "controller", controller)
 
-    if controller is not None:
-        setattr(window, "controller", controller)
+        # Load profiles now that database manager is available
+        window.load_profiles()
 
-    # Load profiles now that database manager is available
-    window.load_profiles()
+        window.show()
 
-    window.show()
+        # Check for CLI option to automatically start the default operation
+        if args.default:
+            window.start_default_operation()
 
-    # Check for CLI option to automatically start the default operation
-    if args.default:
-        window.start_default_operation()
-
-    return app.exec()
+        return app.exec()
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+        raise
 
 
 if __name__ == "__main__":
