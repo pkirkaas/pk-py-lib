@@ -128,7 +128,7 @@ class SettingsManagerController:
     @log_errors(include_args=True, include_traceback=True)
     def validate_name(self, name: str) -> OpResult[bool]:
         """Validate a profile name (syntax/length)."""
-        return OpResult.from_api(self.api.validate_name(name))
+        return OpResult.from_api(self.api.validate_profile_name(name))
 
     @log_errors(include_args=True, include_traceback=True)
     def validate_keys(self, keys: Iterable[str]) -> OpResult[bool]:
@@ -210,7 +210,7 @@ class SettingsManagerController:
             On success, data is a unique suggestion. On failure, message/code populated.
         """
         # Validate base syntactically first (we will still try to propose a valid string)
-        base_ok = self.api.validate_name(base)
+        base_ok = self.validate_name(base)
         if not base_ok.success:
             # Try to sanitize minimally: trim, enforce allowed charset subset by stripping disallowed chars
             import re
@@ -225,7 +225,7 @@ class SettingsManagerController:
         existing_lower = {str(d.get("name", "")).lower() for d in lst.data}
         candidate = f"{base} (copy)"
         n = 2
-        while candidate.lower() in existing_lower or not self.api.validate_name(candidate).success:
+        while candidate.lower() in existing_lower or not self.validate_name(candidate).success:
             candidate = f"{base} (copy) {n}"
             n += 1
             if n > 1000:
@@ -336,7 +336,7 @@ class SettingsManagerController:
                     payload["id"] = new_id
                     # Refresh updated_at for alignment update
                     payload["updated_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-                    upd = self.api.update(profile_id=new_id, name=name, description=desc, json_data=payload)
+                    upd = self.api.update_profile(profile_id=new_id, name=name, description=desc, json_data=payload)
                     if not upd.success:
                         # Non-fatal; return the created profile
                         return OpResult.from_api(resp)

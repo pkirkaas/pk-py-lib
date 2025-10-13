@@ -5,7 +5,7 @@
 groups = ["default", "dev"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:21d37174773f2ef32f4d0403bd4494bad4370c3b2bc1aa39d88f500df940c568"
+content_hash = "sha256:be260bb68546638772d98f4e35dcd6b56b66177246de4d2b5b0d36ab53e79b28"
 
 [[metadata.targets]]
 requires_python = ">=3.13,<3.14"
@@ -186,6 +186,22 @@ groups = ["default"]
 files = [
     {file = "exifread-3.5.1-py3-none-any.whl", hash = "sha256:e5426ce2857423ad401e575ea9d159dc97449dc041fb6e61b35109caea72c311"},
     {file = "exifread-3.5.1.tar.gz", hash = "sha256:9f998f80d3062741c976dfc4fd033424bc40932937994e4d2181eb70c4b6aedd"},
+]
+
+[[package]]
+name = "hdbscan"
+version = "0.8.40"
+summary = "Clustering based on density with variable density clusters"
+groups = ["default"]
+dependencies = [
+    "joblib>=1.0",
+    "numpy<3,>=1.20",
+    "scikit-learn>=0.20",
+    "scipy>=1.0",
+]
+files = [
+    {file = "hdbscan-0.8.40-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:32ea7bc4ce8854b5549d341edc841a29766feb62f8c399520e6e0940a41c5e39"},
+    {file = "hdbscan-0.8.40.tar.gz", hash = "sha256:c9e383ff17beee0591075ff65d524bda5b5a35dfb01d218245a7ba30c8d48a17"},
 ]
 
 [[package]]

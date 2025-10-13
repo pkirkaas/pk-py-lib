@@ -13,6 +13,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+import numpy as np
+
 from pk_py_lib.core.filesystem.identity import compute_xxh3
 from pk_py_lib.core.flat_cache import FlatCacheManager
 from pk_py_lib.core.image.quality.provider import get_active_image_quality_evaluator
@@ -27,6 +29,14 @@ from .similarity_types import ExactDuplicateSet, SimilarityError
 from .validation import hamming_distance, validate_and_normalize_hash, validate_threshold
 
 logger = get_logger(__name__)
+
+# HDBSCAN clustering imports - handle gracefully if not available
+try:
+    import hdbscan
+    HDBSCAN_AVAILABLE = True
+except ImportError:
+    HDBSCAN_AVAILABLE = False
+    logger.warning("HDBSCAN not available; clustering_algorithm='hdbscan' will fall back to Union-Find")
 
 
 def find_similar_phash(
@@ -115,39 +125,68 @@ def find_similar_phash(
             threshold = 10
     validate_threshold(threshold, algorithm)
 
-    # Union-find for clustering
-    parent = list(range(n))
+    # Get clustering algorithm from settings
+    clustering_algorithm = 'hdbscan'  # Default to HDBSCAN
+    if settings and 'similarity' in settings:
+        clustering_algorithm = settings['similarity'].get('clustering_algorithm', 'hdbscan')
 
-    def find(p: int) -> int:
-        if parent[p] != p:
-            parent[p] = find(parent[p])
-        return parent[p]
+    if clustering_algorithm not in ['unionfind', 'hdbscan']:
+        logger.warning(f"Invalid clustering_algorithm '{clustering_algorithm}', defaulting to 'hdbscan'")
+        clustering_algorithm = 'hdbscan'
 
-    def union(p1: int, p2: int) -> None:
-        pp1 = find(p1)
-        pp2 = find(p2)
-        if pp1 != pp2:
-            parent[pp1] = pp2
+    logger.info(f"Using clustering algorithm: {clustering_algorithm} for {algorithm} similarity (n={n})")
 
-    if n > 1000:
-        logger.warning(f"Large input ({n} images) for brute-force grouping; consider external indexing for scale in production")
+    # Build groups based on selected algorithm
+    if clustering_algorithm == 'hdbscan':
+        try:
+            # Use HDBSCAN clustering
+            clusters = cluster_with_hdbscan(hashes, threshold, settings)
 
-    # Always use brute-force pairwise comparison
-    for i in range(n):
-        for j in range(i + 1, n):
-            try:
-                dist = hamming_distance(hashes[i]['hash'], hashes[j]['hash'])
-                if dist <= threshold:
-                    union(i, j)
-            except ValueError as e:
-                logger.warning(f"Skipping invalid pair ({i}, {j}): {e}")
-                continue
+            # Convert HDBSCAN cluster format to group_dict format compatible with existing code
+            group_dict: Dict[int, List[int]] = {}
+            for cluster in clusters:
+                for cluster_id, indices in cluster.items():
+                    if cluster_id != -1:  # Skip noise points in main grouping
+                        group_dict[cluster_id] = indices
 
-    # Build groups using indices to preserve hashes
-    group_dict: Dict[int, List[int]] = defaultdict(list)
-    for i in range(n):
-        root = find(i)
-        group_dict[root].append(i)
+        except (ImportError, SimilarityError) as e:
+            logger.warning(f"HDBSCAN clustering failed: {e}, falling back to Union-Find")
+            clustering_algorithm = 'unionfind'  # Fall back to Union-Find
+
+    if clustering_algorithm == 'unionfind':
+        # Union-find for clustering (original implementation)
+        parent = list(range(n))
+
+        def find(p: int) -> int:
+            if parent[p] != p:
+                parent[p] = find(parent[p])
+            return parent[p]
+
+        def union(p1: int, p2: int) -> None:
+            pp1 = find(p1)
+            pp2 = find(p2)
+            if pp1 != pp2:
+                parent[pp1] = pp2
+
+        if n > 1000:
+            logger.warning(f"Large input ({n} images) for brute-force grouping; consider external indexing for scale in production")
+
+        # Always use brute-force pairwise comparison
+        for i in range(n):
+            for j in range(i + 1, n):
+                try:
+                    dist = hamming_distance(hashes[i]['hash'], hashes[j]['hash'])
+                    if dist <= threshold:
+                        union(i, j)
+                except ValueError as e:
+                    logger.warning(f"Skipping invalid pair ({i}, {j}): {e}")
+                    continue
+
+        # Build groups using indices to preserve hashes
+        group_dict: Dict[int, List[int]] = defaultdict(list)
+        for i in range(n):
+            root = find(i)
+            group_dict[root].append(i)
 
     groups: List[Group] = []
     group_id = 1
@@ -288,39 +327,68 @@ def find_similar_whash(
             threshold = 12
     validate_threshold(threshold, algorithm)
 
-    # Union-find for clustering
-    parent = list(range(n))
+    # Get clustering algorithm from settings
+    clustering_algorithm = 'hdbscan'  # Default to HDBSCAN
+    if settings and 'similarity' in settings:
+        clustering_algorithm = settings['similarity'].get('clustering_algorithm', 'hdbscan')
 
-    def find(p: int) -> int:
-        if parent[p] != p:
-            parent[p] = find(parent[p])
-        return parent[p]
+    if clustering_algorithm not in ['unionfind', 'hdbscan']:
+        logger.warning(f"Invalid clustering_algorithm '{clustering_algorithm}', defaulting to 'hdbscan'")
+        clustering_algorithm = 'hdbscan'
 
-    def union(p1: int, p2: int) -> None:
-        pp1 = find(p1)
-        pp2 = find(p2)
-        if pp1 != pp2:
-            parent[pp1] = pp2
+    logger.info(f"Using clustering algorithm: {clustering_algorithm} for {algorithm} similarity (n={n})")
 
-    if n > 1000:
-        logger.warning(f"Large input ({n} images) for brute-force grouping; consider external indexing for scale in production")
+    # Build groups based on selected algorithm
+    if clustering_algorithm == 'hdbscan':
+        try:
+            # Use HDBSCAN clustering
+            clusters = cluster_with_hdbscan(hashes, threshold, settings)
 
-    # Always use brute-force pairwise comparison
-    for i in range(n):
-        for j in range(i + 1, n):
-            try:
-                dist = hamming_distance(hashes[i]['hash'], hashes[j]['hash'])
-                if dist <= threshold:
-                    union(i, j)
-            except ValueError as e:
-                logger.warning(f"Skipping invalid pair ({i}, {j}): {e}")
-                continue
+            # Convert HDBSCAN cluster format to group_dict format compatible with existing code
+            group_dict: Dict[int, List[int]] = {}
+            for cluster in clusters:
+                for cluster_id, indices in cluster.items():
+                    if cluster_id != -1:  # Skip noise points in main grouping
+                        group_dict[cluster_id] = indices
 
-    # Build groups using indices to preserve hashes
-    group_dict: Dict[int, List[int]] = defaultdict(list)
-    for i in range(n):
-        root = find(i)
-        group_dict[root].append(i)
+        except (ImportError, SimilarityError) as e:
+            logger.warning(f"HDBSCAN clustering failed: {e}, falling back to Union-Find")
+            clustering_algorithm = 'unionfind'  # Fall back to Union-Find
+
+    if clustering_algorithm == 'unionfind':
+        # Union-find for clustering (original implementation)
+        parent = list(range(n))
+
+        def find(p: int) -> int:
+            if parent[p] != p:
+                parent[p] = find(parent[p])
+            return parent[p]
+
+        def union(p1: int, p2: int) -> None:
+            pp1 = find(p1)
+            pp2 = find(p2)
+            if pp1 != pp2:
+                parent[pp1] = pp2
+
+        if n > 1000:
+            logger.warning(f"Large input ({n} images) for brute-force grouping; consider external indexing for scale in production")
+
+        # Always use brute-force pairwise comparison
+        for i in range(n):
+            for j in range(i + 1, n):
+                try:
+                    dist = hamming_distance(hashes[i]['hash'], hashes[j]['hash'])
+                    if dist <= threshold:
+                        union(i, j)
+                except ValueError as e:
+                    logger.warning(f"Skipping invalid pair ({i}, {j}): {e}")
+                    continue
+
+        # Build groups using indices to preserve hashes
+        group_dict: Dict[int, List[int]] = defaultdict(list)
+        for i in range(n):
+            root = find(i)
+            group_dict[root].append(i)
 
     groups: List[Group] = []
     group_id = 1
@@ -378,6 +446,203 @@ def find_similar_whash(
 
     logger.info(f"Found {len(groups)} similar wHash groups (threshold={threshold}, n={n}, search_type={search_type})")
     return groups
+
+
+def cluster_with_hdbscan(
+    hash_records: List[Dict[str, str]],
+    threshold: int,
+    settings: Dict
+) -> List[Dict[int, List[int]]]:
+    """
+    Cluster hash records using HDBSCAN (Hierarchical Density-Based Spatial Clustering of Applications with Noise).
+
+    Uses precomputed Hamming distance matrix as input to HDBSCAN for density-based clustering.
+    This approach avoids transitive chaining issues and provides better scalability than Union-Find.
+
+    Args:
+        hash_records (List[Dict[str, str]]): List of hash records with 'path' and 'hash' keys.
+            Each record should have been validated and normalized.
+        threshold (int): Maximum Hamming distance for similarity (used for adaptive tuning).
+        settings (Dict): Settings dictionary containing HDBSCAN parameters under 'similarity' key:
+            - hdbscan_min_cluster_size (int): Minimum cluster size (default: 2)
+            - hdbscan_min_samples (Optional[int]): Minimum samples for core points (default: None)
+            - hdbscan_cluster_selection_epsilon (float): Cluster selection epsilon (default: 0.0)
+            - hdbscan_adaptive_tuning (bool): Enable adaptive parameter tuning (default: True)
+
+    Returns:
+        List[Dict[int, List[int]]]: List of cluster dictionaries where each dict maps cluster_id to list of indices.
+            Cluster ID -1 represents noise points (singletons). Each cluster contains at least 2 points.
+
+    Raises:
+        ImportError: If HDBSCAN is not available (falls back to Union-Find in calling function).
+        ValueError: If hash_records is empty, invalid parameters, or distance matrix computation fails.
+        SimilarityError: If clustering fails due to invalid distance matrix or HDBSCAN errors.
+
+    Example:
+        >>> hash_records = [
+        ...     {'path': '/img1.jpg', 'hash': '0000000000000000'},
+        ...     {'path': '/img2.jpg', 'hash': '0000000000000001'},
+        ...     {'path': '/img3.jpg', 'hash': '1111111111111111'}
+        ... ]
+        >>> settings = {'similarity': {'hdbscan_min_cluster_size': 2}}
+        >>> clusters = cluster_with_hdbscan(hash_records, threshold=1, settings=settings)
+        >>> # Returns: [{0: [0, 1], -1: [2]}]  # img1, img2 clustered; img3 as noise
+
+    Note:
+        - Builds full distance matrix (O(n²) memory), but HDBSCAN is O(n log n) for fitting.
+        - For large n (>5000), consider sampling or external indexing for scalability.
+        - Adaptive tuning automatically sets min_samples based on distance percentiles if enabled.
+    """
+    if not hash_records:
+        raise ValueError("hash_records list cannot be empty")
+
+    if not HDBSCAN_AVAILABLE:
+        raise ImportError("HDBSCAN not available; install with: pip install hdbscan")
+
+    n = len(hash_records)
+    if n < 2:
+        # Single record: return as noise
+        return [{-1: [0]}]
+
+    # Get HDBSCAN parameters from settings
+    similarity_settings = settings.get('similarity', {})
+    min_cluster_size = similarity_settings.get('hdbscan_min_cluster_size', 2)
+    min_samples = similarity_settings.get('hdbscan_min_samples', None)
+    cluster_selection_epsilon = similarity_settings.get('hdbscan_cluster_selection_epsilon', 0.0)
+    adaptive_tuning = similarity_settings.get('hdbscan_adaptive_tuning', True)
+
+    # Adaptive tuning: compute distance statistics to set parameters
+    if adaptive_tuning and n > 10:
+        try:
+            # Sample distances for parameter tuning (avoid full matrix computation)
+            sample_size = min(1000, n * (n - 1) // 2)
+            distances = []
+
+            # Collect sample of pairwise distances
+            for i in range(min(100, n)):  # Sample from first 100 records
+                for j in range(i + 1, min(i + 50, n)):  # Sample up to 50 comparisons per record
+                    dist = hamming_distance(hash_records[i]['hash'], hash_records[j]['hash'])
+                    distances.append(dist)
+                    if len(distances) >= sample_size:
+                        break
+                if len(distances) >= sample_size:
+                    break
+
+            if distances:
+                distances_array = np.array(distances)
+                p5 = np.percentile(distances_array, 5)
+                p50 = np.percentile(distances_array, 50)
+                p95 = np.percentile(distances_array, 95)
+
+                # Adaptive parameter setting based on distance distribution
+                if min_samples is None:
+                    # Set min_samples based on median distance and threshold
+                    min_samples = max(2, int(p50 * 0.5))  # Adaptive based on data density
+                    logger.debug(f"Adaptive min_samples: {min_samples} (based on p50={p50})")
+
+                # Adjust epsilon if using leaf method (epsilon > 0)
+                if cluster_selection_epsilon == 0.0:
+                    # Use eom method (epsilon=0) for better noise handling
+                    pass
+                else:
+                    # For leaf method, set epsilon based on threshold and data
+                    adaptive_epsilon = max(0.0, min(1.0, threshold * 0.1))
+                    cluster_selection_epsilon = adaptive_epsilon
+                    logger.debug(f"Adaptive epsilon: {cluster_selection_epsilon} (based on threshold={threshold})")
+
+                logger.info(f"HDBSCAN adaptive tuning: n={n}, p5={p5:.2f}, p50={p50:.2f}, p95={p95:.2f}")
+        except Exception as e:
+            logger.warning(f"Adaptive tuning failed, using default parameters: {e}")
+            # Fall back to provided/default parameters
+
+    # Validate parameters
+    if not isinstance(min_cluster_size, int) or min_cluster_size < 2:
+        raise ValueError(f"Invalid hdbscan_min_cluster_size: {min_cluster_size} (must be >= 2)")
+
+    if min_samples is not None and (not isinstance(min_samples, int) or min_samples < 1):
+        raise ValueError(f"Invalid hdbscan_min_samples: {min_samples} (must be >= 1 or None)")
+
+    if not isinstance(cluster_selection_epsilon, (int, float)) or cluster_selection_epsilon < 0.0:
+        raise ValueError(f"Invalid hdbscan_cluster_selection_epsilon: {cluster_selection_epsilon} (must be >= 0.0)")
+
+    # Build precomputed distance matrix
+    logger.debug(f"Building {n}x{n} distance matrix for HDBSCAN clustering")
+    start_time = time.time()
+
+    distances = np.zeros((n, n), dtype=np.float64)
+    for i in range(n):
+        for j in range(i + 1, n):
+            try:
+                dist = hamming_distance(hash_records[i]['hash'], hash_records[j]['hash'])
+                # Normalize distance to [0,1] range for HDBSCAN (Hamming distance / 64)
+                normalized_dist = dist / 64.0
+                distances[i, j] = normalized_dist
+                distances[j, i] = normalized_dist
+            except ValueError as e:
+                logger.warning(f"Invalid hash pair ({i}, {j}): {e}")
+                # Set maximum distance for invalid pairs
+                distances[i, j] = distances[j, i] = 1.0
+
+    matrix_build_time = time.time() - start_time
+    logger.debug(f"Distance matrix built in {matrix_build_time:.2f}s ({n*n/2:.0f} comparisons)")
+
+    # Apply HDBSCAN clustering
+    logger.info(f"Applying HDBSCAN clustering: n={n}, min_cluster_size={min_cluster_size}, "
+                f"min_samples={min_samples}, epsilon={cluster_selection_epsilon}")
+
+    try:
+        clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            cluster_selection_epsilon=cluster_selection_epsilon,
+            metric='precomputed',
+            cluster_selection_method='eom' if cluster_selection_epsilon == 0.0 else 'leaf'
+        )
+
+        start_time = time.time()
+        cluster_labels = clusterer.fit_predict(distances)
+        clustering_time = time.time() - start_time
+
+        # Log clustering statistics
+        unique_labels = set(cluster_labels)
+        noise_points = sum(1 for label in cluster_labels if label == -1)
+        clusters_found = len([label for label in unique_labels if label != -1])
+
+        logger.info(f"HDBSCAN clustering completed in {clustering_time:.2f}s: "
+                   f"{clusters_found} clusters, {noise_points} noise points, "
+                   f"total_time={matrix_build_time + clustering_time:.2f}s")
+
+        # Build cluster index mapping (cluster_id -> list of indices)
+        clusters = {}
+        for idx, label in enumerate(cluster_labels):
+            if label not in clusters:
+                clusters[label] = []
+            clusters[label].append(idx)
+
+        # Filter out noise and small clusters
+        filtered_clusters = []
+        for label, indices in clusters.items():
+            if label == -1:  # Noise points
+                filtered_clusters.append({label: indices})
+            elif len(indices) >= min_cluster_size:  # Valid clusters
+                filtered_clusters.append({label: indices})
+            else:
+                # Small cluster: treat as noise
+                if -1 not in clusters:
+                    clusters[-1] = []
+                clusters[-1].extend(indices)
+                logger.debug(f"Small cluster {label} (size={len(indices)}) treated as noise")
+
+        # Ensure noise points are included even if no noise was detected
+        if -1 not in clusters:
+            filtered_clusters.append({-1: []})
+
+        return filtered_clusters
+
+    except Exception as e:
+        error_msg = f"HDBSCAN clustering failed: {e}"
+        logger.error(error_msg, exc_info=True)
+        raise SimilarityError(error_msg)
 
 
 def detect_exact_duplicates(

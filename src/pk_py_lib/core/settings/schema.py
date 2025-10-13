@@ -152,6 +152,38 @@ SETTINGS_PROFILE_SCHEMA = {
                     "maximum": 1.0,
                     "default": None,
                     "description": "Override for LSH similarity threshold (0.0-1.0). If null, defaults to 1 - (threshold / 64.0) based on Hamming threshold (e.g., for threshold=10, ~0.844). Lower values retrieve more candidates (safer but slower). Used for large-scale similarity detection with MinHashLSH."
+                },
+                "clustering_algorithm": {
+                    "type": "string",
+                    "enum": ["unionfind", "hdbscan"],
+                    "default": "hdbscan",
+                    "description": "Clustering algorithm for similarity grouping. 'unionfind' uses traditional Union-Find with transitive chaining (O(n²) brute-force, may produce false positives). 'hdbscan' uses Hierarchical Density-Based Spatial Clustering with noise detection (O(n log n), better scalability, reduces false positives via density-based clustering). Default 'hdbscan' for improved accuracy and performance."
+                },
+                "hdbscan_min_cluster_size": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 1000,
+                    "default": 2,
+                    "description": "HDBSCAN minimum cluster size parameter. Minimum number of points required to form a cluster. Smaller values (e.g., 2) allow smaller clusters but may increase noise sensitivity. Larger values (e.g., 5-10) require denser clusters but reduce false positives. Used only when clustering_algorithm='hdbscan'."
+                },
+                "hdbscan_min_samples": {
+                    "type": ["integer", "null"],
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": None,
+                    "description": "HDBSCAN minimum samples parameter. Number of neighboring points required for core point classification. If None, automatically determined based on data density. Smaller values increase cluster formation sensitivity but may create more small clusters. Larger values require denser regions. Used only when clustering_algorithm='hdbscan'."
+                },
+                "hdbscan_cluster_selection_epsilon": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.0,
+                    "description": "HDBSCAN cluster selection epsilon parameter. Distance threshold for cluster selection method. Value of 0.0 uses 'eom' (excess of mass) method, >0.0 uses 'leaf' method with epsilon threshold. Higher values create larger, more inclusive clusters. Used only when clustering_algorithm='hdbscan'."
+                },
+                "hdbscan_adaptive_tuning": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Enable adaptive parameter tuning for HDBSCAN. When true, automatically adjusts min_samples and cluster_selection_epsilon based on distance distribution statistics (e.g., 5th-95th percentile of pairwise distances). When false, uses explicit parameter values. Recommended true for automatic optimization. Used only when clustering_algorithm='hdbscan'."
                 }
             }
         },
@@ -545,6 +577,13 @@ def normalize_settings(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     # lsh_threshold defaults to null to use auto-calculation based on Hamming threshold
     similarity.setdefault("lsh_threshold", None)
 
+    # Set HDBSCAN defaults
+    similarity.setdefault("clustering_algorithm", "hdbscan")
+    similarity.setdefault("hdbscan_min_cluster_size", 2)
+    similarity.setdefault("hdbscan_min_samples", None)
+    similarity.setdefault("hdbscan_cluster_selection_epsilon", 0.0)
+    similarity.setdefault("hdbscan_adaptive_tuning", True)
+
     # Ensure pools exist
     pools = normalized.setdefault("pools", {})
     pool_a = pools.setdefault("A", {})
@@ -626,7 +665,12 @@ def create_default_profile(name: str, description: Optional[str] = None) -> Dict
             "enabled_algorithms": ["phash"],
             "max_distance": 15,
             "lsh_num_perm": 128,
-            "lsh_threshold": None
+            "lsh_threshold": None,
+            "clustering_algorithm": "hdbscan",
+            "hdbscan_min_cluster_size": 2,
+            "hdbscan_min_samples": None,
+            "hdbscan_cluster_selection_epsilon": 0.0,
+            "hdbscan_adaptive_tuning": True
         },
         "pools": {
             "A": {

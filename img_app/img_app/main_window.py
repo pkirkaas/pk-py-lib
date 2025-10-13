@@ -1719,7 +1719,7 @@ class MainWindow(QMainWindow):
                 self.status_label.setText("Controller not available")
                 return
 
-            from src.pk_py_lib.core.settings_schema import create_default_profile
+            from pk_py_lib.core.settings.schema import create_default_profile
 
             # Create a name prompt dialog
             dlg = _NamePromptDialog("Create Profile", "Name:", parent=self)
