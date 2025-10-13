@@ -86,7 +86,7 @@ class TestSettingsSchema:
             },
             "mode": "duplicates",
             "criteria": {
-                "algorithm": "blake3"
+                "algorithm": "xxh3"
             },
             "scope": {
                 "kind": "single_pool"
@@ -221,7 +221,7 @@ class TestSettingsSchema:
             },
             "mode": "invalid_mode",
             "criteria": {
-                "algorithm": "blake3"
+                "algorithm": "xxh3"
             },
             "scope": {
                 "kind": "single_pool"
@@ -256,7 +256,7 @@ class TestSettingsSchema:
             },
             "mode": "duplicates",
             "criteria": {
-                "algorithm": "blake3",
+                "algorithm": "xxh3",
                 "degree_ui": 90
             },
             "scope": {
@@ -362,7 +362,7 @@ class TestSettingsSchema:
             },
             "mode": "duplicates",
             "criteria": {
-                "algorithm": "blake3"
+                "algorithm": "xxh3"
             },
             "scope": {
                 "kind": "single_pool"
@@ -440,7 +440,7 @@ class TestSettingsSchema:
             },
             "mode": "duplicates",
             "criteria": {
-                "algorithm": "blake3"
+                "algorithm": "xxh3"
             },
             "scope": {
                 "kind": "single_pool"
@@ -473,7 +473,7 @@ class TestSettingsSchema:
             },
             "mode": "duplicates",
             "criteria": {
-                "algorithm": "blake3"
+                "algorithm": "xxh3"
             },
             "scope": {
                 "kind": "single_pool"
@@ -501,7 +501,7 @@ class TestSettingsSchema:
             },
             "mode": "duplicates",
             "criteria": {
-                "algorithm": "blake3"
+                "algorithm": "xxh3"
             },
             "scope": {
                 "kind": "single_pool"
@@ -535,7 +535,7 @@ class TestSettingsSchema:
             },
             "mode": "duplicates",
             "criteria": {
-                "algorithm": "blake3"
+                "algorithm": "xxh3"
             },
             "scope": {
                 "kind": "single_pool"
@@ -563,7 +563,7 @@ class TestSettingsSchema:
             },
             "mode": "duplicates",
             "criteria": {
-                "algorithm": "blake3"
+                "algorithm": "xxh3"
             },
             "scope": {
                 "kind": "single_pool"
@@ -597,7 +597,7 @@ class TestSettingsSchema:
             },
             "mode": "duplicates",
             "criteria": {
-                "algorithm": "blake3"
+                "algorithm": "xxh3"
             },
             "scope": {
                 "kind": "single_pool"

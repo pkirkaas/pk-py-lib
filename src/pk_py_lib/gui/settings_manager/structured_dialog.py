@@ -372,7 +372,7 @@ class StructuredSettingsManagerDialog(QDialog):
                     "description": p.get("description") or "",
                     "pools": {"A": {"root_path": ""}},
                     "mode": "duplicates",
-                    "criteria": {"algorithm": "blake3"},
+                    "criteria": {"algorithm": "xxh3"},  # Default to xxh3 for duplicates mode
                     "scope": {"kind": "single_pool"},
                     "output": {"mode": "report_only"},
                 }

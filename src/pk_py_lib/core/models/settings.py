@@ -145,7 +145,7 @@ class SettingsProfile:
     description : str
         Optional description of profile purpose (default: empty string)
     hash_algorithm : str
-        Hash algorithm to use: 'phash', 'whash', 'blake3', 'xxh3' (default: 'phash')
+        Hash algorithm to use: 'phash', 'whash', 'xxh3' (default: 'phash')
     hash_size : int
         Size of the hash in bits (default: 8)
     similarity_threshold : float
@@ -322,8 +322,8 @@ class SettingsProfile:
 DEFAULT_PROFILES = [
     SettingsProfile(
         name="Exact Duplicates",
-        description="Find exact duplicate files using cryptographic hashing",
-        hash_algorithm="blake3",
+        description="Find exact duplicate files using xxh3 hashing",
+        hash_algorithm="xxh3",
         similarity_threshold=1.0,
         is_system=True,
         is_default=True,

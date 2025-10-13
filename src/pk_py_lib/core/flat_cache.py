@@ -176,26 +176,62 @@ class FlatCacheManager:
         results = {}
 
         for path in file_paths:
+            self.logger.debug(f"DEBUG: get_hashes called for path: {path}, hash_types: {hash_types}, search_type: {search_type}")
             path_results = {}
             entry = self.get_entry(path)
+            self.logger.debug(f"DEBUG: get_entry result for {path}: entry exists={entry is not None}")
 
             if entry:
                 self._cache_hits += 1
+                self.logger.debug(f"DEBUG: Cache hit for {path}, extracting {hash_types}")
 
                 # Extract requested hash types
                 for hash_type in hash_types:
-                    if hasattr(entry, hash_type):
-                        path_results[hash_type] = getattr(entry, hash_type)
-                    else:
-                        path_results[hash_type] = None
+                    value = getattr(entry, hash_type, None)
+                    path_results[hash_type] = value
+                    self.logger.debug(f"DEBUG: Extracted {hash_type} for {path}: {value[:8] if value else None}...")
             else:
                 self._cache_misses += 1
+                self.logger.debug(f"DEBUG: Cache miss for {path}, checking if computation needed")
 
-                # Return None for all hash types when entry not found
+                # For duplicate mode, compute xxh3 on miss if requested
+                compute_xxh3 = 'xxh3' in hash_types and search_type == 'duplicate'
+                if compute_xxh3:
+                    try:
+                        from pk_py_lib.core.filesystem.identity import compute_xxh3
+                        from pathlib import Path
+                        xxh3_value = compute_xxh3(Path(path))
+                        path_results['xxh3'] = xxh3_value
+                        self.logger.debug(f"DEBUG: Computed xxh3 on miss for {path}: {xxh3_value[:8]}...")
+
+                        # Optionally create and store minimal entry for future
+                        import time
+                        current_time = time.time()
+                        stat_info = os.stat(path)
+                        minimal_entry = FlatCacheEntry(
+                            path=path,
+                            size=stat_info.st_size,
+                            mtime=stat_info.st_mtime,
+                            is_valid=True,
+                            xxh3=xxh3_value,
+                            created_at=current_time,
+                            updated_at=current_time
+                        )
+                        self.set_entry(minimal_entry)
+                        self.logger.debug(f"DEBUG: Stored minimal entry with xxh3 for {path}")
+                    except Exception as e:
+                        self.logger.warning(f"DEBUG: Failed to compute xxh3 on miss for {path}: {e}")
+                        path_results['xxh3'] = None
+                else:
+                    self.logger.debug(f"DEBUG: No computation needed for {path} (not duplicate mode or xxh3 not requested)")
+
+                # Return None for other hash types when entry not found
                 for hash_type in hash_types:
-                    path_results[hash_type] = None
+                    if hash_type not in path_results:
+                        path_results[hash_type] = None
 
             results[path] = path_results
+            self.logger.debug(f"DEBUG: get_hashes result for {path}: {path_results}")
 
         return results
 
@@ -238,6 +274,32 @@ class FlatCacheManager:
             self.logger.error(f"Database error getting entry for {file_path}: {e}")
 
         return None
+
+    def get_entries(self, file_paths: List[str]) -> Dict[str, FlatCacheEntry]:
+        """
+        Retrieve multiple cache entries for the given file paths.
+
+        This method efficiently fetches cache entries for multiple files in a single call,
+        supporting duplicate detection functionality that requires batch retrieval of file metadata.
+
+        Args:
+            file_paths: List of file paths to retrieve cache entries for
+
+        Returns:
+            Dictionary mapping file paths to FlatCacheEntry objects. Entries that are not found
+            in the cache will not be included in the returned dictionary.
+
+        Note:
+            For Proof of Concept phase, this method uses a simple loop calling get_entry() for each path.
+            In a production environment, this could be optimized to use batch database queries to
+            avoid N+1 query issues.
+        """
+        results = {}
+        for path in file_paths:
+            entry = self.get_entry(path)
+            if entry:
+                results[path] = entry
+        return results
 
     def set_entry(self, entry: FlatCacheEntry, search_type: Optional[str] = None) -> bool:
         """

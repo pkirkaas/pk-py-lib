@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS settings_profiles_v2 (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     CHECK (similarity_threshold >= 0.0 AND similarity_threshold <= 1.0),
-    CHECK (hash_algorithm IN ('phash', 'whash', 'blake3', 'xxh3')),
+    CHECK (hash_algorithm IN ('phash', 'whash', 'xxh3')),
     CHECK (clustering_method IN ('dbscan', 'agglomerative')),
     CHECK (hash_size > 0)
 )
@@ -207,7 +207,7 @@ SETTINGS_PROFILE_SCHEMA = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "algorithm": {"type": "string", "enum": ["blake3", "phash", "xxh3", "whash"], "default": "phash"},
+                "algorithm": {"type": "string", "enum": ["phash", "xxh3", "whash"], "default": "phash"},
                 "degree_ui": {"type": "integer", "minimum": 0, "maximum": 100, "default": 90},
                 "phash": {
                     "type": "object",
@@ -325,7 +325,7 @@ SETTINGS_PROFILE_SCHEMA = {
                 "properties": {
                     "criteria": {
                         "properties": {
-                            "algorithm": {"enum": ["blake3", "xxh3"]},
+                            "algorithm": {"enum": ["xxh3"]},
                             "degree_ui": {"not": {}},
                             "phash": {"not": {}},
                             "similarity_hash_algorithm": {"not": {}}
@@ -414,10 +414,13 @@ def validate_settings_schema(profile_data: Dict[str, Any]) -> Tuple[bool, List[s
     """
     errors = []
 
-    # Backward-compat: migrate legacy direction tokens before schema validation
+    # Backward-compat: migrate legacy direction tokens and algorithms before schema validation
     # to support previously saved profiles. We avoid mutating the caller payload.
     to_validate = dict(profile_data or {})
     try:
+        # First migrate legacy algorithms
+        to_validate = migrate_legacy_algorithms(to_validate)
+
         scope_in = dict((to_validate.get("scope") or {}))
         if scope_in.get("kind") == "two_pool":
             d = scope_in.get("direction")
@@ -444,6 +447,34 @@ def validate_settings_schema(profile_data: Dict[str, Any]) -> Tuple[bool, List[s
         return False, errors
 
     return True, []
+
+
+def migrate_legacy_algorithms(profile_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Migrate legacy algorithm references to current supported algorithms.
+
+    This function handles backward compatibility by converting deprecated
+    algorithm names to their modern equivalents.
+
+    Parameters
+    ----------
+    profile_data : Dict[str, Any]
+        The profile data that may contain legacy algorithm references
+
+    Returns
+    -------
+    Dict[str, Any]
+        Profile data with migrated algorithm references
+
+    Notes
+    """
+    migrated = profile_data.copy()
+    criteria = migrated.get("criteria", {})
+
+    # blake3 migration removed - xxh3 is now the only supported algorithm for duplicates
+
+    migrated["criteria"] = criteria
+    return migrated
 
 
 def _validate_custom_rules(profile_data: Dict[str, Any]) -> List[str]:
@@ -490,8 +521,7 @@ def _validate_custom_rules(profile_data: Dict[str, Any]) -> List[str]:
     mode = profile_data.get("mode")
     criteria = profile_data.get("criteria", {})
 
-    if mode == "duplicates" and criteria.get("algorithm") not in ["blake3", "xxh3"]:
-        errors.append("Duplicates mode requires algorithm 'blake3' or 'xxh3'")
+    # xxh3 is the only supported algorithm for duplicate detection
 
     if mode == "similarity" and criteria.get("similarity_hash_algorithm") not in ["phash", "whash"]:
         errors.append("Similarity mode requires algorithm 'phash' or 'whash'")

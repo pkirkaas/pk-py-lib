@@ -943,14 +943,18 @@ def scan_directory(
             if flat_cache_manager:
                 # all_types includes only relevant hashes; get_hashes handles skipping perceptual in duplicate mode
                 all_types = list(set(algorithms + ['xxh3']))
+                log.debug(f"DEBUG: Calling get_hashes for {path} with types {all_types}, search_type={search_type}")
                 hashes_dict = flat_cache_manager.get_hashes([str(path)], all_types, search_type=search_type)
                 hashes = hashes_dict[str(path)]
                 exact_hash = hashes.get('xxh3')
                 perceptual_hashes = {k: v for k, v in hashes.items() if k != 'xxh3'}
+                log.debug(f"DEBUG: Retrieved hashes for {path}: {hashes}. exact_hash={exact_hash}")
                 log.debug(f"Cache-based hashes for {path}: xxh3={bool(exact_hash)}, perceptual={list(perceptual_hashes.keys())}")
             else:
                 # Manual fallback: respect search_type to avoid image loading in duplicate mode
+                log.debug(f"DEBUG: Manual fallback - computing xxh3 for {path}")
                 exact_hash = compute_xxh3_hash(path)
+                log.debug(f"DEBUG: Computed manual xxh3 for {path}: {exact_hash}")
                 perceptual_hashes = {}
                 if compute_hashes and file_info.extension in IMAGE_EXTENSIONS and search_type != 'duplicate':
                     # Only compute perceptual if similarity mode and image file
@@ -1004,12 +1008,15 @@ def scan_directory(
 
     # Build exact groups if requested (only for duplicate mode with xxh3)
     if exact_grouping:
+        log.debug(f"DEBUG: Building exact groups from {len(results)} results")
         for f in results:
             eh = f.get('exact_hash')
+            log.debug(f"DEBUG: File {f['path']} exact_hash: {eh}")
             if eh:
                 groups[eh].append(f)
         # Filter to groups with 2+ files
         groups = {h: fs for h, fs in groups.items() if len(fs) > 1}
+        log.debug(f"DEBUG: Found {len(groups)} exact groups")
 
     # Mode-specific logging
     log.info(f"Scan complete: {len(results)} files processed (search_type={search_type})")

@@ -85,7 +85,7 @@ class ProfilesManager:
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         CHECK (similarity_threshold >= 0.0 AND similarity_threshold <= 1.0),
-                        CHECK (hash_algorithm IN ('phash', 'whash', 'blake3', 'xxh3')),
+                        CHECK (hash_algorithm IN ('phash', 'whash', 'xxh3')),
                         CHECK (clustering_method IN ('dbscan', 'agglomerative'))
                     )
                 """)

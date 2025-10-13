@@ -770,8 +770,9 @@ class StructuredProfileEditorWidget(QWidget):
             self.cmb_hash_algorithm.setEnabled(is_similarity)
 
             # Update algorithm options based on mode
+            # Note: For duplicates mode, only xxh3 is supported for duplicate detection
             if mode == "duplicates":
-                desired_algos = ["blake3", "xxh3"]
+                desired_algos = ["xxh3"]  # Only xxh3 is supported for duplicates mode
             elif mode == "similarity":
                 desired_algos = ["phash", "whash"]
             else:
@@ -885,6 +886,8 @@ class StructuredProfileEditorWidget(QWidget):
         try:
             # Normalize legacy direction tokens so original/current match UI and avoid false dirty state
             loaded = profile.copy()
+
+            # xxh3 is the only supported algorithm for duplicate detection
             try:
                 scope = (loaded.get("scope") or {})
                 if scope.get("kind") == "two_pool":
@@ -934,7 +937,7 @@ class StructuredProfileEditorWidget(QWidget):
 
             # Set algorithm combo box items based on mode to ensure correct options before setting algorithm
             if mode == "duplicates":
-                desired_algos = ["blake3", "xxh3"]
+                desired_algos = ["xxh3"]  # Only xxh3 is supported for duplicates mode
             elif mode == "similarity":
                 desired_algos = ["phash", "whash"]
             else:
@@ -954,7 +957,7 @@ class StructuredProfileEditorWidget(QWidget):
             similarity_section = profile.get("similarity", {}) or {}
             # Get algorithm with mode-based default
             if mode == "duplicates":
-                default_algo = "blake3"
+                default_algo = "xxh3"  # Only xxh3 is supported for duplicates mode
             else:
                 default_algo = "phash"
             algorithm = criteria.get("similarity_hash_algorithm", default_algo)
