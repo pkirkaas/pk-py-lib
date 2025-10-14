@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 from typing import Any, Dict, Optional, Tuple
+from dataclasses import asdict
+from datetime import datetime
 
 # Defensive import for PySide6 to keep library importable in headless environments
 try:
@@ -117,7 +119,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error initializing StructuredProfileEditorWidget: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="StructuredProfileEditorWidget.__init__",
+                func_name="StructuredProfileEditorWidget.__init__",
                 parameters={"api": api},
                 stack_trace=traceback.format_exc()
             )
@@ -344,7 +346,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error building UI in StructuredProfileEditorWidget: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_build_ui",
+                func_name="_build_ui",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -388,7 +390,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error connecting signals in StructuredProfileEditorWidget: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_connect_signals",
+                func_name="_connect_signals",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -408,7 +410,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error selecting path for pool {pool}: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_select_path",
+                func_name="_select_path",
                 parameters={"pool": pool},
                 stack_trace=traceback.format_exc()
             )
@@ -431,7 +433,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error in _on_mode_changed: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_on_mode_changed",
+                func_name="_on_mode_changed",
                 parameters={"mode": mode},
                 stack_trace=traceback.format_exc()
             )
@@ -457,7 +459,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error in _on_hash_algorithm_changed: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_on_hash_algorithm_changed",
+                func_name="_on_hash_algorithm_changed",
                 parameters={"algo": algo},
                 stack_trace=traceback.format_exc()
             )
@@ -485,7 +487,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error in _on_algorithm_changed: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_on_algorithm_changed",
+                func_name="_on_algorithm_changed",
                 parameters={"algo": algo},
                 stack_trace=traceback.format_exc()
             )
@@ -508,7 +510,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error in _on_scope_changed: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_on_scope_changed",
+                func_name="_on_scope_changed",
                 parameters={"scope_kind": scope_kind},
                 stack_trace=traceback.format_exc()
             )
@@ -531,7 +533,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error in _on_degree_changed: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_on_degree_changed",
+                func_name="_on_degree_changed",
                 parameters={"value": value},
                 stack_trace=traceback.format_exc()
             )
@@ -564,7 +566,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error in _on_change: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_on_change",
+                func_name="_on_change",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -678,7 +680,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error getting complete profile: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_get_complete_profile",
+                func_name="_get_complete_profile",
                 parameters={"for_validation": for_validation},
                 stack_trace=traceback.format_exc()
             )
@@ -740,7 +742,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error validating profile: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_validate_profile",
+                func_name="_validate_profile",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -831,7 +833,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error updating UI state: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_update_ui_state",
+                func_name="_update_ui_state",
                 parameters={"mode": mode, "scope_kind": scope_kind},
                 stack_trace=traceback.format_exc()
             )
@@ -844,20 +846,118 @@ class StructuredProfileEditorWidget(QWidget):
                 scope_kind=scope_kind
             )
 
+    def _serialize_for_json(self, obj: Any) -> Any:
+        """
+        Private helper for recursive serialization of profile data to JSON-compatible format.
+
+        This method handles nested dataclasses (like SettingsProfile), datetime objects, and collections,
+        converting dataclasses to plain dicts, datetimes to ISO strings, and collections to serializable forms for json.dumps without TypeError.
+        It recursively processes nested structures to ensure full serialization.
+
+        Parameters
+        ----------
+        obj : Any
+            The object to serialize. Can be SettingsProfile (dataclass), dict, list,
+            or any primitive type (str, int, float, bool, None).
+
+        Returns
+        -------
+        Any
+            JSON-serializable version of obj:
+            - dict for SettingsProfile or other dataclasses via asdict()
+            - str for datetime objects via isoformat()
+            - recursively processed dict or list
+            - obj unchanged if primitive type (str, int, float, bool, None, etc.)
+
+        Raises
+        ------
+        Exception
+            If serialization fails due to unexpected object types, logs detailed error
+            with type, value, and stack trace for debugging.
+
+        Examples
+        --------
+        >>> widget = StructuredProfileEditorWidget()
+        >>> profile = SettingsProfile(name="test", pools={"A": {"paths": ["/path"]}})
+        >>> widget._serialize_for_json(profile)
+        {'name': 'test', 'pools': {'A': {'paths': ['/path']}}, ...}
+
+        >>> nested = {"profile": profile, "extra": [1, 2, 3]}
+        >>> widget._serialize_for_json(nested)
+        {'profile': {'name': 'test', ...}, 'extra': [1, 2, 3]}
+
+        Usage Notes
+        -----------
+        - Designed for internal use in _is_dirty() to compare profiles without
+          TypeError from dataclasses in json.dumps.
+        - Relies on dataclasses.asdict for SettingsProfile conversion.
+        - Handles arbitrary nesting; primitives are returned as-is.
+        - For non-standard types, returns obj unchanged (may cause json.dumps error
+          if not serializable; handle in caller).
+        """
+        try:
+            # Handle SettingsProfile objects (including nested ones)
+            if isinstance(obj, SettingsProfile):
+                # Convert dataclass to plain dict using asdict
+                return asdict(obj)
+            elif isinstance(obj, datetime):
+                # Convert datetime to ISO format string for JSON serialization
+                return obj.isoformat()
+            elif isinstance(obj, dict):
+                # Recursively serialize dict values
+                return {k: self._serialize_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                # Recursively serialize list/tuple items
+                return [self._serialize_for_json(i) for i in obj]
+            elif hasattr(obj, 'to_dict') and callable(getattr(obj, 'to_dict')):
+                # Handle other objects with to_dict method (defensive programming)
+                try:
+                    return obj.to_dict()
+                except Exception:
+                    # If to_dict fails, try to convert to string as fallback
+                    return str(obj)
+            else:
+                # Return primitives unchanged (str, int, float, bool, None, etc.)
+                # Also handle any other objects that might not be JSON serializable
+                try:
+                    # Test if the object is JSON serializable by attempting to serialize it
+                    json.dumps(obj)
+                    return obj
+                except (TypeError, ValueError):
+                    # If not JSON serializable, convert to string as fallback
+                    return str(obj)
+        except Exception as e:
+            # Log detailed error for debugging serialization issues
+            logger.error(
+                f"Error in _serialize_for_json: {type(e).__name__}: {e}",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                func_name="_serialize_for_json",
+                parameters={"obj_type": type(obj).__name__, "obj_value": str(obj)[:100] + "..." if len(str(obj)) > 100 else str(obj)},
+                stack_trace=traceback.format_exc()
+            )
+            # Return a string representation as fallback instead of raising
+            return str(obj)
     def _is_dirty(self) -> bool:
         """Check if current profile differs from original."""
         try:
             if not self._original_profile:
                 return bool(self._current_profile and self._current_profile.get("name"))
 
-            # Simple comparison - in real implementation, use proper diff
-            return json.dumps(self._current_profile, sort_keys=True) != json.dumps(self._original_profile, sort_keys=True)
+            # Recursively serialize both profiles to handle nested SettingsProfile objects
+            # This prevents TypeError during json.dumps when profiles contain dataclass instances
+            # in nested structures (e.g., profile settings or data dicts).
+            current_serialized = self._serialize_for_json(self._current_profile)
+            original_serialized = self._serialize_for_json(self._original_profile)
+
+            # Compare serialized JSON strings for equality (sorted to ignore key order)
+            return json.dumps(current_serialized, sort_keys=True) != json.dumps(original_serialized, sort_keys=True)
         except Exception as e:
             logger.warning(
                 f"Warning checking dirty state: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_is_dirty",
+                func_name="_is_dirty",
                 stack_trace=traceback.format_exc()
             )
             return True  # Assume dirty on error
@@ -875,7 +975,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Warning setting dirty state: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_set_dirty",
+                func_name="_set_dirty",
                 parameters={"dirty": dirty},
                 stack_trace=traceback.format_exc()
             )
@@ -889,10 +989,8 @@ class StructuredProfileEditorWidget(QWidget):
             if hasattr(profile, 'to_dict'):
                 profile = profile.to_dict()
             elif isinstance(profile, SettingsProfile):
-                if profile.is_json_format():
-                    profile = getattr(profile, 'json_data', {}) or {}
-                else:
-                    profile = {}
+                # SettingsProfile always converts to dict via to_dict() method
+                profile = profile.to_dict()
             elif isinstance(profile, dict) and profile.get('format') == 'json' and 'json_data' in profile:
                 profile = profile.get('json_data', {})
 
@@ -914,7 +1012,7 @@ class StructuredProfileEditorWidget(QWidget):
                     f"Warning normalizing legacy direction: {type(norm_e).__name__}: {norm_e}",
                     file_path=__file__,
                     line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                    function_name="load_profile",
+                    func_name="load_profile",
                     parameters={"profile": profile},
                     stack_trace=traceback.format_exc()
                 )
@@ -1030,7 +1128,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error loading profile in StructuredProfileEditorWidget: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="load_profile",
+                func_name="load_profile",
                 parameters={"profile": profile},
                 stack_trace=traceback.format_exc()
             )
@@ -1051,7 +1149,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error checking dirty state: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="is_dirty",
+                func_name="is_dirty",
                 stack_trace=traceback.format_exc()
             )
             return False  # Assume clean on error
@@ -1073,7 +1171,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error setting dirty state: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="set_dirty",
+                func_name="set_dirty",
                 parameters={"dirty": dirty},
                 stack_trace=traceback.format_exc()
             )
@@ -1096,7 +1194,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error resetting dirty state: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="reset_dirty",
+                func_name="reset_dirty",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -1117,7 +1215,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error gathering changes: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="gather_changes",
+                func_name="gather_changes",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -1145,7 +1243,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error getting profile data: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="get_profile_data",
+                func_name="get_profile_data",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -1199,7 +1297,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error getting validation status: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="get_validation_status",
+                func_name="get_validation_status",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -1263,7 +1361,7 @@ class StructuredProfileEditorWidget(QWidget):
                 f"Error editing paths for pool {pool}: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
-                function_name="_edit_paths",
+                func_name="_edit_paths",
                 parameters={"pool": pool},
                 stack_trace=traceback.format_exc()
             )

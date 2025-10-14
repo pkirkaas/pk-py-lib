@@ -127,7 +127,7 @@ class KeyValueEditDialog(QDialog):
                         f"Warning serializing initial_value to JSON: {type(json_e).__name__}: {json_e}",
                         file_path=__file__,
                         line_number=inspect.currentframe().f_lineno,
-                        function_name="KeyValueEditDialog.__init__",
+                        func_name="KeyValueEditDialog.__init__",
                         parameters={"initial_value": initial_value},
                         stack_trace=traceback.format_exc()
                     )
@@ -151,7 +151,7 @@ class KeyValueEditDialog(QDialog):
                 f"Error initializing KeyValueEditDialog: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="KeyValueEditDialog.__init__",
+                func_name="KeyValueEditDialog.__init__",
                 parameters={"api": api, "initial_key": initial_key, "initial_value": initial_value},
                 stack_trace=traceback.format_exc()
             )
@@ -179,7 +179,7 @@ class KeyValueEditDialog(QDialog):
                 f"Warning in _validate_key_inline: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_validate_key_inline",
+                func_name="_validate_key_inline",
                 parameters={"text": t},
                 stack_trace=traceback.format_exc()
             )
@@ -216,7 +216,7 @@ class KeyValueEditDialog(QDialog):
                 f"JSON parsing error in _on_accept: {type(json_e).__name__}: {json_e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_accept",
+                func_name="_on_accept",
                 parameters={"raw": raw},
                 stack_trace=traceback.format_exc()
             )
@@ -225,7 +225,7 @@ class KeyValueEditDialog(QDialog):
                 f"Error in _on_accept: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_accept",
+                func_name="_on_accept",
                 parameters={"key": key, "raw": raw},
                 stack_trace=traceback.format_exc()
             )
@@ -256,7 +256,7 @@ class KeyValueEditDialog(QDialog):
                 f"Error in result_value: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="result_value",
+                func_name="result_value",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -317,7 +317,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Error initializing SettingsProfileEditorWidget: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="SettingsProfileEditorWidget.__init__",
+                func_name="SettingsProfileEditorWidget.__init__",
                 parameters={"api": api},
                 stack_trace=traceback.format_exc()
             )
@@ -411,7 +411,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Error building UI in SettingsProfileEditorWidget: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_build_ui",
+                func_name="_build_ui",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -464,7 +464,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Error loading profile in SettingsProfileEditorWidget: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="load_profile",
+                func_name="load_profile",
                 parameters={"profile": profile, "values": values},
                 stack_trace=traceback.format_exc()
             )
@@ -486,7 +486,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Error checking dirty state: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="is_dirty",
+                func_name="is_dirty",
                 stack_trace=traceback.format_exc()
             )
             return False  # Assume clean on error
@@ -504,7 +504,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Error resetting dirty state: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="reset_dirty",
+                func_name="reset_dirty",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -561,7 +561,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Error gathering changes: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="gather_changes",
+                func_name="gather_changes",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -588,7 +588,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Error in _on_meta_changed: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_meta_changed",
+                func_name="_on_meta_changed",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -611,7 +611,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Warning in _update_name_error: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_update_name_error",
+                func_name="_update_name_error",
                 parameters={"text": t},
                 stack_trace=traceback.format_exc()
             )
@@ -647,7 +647,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Error in _on_add: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_add",
+                func_name="_on_add",
                 parameters={"profile_id": self._profile_id},
                 stack_trace=traceback.format_exc()
             )
@@ -683,7 +683,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Error in _on_edit: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_edit",
+                func_name="_on_edit",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -729,7 +729,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Error in _on_remove: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_remove",
+                func_name="_on_remove",
                 parameters={"keys": keys},
                 stack_trace=traceback.format_exc()
             )
@@ -753,7 +753,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Warning in _update_action_states: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_update_action_states",
+                func_name="_update_action_states",
                 stack_trace=traceback.format_exc()
             )
             # Disable buttons on error
@@ -779,7 +779,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Warning in _emit_dirty_if_changed: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_emit_dirty_if_changed",
+                func_name="_emit_dirty_if_changed",
                 parameters={"now": now},
                 stack_trace=traceback.format_exc()
             )
@@ -799,7 +799,7 @@ class SettingsProfileEditorWidget(QWidget):
                 f"Warning in _json_equal: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_json_equal",
+                func_name="_json_equal",
                 parameters={"a": a, "b": b},
                 stack_trace=traceback.format_exc()
             )

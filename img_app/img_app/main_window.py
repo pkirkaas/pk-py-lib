@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 from typing import Optional, Dict, Any, List, Tuple, Mapping, Sequence
 from pathlib import Path
+from dataclasses import asdict
 from src.pk_py_lib.gui.utils.messages import show_selectable_info, show_selectable_error, gui_error_handler, gui_error_context
 from src.pk_py_lib.gui.dialogs.progress_dialog import ProgressDialog
 # CACHE_SCHEMA deprecated; cache.db functionality migrated to flat_cache.db in flat_cache.py
@@ -1577,21 +1578,21 @@ class MainWindow(QMainWindow):
                 if self.profiles:
                     # Populate combobox with profile names, marking active profile
                     for profile in self.profiles:
-                        name = profile.get('name', 'Unnamed')
-                        if profile.get('is_active'):
+                        name = profile.name or 'Unnamed'
+                        if profile.is_default:
                             name += " ★"
-                        self.profile_combo.addItem(name, profile.get('id'))
+                        self.profile_combo.addItem(name, profile.id)
 
                     # Select the active profile if available
                     active_profile = None
                     for profile in self.profiles:
-                        if profile.get('is_active'):
+                        if profile.is_default:
                             active_profile = profile
                             break
 
                     if active_profile:
                         self.active_profile = active_profile
-                        index = self.profile_combo.findData(active_profile.get('id'))
+                        index = self.profile_combo.findData(active_profile.id)
                         if index >= 0:
                             self.profile_combo.setCurrentIndex(index)
                     elif self.profile_combo.count() > 0:
@@ -1624,14 +1625,14 @@ class MainWindow(QMainWindow):
         # Find the selected profile
         selected_profile = None
         for profile in self.profiles:
-            if profile.get('id') == profile_id:
+            if profile.id == profile_id:
                 selected_profile = profile
                 break
 
         if selected_profile:
-            self.active_profile = selected_profile
-            self.profile_changed.emit(selected_profile)
-            self.status_label.setText(f"Active profile: {selected_profile.get('name', 'Unnamed')}")
+            self.active_profile = asdict(selected_profile)
+            self.profile_changed.emit(asdict(selected_profile))
+            self.status_label.setText(f"Active profile: {selected_profile.name or 'Unnamed'}")
 
             # Update the active profile in the database
             try:

@@ -95,7 +95,7 @@ class _NamePromptDialog(QDialog):
                 f"Error initializing _NamePromptDialog: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_NamePromptDialog.__init__",
+                func_name="_NamePromptDialog.__init__",
                 parameters={"title": title, "label": label, "initial": initial},
                 stack_trace=traceback.format_exc()
             )
@@ -111,7 +111,7 @@ class _NamePromptDialog(QDialog):
                 f"Error getting text from _NamePromptDialog: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_NamePromptDialog.text",
+                func_name="_NamePromptDialog.text",
                 stack_trace=traceback.format_exc()
             )
             return ""
@@ -126,7 +126,7 @@ class _NamePromptDialog(QDialog):
                 f"Error setting error in _NamePromptDialog: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_NamePromptDialog.set_error",
+                func_name="_NamePromptDialog.set_error",
                 parameters={"msg": msg},
                 stack_trace=traceback.format_exc()
             )
@@ -185,7 +185,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error initializing StructuredSettingsManagerDialog: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="StructuredSettingsManagerDialog.__init__",
+                func_name="StructuredSettingsManagerDialog.__init__",
                 parameters={"parent": parent, "controller": controller},
                 stack_trace=traceback.format_exc()
             )
@@ -231,7 +231,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error building UI in StructuredSettingsManagerDialog: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_build_ui",
+                func_name="_build_ui",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -309,7 +309,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error refreshing profiles in StructuredSettingsManagerDialog: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_refresh_profiles",
+                func_name="_refresh_profiles",
                 parameters={"select_active": select_active, "preserve_selection": preserve_selection},
                 stack_trace=traceback.format_exc()
             )
@@ -361,7 +361,7 @@ class StructuredSettingsManagerDialog(QDialog):
                     f"Warning extracting profile data: {type(extract_e).__name__}: {extract_e}",
                     file_path=__file__,
                     line_number=inspect.currentframe().f_lineno,
-                    function_name="_load_profile",
+                    func_name="_load_profile",
                     parameters={"profile_id": profile_id},
                     stack_trace=traceback.format_exc()
                 )
@@ -382,7 +382,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error loading profile in StructuredSettingsManagerDialog: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_load_profile",
+                func_name="_load_profile",
                 parameters={"profile_id": profile_id},
                 stack_trace=traceback.format_exc()
             )
@@ -408,7 +408,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Warning in _on_search_changed: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_search_changed",
+                func_name="_on_search_changed",
                 parameters={"text": text},
                 stack_trace=traceback.format_exc()
             )
@@ -420,7 +420,7 @@ class StructuredSettingsManagerDialog(QDialog):
                     f"Fallback failed in _on_search_changed: {type(fallback_e).__name__}: {fallback_e}",
                     file_path=__file__,
                     line_number=inspect.currentframe().f_lineno,
-                    function_name="_on_search_changed",
+                    func_name="_on_search_changed",
                     parameters={"text": text},
                     stack_trace=traceback.format_exc()
                 )
@@ -454,7 +454,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _on_list_selection_changed: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_list_selection_changed",
+                func_name="_on_list_selection_changed",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -474,7 +474,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _on_dirty_changed: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_dirty_changed",
+                func_name="_on_dirty_changed",
                 parameters={"dirty": dirty},
                 stack_trace=traceback.format_exc()
             )
@@ -503,7 +503,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _on_profile_selected: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_profile_selected",
+                func_name="_on_profile_selected",
                 parameters={"index": index},
                 stack_trace=traceback.format_exc()
             )
@@ -557,7 +557,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _on_create: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_create",
+                func_name="_on_create",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -602,7 +602,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _on_rename: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_rename",
+                func_name="_on_rename",
                 parameters={"pid": self._current_profile_id},
                 stack_trace=traceback.format_exc()
             )
@@ -654,7 +654,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _on_duplicate: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_duplicate",
+                func_name="_on_duplicate",
                 parameters={"pid": self._current_profile_id},
                 stack_trace=traceback.format_exc()
             )
@@ -696,7 +696,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _on_delete: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_delete",
+                func_name="_on_delete",
                 parameters={"pid": self._current_profile_id},
                 stack_trace=traceback.format_exc()
             )
@@ -726,7 +726,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _on_set_active: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_set_active",
+                func_name="_on_set_active",
                 parameters={"pid": self._current_profile_id},
                 stack_trace=traceback.format_exc()
             )
@@ -774,7 +774,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _on_apply: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_apply",
+                func_name="_on_apply",
                 parameters={"profile_id": self._current_profile_id},
                 stack_trace=traceback.format_exc()
             )
@@ -808,7 +808,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _on_ok: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_ok",
+                func_name="_on_ok",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -836,7 +836,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _on_cancel: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_on_cancel",
+                func_name="_on_cancel",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -860,7 +860,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Warning in _current_row: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_current_row",
+                func_name="_current_row",
                 stack_trace=traceback.format_exc()
             )
             return -1
@@ -882,7 +882,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _select_by_id: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_select_by_id",
+                func_name="_select_by_id",
                 parameters={"profile_id": profile_id},
                 stack_trace=traceback.format_exc()
             )
@@ -906,7 +906,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _reselect_current: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_reselect_current",
+                func_name="_reselect_current",
                 parameters={"profile_id": self._current_profile_id},
                 stack_trace=traceback.format_exc()
             )
@@ -930,7 +930,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _update_action_states: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_update_action_states",
+                func_name="_update_action_states",
                 parameters={"has_sel": self._current_profile_id is not None},
                 stack_trace=traceback.format_exc()
             )
@@ -962,7 +962,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _show_error: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_show_error",
+                func_name="_show_error",
                 parameters={"title": title, "message": message, "code": code},
                 stack_trace=traceback.format_exc()
             )
@@ -975,7 +975,7 @@ class StructuredSettingsManagerDialog(QDialog):
                     f"Fallback error dialog failed: {type(fallback_e).__name__}: {fallback_e}",
                     file_path=__file__,
                     line_number=inspect.currentframe().f_lineno,
-                    function_name="_show_error",
+                    func_name="_show_error",
                     stack_trace=traceback.format_exc()
                 )
 
@@ -991,7 +991,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _show_empty_state_hint: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_show_empty_state_hint",
+                func_name="_show_empty_state_hint",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -1027,7 +1027,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _prompt_save_discard_cancel: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_prompt_save_discard_cancel",
+                func_name="_prompt_save_discard_cancel",
                 parameters={"question": question},
                 stack_trace=traceback.format_exc()
             )
@@ -1061,7 +1061,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 f"Error in _maybe_prompt_save_discard_cancel: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="_maybe_prompt_save_discard_cancel",
+                func_name="_maybe_prompt_save_discard_cancel",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(

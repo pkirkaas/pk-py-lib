@@ -22,6 +22,7 @@ import traceback
 import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
+from dataclasses import asdict
 
 from src.pk_py_lib.core.logging import get_logger
 
@@ -290,7 +291,7 @@ Examples:
                     exception=ValueError(ensured.message or 'Unknown error'),
                     file_path=__file__,
                     line_number=inspect.currentframe().f_lineno,
-                    function_name="main",
+                    func_name="main",
                     db_path=str(db_mgr.settings_db) if db_mgr else "unknown",
                     api_response=ensured.message
                 )
@@ -308,19 +309,19 @@ Examples:
             # 4) Get the active profile for the main window
             active_resp = api.get_active()
             if active_resp.success and active_resp.data:
-                active_profile = active_resp.data
+                active_profile = asdict(active_resp.data)
             else:
                 # Fallback: get first profile if active not set
                 list_resp = api.list_profiles()
                 if list_resp.success and list_resp.data and len(list_resp.data) > 0:
-                    active_profile = list_resp.data[0]
+                    active_profile = asdict(list_resp.data[0])
                 else:
                     logger.error(
                         "No settings profiles available",
                         exception=ValueError("No settings profiles available. Please create a profile to continue."),
                         file_path=__file__,
                         line_number=inspect.currentframe().f_lineno,
-                        function_name="main",
+                        func_name="main",
                         db_path=str(db_mgr.settings_db) if db_mgr else "unknown",
                         profiles_count=0
                     )
@@ -340,7 +341,9 @@ Examples:
                 flat_cache_mgr = FlatCacheManager()
 
                 # Now configure dynamic logging based on app setting
-                logging_to_user_dir = config_mgr.get_app_setting('logging_to_user_dir')  # Defaults to False from schema if not set.
+                # Use UnifiedSettingsAPI to retrieve the setting, as ConfigurationManager lacks get_app_setting
+                # api.get_setting returns the value directly (Any), not ApiResponse
+                logging_to_user_dir = api.get_setting('logging_to_user_dir', default=False)
 
                 if logging_to_user_dir:
                     from src.pk_py_lib.core import get_data_dir
@@ -399,7 +402,7 @@ Examples:
                     exception=exc,
                     file_path=__file__,
                     line_number=inspect.currentframe().f_lineno,
-                    function_name="main",
+                    func_name="main",
                     db_path=str(db_mgr.settings_db) if db_mgr else "unknown",
                     stack_trace=traceback.format_exc()
                 )
@@ -412,7 +415,7 @@ Examples:
                 exception=exc,
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="main",
+                func_name="main",
                 db_path=str(db_mgr.settings_db) if 'db_mgr' in locals() else "unknown",
                 config_state="partial" if config_mgr else "failed",
                 profiles_count=len(api.list_profiles().data) if 'api' in locals() else 0,

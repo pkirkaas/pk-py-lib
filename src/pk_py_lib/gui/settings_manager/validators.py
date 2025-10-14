@@ -68,7 +68,7 @@ def validate_profile_name_via_api(api: UnifiedSettingsAPI, name: str) -> Tuple[b
             f"Error validating profile name via API: {type(e).__name__}: {e}",
             file_path=__file__,
             line_number=inspect.currentframe().f_lineno,
-            function_name="validate_profile_name_via_api",
+            func_name="validate_profile_name_via_api",
             parameters={"name": name},
             stack_trace=traceback.format_exc()
         )
@@ -108,7 +108,7 @@ def validate_keys_via_api(api: UnifiedSettingsAPI, keys: Iterable[str]) -> Tuple
             f"Error validating keys via API: {type(e).__name__}: {e}",
             file_path=__file__,
             line_number=inspect.currentframe().f_lineno,
-            function_name="validate_keys_via_api",
+            func_name="validate_keys_via_api",
             parameters={"keys": list(keys)},
             stack_trace=traceback.format_exc()
         )
@@ -145,7 +145,7 @@ class ProfileNameValidator(QValidator):  # type: ignore[misc]
                 f"Error initializing ProfileNameValidator: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="ProfileNameValidator.__init__",
+                func_name="ProfileNameValidator.__init__",
                 parameters={"api": api},
                 stack_trace=traceback.format_exc()
             )
@@ -172,7 +172,7 @@ class ProfileNameValidator(QValidator):  # type: ignore[misc]
                 f"Error validating name: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="validate",
+                func_name="validate",
                 parameters={"input": input, "pos": pos},
                 stack_trace=traceback.format_exc()
             )
@@ -198,7 +198,7 @@ class ProfileNameValidator(QValidator):  # type: ignore[misc]
                 f"Error getting last error: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="last_error",
+                func_name="last_error",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -239,7 +239,7 @@ class SingleKeyValidator(QValidator):  # type: ignore[misc]
                 f"Error initializing SingleKeyValidator: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="SingleKeyValidator.__init__",
+                func_name="SingleKeyValidator.__init__",
                 parameters={"api": api},
                 stack_trace=traceback.format_exc()
             )
@@ -266,7 +266,7 @@ class SingleKeyValidator(QValidator):  # type: ignore[misc]
                 f"Error validating key: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="validate",
+                func_name="validate",
                 parameters={"input": input, "pos": pos},
                 stack_trace=traceback.format_exc()
             )
@@ -292,7 +292,7 @@ class SingleKeyValidator(QValidator):  # type: ignore[misc]
                 f"Error getting last error: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="last_error",
+                func_name="last_error",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(

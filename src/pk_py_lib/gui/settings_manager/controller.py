@@ -17,7 +17,7 @@ Note: Syntax validation was performed using Python's ast module per project rule
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Any, Dict, Generic, Iterable, List, Optional, Sequence, Tuple, TypeVar
 
 import inspect
@@ -57,7 +57,47 @@ class OpResult(Generic[T]):
 
     @staticmethod
     def from_api(resp: ApiResponse[T]) -> "OpResult[T]":
-        return OpResult(success=resp.success, data=resp.data if resp.success else None, message=resp.error, code=resp.code)
+        """
+        Convert ApiResponse to OpResult, deriving code from success state since ApiResponse lacks 'code' attribute.
+
+        This mapping ensures compatibility with OpResult expectations:
+        - On success: code=0, message=None
+        - On failure: code=1, message=resp.error
+
+        Parameters
+        ----------
+        resp : ApiResponse[T]
+            The API response to map.
+
+        Returns
+        -------
+        OpResult[T]
+            Mapped result with derived code and message.
+
+        Raises
+        ------
+        Exception
+            If unexpected error during mapping; logged but propagates for caller handling.
+        """
+        try:
+            if resp.success:
+                return OpResult(success=True, data=resp.data, message=None, code=0)
+            else:
+                return OpResult(success=False, data=None, message=resp.error, code=1)
+        except Exception as e:
+            # Log the mapping error for debugging
+            logger.error(
+                "Error mapping ApiResponse to OpResult",
+                exception=e,
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno,
+                func_name="from_api",
+                resp_success=resp.success,
+                resp_error=resp.error,
+                stack_trace=traceback.format_exc()
+            )
+            # Fallback to basic mapping without code derivation
+            return OpResult(success=resp.success, data=resp.data if resp.success else None, message=resp.error or str(e), code=None)
 
 
 class SettingsManagerController:
@@ -96,15 +136,58 @@ class SettingsManagerController:
 
     @log_errors(include_args=True, include_traceback=True)
     def get_profile(self, profile_id: str) -> OpResult[Dict[str, Any]]:
-        """Get a profile by id, enriched with item_count."""
+        """
+        Get a profile by id, enriched with item_count.
+
+        This method fetches the profile using the API, handling both ApiResponse-wrapped
+        results and direct SettingsProfile returns for backward compatibility. If the
+        response is an ApiResponse, it extracts the data on success or returns None on
+        failure. If direct, it uses the object as-is (None if not found). The result
+        is then converted to a dictionary for consistency.
+
+        Parameters
+        ----------
+        profile_id : str
+            The ID of the profile to retrieve.
+
+        Returns
+        -------
+        OpResult[Dict[str, Any]]
+            On success: data=profile dictionary (with item_count if applicable).
+            On failure: success=False, message=error details.
+
+        Raises
+        ------
+        Exception
+            Wrapped and logged via @log_errors decorator.
+        """
         resp = self.api.get_profile(profile_id)
-        if not resp.success or not resp.data:
-            return OpResult.from_api(resp)
-        data = resp.data
-        if hasattr(data, 'to_dict'):
-            data = data.to_dict()
-        elif isinstance(data, SettingsProfile):
-            data = dict(data.data) if hasattr(data, 'data') else {}
+        profile = None
+        if isinstance(resp, ApiResponse):
+            if resp.success:
+                profile = resp.data
+            # else: profile remains None
+            logger.debug("Handled ApiResponse in get_profile", extra={"profile_id": profile_id, "success": resp.success})
+        else:
+            # Backward compatibility: direct SettingsProfile or None
+            profile = resp
+            logger.debug("Handled direct profile object in get_profile", extra={"profile_id": profile_id, "profile_type": type(profile).__name__})
+
+        if profile is None:
+            logger.warning("Profile not found", extra={"profile_id": profile_id})
+            return OpResult(success=False, message=f"Profile {profile_id} not found", code=ErrorCodes.NOT_FOUND.value)
+
+        # Convert to dict for consistency
+        if hasattr(profile, 'to_dict'):
+            data = profile.to_dict()
+        elif isinstance(profile, SettingsProfile):
+            data = asdict(profile)  # Use asdict for dataclass
+        else:
+            data = dict(profile) if isinstance(profile, dict) else {}
+
+        # Enrich with item_count if applicable (placeholder for future)
+        data['item_count'] = len(data) if isinstance(data, dict) else 0
+
         return OpResult(success=True, data=data)
 
     @log_errors(include_args=True, include_traceback=True)
@@ -112,23 +195,32 @@ class SettingsManagerController:
         """
         Fetch a profile and its key/value items.
 
+        This method first retrieves the profile using get_profile (which handles both
+        ApiResponse and direct returns), then fetches associated values. It combines
+        them into a dictionary for the caller.
+
         Returns
         -------
         OpResult[Dict[str, Any]]
             On success, data = {'profile': {...}, 'values': {...}}
+            On failure, propagates the first error encountered.
+
+        Parameters
+        ----------
+        profile_id : str
+            The ID of the profile to fetch with values.
         """
-        p = self.api.get_profile(profile_id)
-        if not p.success or not p.data:
-            return OpResult.from_api(p)  # propagate error
-        if hasattr(p.data, 'to_dict'):
-            profile_dict = p.data.to_dict()
-        elif isinstance(p.data, SettingsProfile):
-            profile_dict = dict(p.data.data) if hasattr(p.data, 'data') else {}
-        else:
-            profile_dict = p.data
+        # Use the updated get_profile which handles both response types
+        p_result = self.get_profile(profile_id)
+        if not p_result.success:
+            return p_result  # Propagate profile fetch error
+
+        profile_dict = p_result.data or {}
         vals = self.api.get_values(profile_id)
         if not vals.success:
+            logger.warning("Failed to get values for profile", extra={"profile_id": profile_id, "error": vals.message})
             return OpResult.from_api(vals)
+
         return OpResult(success=True, data={"profile": profile_dict, "values": vals.data or {}})
 
     @log_errors(include_args=True, include_traceback=True)
@@ -237,7 +329,7 @@ class SettingsManagerController:
         lst = self.api.list_profiles()
         if not lst.success or lst.data is None:
             return OpResult.from_api(lst)  # propagate error
-        existing_lower = {str(d.get("name", "")).lower() for d in lst.data}
+        existing_lower = {str(d.name).lower() for d in lst.data}
         candidate = f"{base} (copy)"
         n = 2
         while candidate.lower() in existing_lower or not self.validate_name(candidate).success:
@@ -362,7 +454,7 @@ class SettingsManagerController:
                     f"Alignment failed in create_structured_profile: {align_e}",
                     file_path=__file__,
                     line_number=inspect.currentframe().f_lineno,
-                    function_name="create_structured_profile",
+                    func_name="create_structured_profile",
                     parameters={"profile_json": profile_json, "make_active": make_active},
                     stack_trace=traceback.format_exc()
                 )
@@ -374,7 +466,7 @@ class SettingsManagerController:
                 f"Exception in create_structured_profile: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="create_structured_profile",
+                func_name="create_structured_profile",
                 parameters={"profile_json": profile_json, "make_active": make_active},
                 stack_trace=traceback.format_exc()
             )
@@ -434,7 +526,7 @@ class SettingsManagerController:
                 f"Exception in update_structured_profile: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="update_structured_profile",
+                func_name="update_structured_profile",
                 parameters={"profile_id": profile_id, "profile_json": profile_json},
                 stack_trace=traceback.format_exc()
             )
@@ -481,7 +573,7 @@ class SettingsManagerController:
                 f"Exception in duplicate_structured_profile: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="duplicate_structured_profile",
+                func_name="duplicate_structured_profile",
                 parameters={"source_profile_id": source_profile_id, "new_name": new_name, "description": description, "make_active": make_active},
                 stack_trace=traceback.format_exc()
             )

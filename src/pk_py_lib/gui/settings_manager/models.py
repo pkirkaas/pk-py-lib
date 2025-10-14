@@ -96,7 +96,7 @@ class ProfileVM:
                 f"Error creating ProfileVM from dict: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="ProfileVM.from_dict",
+                func_name="ProfileVM.from_dict",
                 parameters={"d": d},
                 stack_trace=traceback.format_exc()
             )
@@ -125,7 +125,7 @@ class ProfileVM:
                 f"Error converting ProfileVM to dict: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="ProfileVM.to_dict",
+                func_name="ProfileVM.to_dict",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -165,7 +165,7 @@ class ProfilesListModel(QAbstractListModel):  # type: ignore[misc]
                 f"Error initializing ProfilesListModel: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="ProfilesListModel.__init__",
+                func_name="ProfilesListModel.__init__",
                 parameters={"parent": parent},
                 stack_trace=traceback.format_exc()
             )
@@ -189,7 +189,7 @@ class ProfilesListModel(QAbstractListModel):  # type: ignore[misc]
                 f"Error in rowCount: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="rowCount",
+                func_name="rowCount",
                 parameters={"parent": parent},
                 stack_trace=traceback.format_exc()
             )
@@ -234,7 +234,7 @@ class ProfilesListModel(QAbstractListModel):  # type: ignore[misc]
                 f"Error in data: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="data",
+                func_name="data",
                 parameters={"index": index, "role": role},
                 stack_trace=traceback.format_exc()
             )
@@ -262,7 +262,7 @@ class ProfilesListModel(QAbstractListModel):  # type: ignore[misc]
                 f"Error in roleNames: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="roleNames",
+                func_name="roleNames",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -288,7 +288,7 @@ class ProfilesListModel(QAbstractListModel):  # type: ignore[misc]
                 f"Error setting profiles: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="set_profiles",
+                func_name="set_profiles",
                 parameters={"profiles_count": len(profiles)},
                 stack_trace=traceback.format_exc()
             )
@@ -316,7 +316,7 @@ class ProfilesListModel(QAbstractListModel):  # type: ignore[misc]
                 f"Error getting profiles: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="profiles",
+                func_name="profiles",
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(
@@ -342,7 +342,7 @@ class ProfilesListModel(QAbstractListModel):  # type: ignore[misc]
                 f"Error finding index of id: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="index_of_id",
+                func_name="index_of_id",
                 parameters={"profile_id": profile_id},
                 stack_trace=traceback.format_exc()
             )
@@ -369,7 +369,7 @@ class ProfilesListModel(QAbstractListModel):  # type: ignore[misc]
                 f"Error getting profile at row: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="profile_at",
+                func_name="profile_at",
                 parameters={"row": row},
                 stack_trace=traceback.format_exc()
             )
@@ -410,7 +410,7 @@ class KeyValueTableModel(QAbstractTableModel):  # type: ignore[misc]
                 f"Error initializing KeyValueTableModel: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="KeyValueTableModel.__init__",
+                func_name="KeyValueTableModel.__init__",
                 parameters={"parent": parent},
                 stack_trace=traceback.format_exc()
             )
@@ -433,7 +433,7 @@ class KeyValueTableModel(QAbstractTableModel):  # type: ignore[misc]
                 f"Error in rowCount: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="rowCount",
+                func_name="rowCount",
                 parameters={"parent": parent},
                 stack_trace=traceback.format_exc()
             )
@@ -454,7 +454,7 @@ class KeyValueTableModel(QAbstractTableModel):  # type: ignore[misc]
                 f"Error in columnCount: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="columnCount",
+                func_name="columnCount",
                 parameters={"parent": parent},
                 stack_trace=traceback.format_exc()
             )
@@ -479,7 +479,7 @@ class KeyValueTableModel(QAbstractTableModel):  # type: ignore[misc]
                 f"Error in headerData: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="headerData",
+                func_name="headerData",
                 parameters={"section": section, "orientation": orientation, "role": role},
                 stack_trace=traceback.format_exc()
             )
@@ -517,7 +517,7 @@ class KeyValueTableModel(QAbstractTableModel):  # type: ignore[misc]
                 f"JSON rendering error in data: {type(json_e).__name__}: {json_e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="data",
+                func_name="data",
                 parameters={"index": index, "role": role, "value": value},
                 stack_trace=traceback.format_exc()
             )
@@ -527,7 +527,7 @@ class KeyValueTableModel(QAbstractTableModel):  # type: ignore[misc]
                 f"Error in data: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="data",
+                func_name="data",
                 parameters={"index": index, "role": role},
                 stack_trace=traceback.format_exc()
             )
@@ -554,7 +554,7 @@ class KeyValueTableModel(QAbstractTableModel):  # type: ignore[misc]
                 f"Error in flags: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="flags",
+                func_name="flags",
                 parameters={"index": index},
                 stack_trace=traceback.format_exc()
             )
@@ -582,7 +582,7 @@ class KeyValueTableModel(QAbstractTableModel):  # type: ignore[misc]
                 f"Error setting items from dict: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="set_items_from_dict",
+                func_name="set_items_from_dict",
                 parameters={"items_count": len(items)},
                 stack_trace=traceback.format_exc()
             )
@@ -613,7 +613,7 @@ class KeyValueTableModel(QAbstractTableModel):  # type: ignore[misc]
                 f"Error converting to dict: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="to_dict",
+                func_name="to_dict",
                 parameters={"rows_count": len(self._rows)},
                 stack_trace=traceback.format_exc()
             )
@@ -646,7 +646,7 @@ class KeyValueTableModel(QAbstractTableModel):  # type: ignore[misc]
                 f"Error adding item: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="add_item",
+                func_name="add_item",
                 parameters={"key": key},
                 stack_trace=traceback.format_exc()
             )
@@ -689,7 +689,7 @@ class KeyValueTableModel(QAbstractTableModel):  # type: ignore[misc]
                 f"Error removing keys: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="remove_keys",
+                func_name="remove_keys",
                 parameters={"keys_count": len(keys)},
                 stack_trace=traceback.format_exc()
             )
@@ -716,7 +716,7 @@ class KeyValueTableModel(QAbstractTableModel):  # type: ignore[misc]
                 f"Error getting row: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
-                function_name="get_row",
+                func_name="get_row",
                 parameters={"row": row},
                 stack_trace=traceback.format_exc()
             )

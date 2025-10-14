@@ -53,6 +53,26 @@ This guide documents migration steps for settings profiles between legacy format
 
 **Impact**: Transparent to users; existing profiles load correctly without data loss. New profiles created in structured format are unaffected.
 
+### API Enhancements for Validation and Active Profiles (2025-10-14)
+
+**Description**: Integrated new methods from UnifiedSettingsAPI for improved profile validation and active management. No schema changes required—active status continues to use the existing `is_default` flag for legacy compatibility, with transparent handling for structured profiles.
+
+**New Features**:
+- `validate_profile_name(name: str)`: Validates profile names (1-64 chars, alphanumeric + underscores/dashes) before creation or migration. Returns [`ApiResponse`](src/pk_py_lib/core/api/response.py) with success/data/error.
+- `get_active()` / `set_active(profile_name: str)`: Retrieves/sets the active profile, wrapped in `ApiResponse`. Uses `is_default` for determination and updates.
+- `ensure_default_profile()`: Ensures a default profile exists on startup, returning the profile name via `ApiResponse`.
+
+**Impact on Migration**:
+- Before converting legacy profiles or creating new ones, call `validate_profile_name` to prevent insertion errors from invalid names (e.g., spaces or special chars).
+- Update migration callers (e.g., in profile loading) to handle `ApiResponse` wrappers: Check `response.success` and access `response.data` for profile dicts.
+- No data loss or schema alterations; enhances robustness during transitions (e.g., from legacy KV to JSON `json_data`).
+- Example: In migration scripts, `if api.validate_profile_name(legacy_name).success: proceed_with_conversion()`
+
+**Verification**:
+- Invalid names rejected early (e.g., "my profile!" → error: "Name contains invalid characters").
+- Active profile switches persist across restarts without reverting to defaults.
+- Integrates with existing json_data migration—no conflicts observed.
+
 ## Implementation Details
 
 ### Legacy to Structured Mapping
@@ -90,6 +110,8 @@ If issues arise:
 - [x] Restart app → custom values persist (no defaults)
 - [ ] Two-pool mode with direction mapping
 - [ ] Invalid data → graceful fallback to defaults
+- [x] Validate profile names during migration → rejects invalid, accepts valid
+- [x] Active profile handling → sets/gets correctly via new API methods
 
 ## Recent Migration: json_data Column Addition (2025-10-13)
 
