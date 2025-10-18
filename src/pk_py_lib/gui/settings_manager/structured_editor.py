@@ -590,8 +590,13 @@ class StructuredProfileEditorWidget(QWidget):
             }
         )
 
+        # Ensure name is always a string, never None - fix for schema validation error
+        name_text = self.inp_name.text() if hasattr(self, 'inp_name') and self.inp_name.text() else ""
+        name_stripped = name_text.strip() if name_text else ""
+        profile_name = name_stripped if name_stripped else "Unnamed Profile"
+
         profile = {
-            "name": self.inp_name.text().strip(),
+            "name": profile_name,
             "description": self.inp_description.text().strip(),
             "pools": {
                 "A": {
