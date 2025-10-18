@@ -16,7 +16,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Optional, List
 
-from ...core.settings.manager import SettingsManager
+from ...core.settings.json_unified_manager import JSONSettingsManager
 from ...core.api.response import ApiResponse, ErrorCode
 from ...core.models.settings import AppSettings, SettingsProfile
 
@@ -32,16 +32,16 @@ class UnifiedSettingsAPI:
     lifting to the underlying SettingsManager.
     """
 
-    def __init__(self, settings_manager: Optional[SettingsManager] = None):
+    def __init__(self, settings_manager: Optional[JSONSettingsManager] = None):
         """
         Initialize UnifiedSettingsAPI.
 
         Args:
-            settings_manager: Optional SettingsManager. If omitted, a default
-                              SettingsManager is created.
+            settings_manager: Optional JSONSettingsManager. If omitted, a default
+                              JSONSettingsManager is created.
         """
         if settings_manager is None:
-            settings_manager = SettingsManager()
+            settings_manager = JSONSettingsManager()
         self.settings_manager = settings_manager
 
     # App-scoped methods
@@ -413,7 +413,7 @@ class UnifiedSettingsAPI:
                 exc_info=True,
                 extra={
                     "error": str(e),
-                    "name": name,
+                    "profile_name": name,
                     "exclude_id": exclude_id,
                     "manager": "profiles"
                 }
@@ -534,7 +534,7 @@ class UnifiedSettingsAPI:
             logger.error(
                 f"Validation error creating profile '{name}': {e}",
                 exc_info=True,
-                extra={"name": name, "description": description, "make_active": make_active}
+                extra={"profile_name": name, "description": description, "make_active": make_active}
             )
             return ApiResponse.error_response(
                 code=ErrorCode.SETTINGS_ERROR,
@@ -547,7 +547,7 @@ class UnifiedSettingsAPI:
                 exc_info=True,
                 extra={
                     "error": str(e),
-                    "name": name,
+                    "profile_name": name,
                     "description": description,
                     "make_active": make_active,
                     "manager": "profiles"
@@ -623,13 +623,119 @@ class UnifiedSettingsAPI:
             logger.exception("Failed to import settings from %s", path)
             return False
 
+    def update_profile(
+        self,
+        profile_id: int,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        json_data: Optional[Dict[str, Any]] = None
+    ) -> ApiResponse:
+        """
+        Update an existing settings profile.
+
+        This method retrieves the existing profile, updates the specified fields,
+        and saves the changes back to the database.
+
+        Parameters
+        ----------
+        profile_id : int
+            The unique integer ID of the profile to update.
+        name : Optional[str], optional
+            New name for the profile. If None, the existing name is preserved.
+        description : Optional[str], optional
+            New description for the profile. If None, the existing description is preserved.
+        json_data : Optional[Dict[str, Any]], optional
+            Optional structured data for the profile. If provided, it will be used
+            to populate profile fields for structured profiles. If None, existing
+            json_data is preserved.
+
+        Returns
+        -------
+        ApiResponse
+            On success: success=True, data=updated SettingsProfile object.
+            On failure: success=False, message=detailed error description,
+                        code=ErrorCode.SETTINGS_ERROR
+
+        Raises
+        ------
+        None
+            All exceptions are caught internally and wrapped in an error ApiResponse.
+            This ensures the method always returns a valid ApiResponse object.
+
+        Examples
+        --------
+        >>> api = UnifiedSettingsAPI(settings_manager)
+        >>> response = api.update_profile(1, name="Updated Profile", description="New description")
+        >>> if response.success:
+        ...     profile = response.data  # Updated SettingsProfile
+        ...     print(f"Updated: {profile.name}")
+        ... else:
+        ...     print(f"Error: {response.message}")
+        """
+        try:
+            # Get the existing profile
+            existing_profile = self.settings_manager.profiles.get_by_id(profile_id)
+            if existing_profile is None:
+                return ApiResponse.error_response(
+                    code=ErrorCode.SETTINGS_ERROR,
+                    message=f"Profile with ID {profile_id} not found"
+                )
+
+            # Update fields if provided
+            if name is not None:
+                existing_profile.name = name
+            if description is not None:
+                existing_profile.description = description
+
+            # Handle json_data if provided
+            if json_data is not None:
+                # For structured profiles, extract values from json_data
+                if "criteria" in json_data:
+                    criteria = json_data["criteria"]
+                    if "similarity_hash_algorithm" in criteria:
+                        existing_profile.hash_algorithm = criteria["similarity_hash_algorithm"]
+                    if "hash_size" in criteria:
+                        existing_profile.hash_size = criteria["hash_size"]
+                    if "similarity_threshold" in criteria:
+                        existing_profile.similarity_threshold = criteria["similarity_threshold"]
+                    if "min_resolution" in criteria:
+                        existing_profile.min_resolution = criteria["min_resolution"]
+                    if "max_resolution" in criteria:
+                        existing_profile.max_resolution = criteria["max_resolution"]
+                    if "color_mode" in criteria:
+                        existing_profile.color_mode = criteria["color_mode"]
+                    if "clustering_method" in criteria:
+                        existing_profile.clustering_method = criteria["clustering_method"]
+                    if "quality_threshold" in criteria:
+                        existing_profile.quality_threshold = criteria["quality_threshold"]
+
+                # Update other json_data fields if present
+                if "pools" in json_data:
+                    existing_profile.pools = json_data["pools"]
+
+            # Update the profile in the database
+            self.settings_manager.profiles.update(existing_profile)
+
+            # Return the updated profile
+            return ApiResponse.success_response(data=existing_profile)
+
+        except Exception as e:
+            logger.error(
+                f"Failed to update profile {profile_id}",
+                exc_info=True,
+                extra={"error": str(e), "profile_id": profile_id, "manager": "profiles"}
+            )
+            return ApiResponse.error_response(
+                code=ErrorCode.SETTINGS_ERROR,
+                message=f"Failed to update profile {profile_id}: {str(e)}"
+            )
+
     def ensure_default_profile(self) -> ApiResponse:
         """
-        Ensure that a default settings profile exists in the database.
+        Ensure that a default settings profile exists.
 
-        This method is idempotent: if default profiles already exist, it does nothing.
-        It delegates to the underlying ProfilesManager to create system default profiles
-        if none are present. The schema is ensured prior to profile creation.
+        For JSON settings, default profiles are automatically created during initialization.
+        This method simply returns the default profile for compatibility.
 
         Parameters
         ----------
@@ -644,8 +750,8 @@ class UnifiedSettingsAPI:
 
         Raises
         ------
-        RuntimeError
-            If schema creation or profile insertion fails critically.
+        None
+            All exceptions are caught and wrapped in ApiResponse.
 
         Examples
         --------
@@ -655,19 +761,20 @@ class UnifiedSettingsAPI:
         True
         """
         try:
-            # Delegate to profiles manager for schema and default profile creation
-            # This is idempotent as _ensure_default_profiles checks if profiles exist
-            self.settings_manager.profiles._ensure_schema()
-            self.settings_manager.profiles._ensure_default_profiles()
-
-            # Retrieve the default profile for confirmation
+            # JSON settings manager automatically creates default profiles on initialization
+            # Just retrieve the default profile
             default_profile = self.settings_manager.profiles.get_default()
+            if default_profile is None:
+                return ApiResponse.error_response(
+                    code=ErrorCode.SETTINGS_ERROR,
+                    message="No default profile found in JSON settings"
+                )
             return ApiResponse.success_response(data=default_profile)
         except Exception as e:
             logger.error(
                 "Failed to ensure default profile",
                 exc_info=True,
-                extra={"error": str(e), "db_path": str(self.settings_manager.profiles.db_path)}
+                extra={"error": str(e), "settings_dir": str(self.settings_manager.settings_dir)}
             )
             return ApiResponse.error_response(code=ErrorCode.SETTINGS_ERROR, message=f"Failed to ensure default profile: {str(e)}")
 

@@ -348,16 +348,16 @@ The repository will host a development-only, extractable desktop GUI application
   - Canonical reference: [docs/roo/img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:175) (Data Directory Structure)
 
 - Directory structure and databases
-  - settings.db and sessions.db in user_data_dir
-  - All runtime data (settings.db, sessions.db, flat_cache.db, logs/, backups/) is located under the unified data directory determined by `platformdirs.user_data_dir("pk_py_lib", "Pk")` or the `PK_PY_LIB_HOME` override.
+  - app-settings.json and search-profiles.json in user_data_dir
+  - All runtime data (app-settings.json, search-profiles.json, flat_cache.db, logs/, backups/) is located under the unified data directory determined by `platformdirs.user_data_dir("pk_py_lib", "Pk")` or the `PK_PY_LIB_HOME` override.
   - **flat_cache.db** (persistent metadata cache) in user_data_dir - **sole caching solution**
   - backups subfolder under data dir for DB snapshots
   - Thumbnails generated on-demand by Qt (no persistent thumbnail cache)
   - Canonical reference: [img-app-specification.md](docs/roo/img-app-specification.md:54), [img-app-data-model.md](docs/roo/img-app-data-model.md:287)
 
 - Startup validation and migration
-  - On app start: ensure DBs exist; run PRAGMA quick_check, then integrity_check on failure
-  - If corrupt: settings.db attempts export/preserve, sessions.db prompt to rebuild or repair, cache.db safe to rebuild
+  - On app start: ensure settings files exist; validate JSON schema and version compatibility
+  - If corrupt: settings files are recreated from defaults (fresh start approach), sessions.db prompt to rebuild or repair, cache.db safe to rebuild
   - Schema versioning via meta.schema_version; run Alembic migrations on mismatch
   - Pre-migration backup; retention: keep 10 most recent per DB, purge backups older than 30 days
   - Canonical reference: [canonical-decisions.md](docs/roo/canonical-decisions.md:38)
@@ -527,6 +527,66 @@ The project has undergone major refactoring across multiple phases to improve co
 - **Phase 2**: Implement actual migration logic (database schema updates)
 - **Phase 3**: Update all consumers to new APIs
 - **Phase 4**: Remove deprecated code after migration period
+
+---
+
+### JSON Settings Architecture ✅
+
+**Status**: ✅ Complete - JSON Settings Migration
+
+**Overview**: The project has successfully migrated from SQLite-based settings storage to a JSON-based system for improved simplicity, maintainability, and cross-platform compatibility.
+
+**New JSON Settings Architecture**:
+
+#### JSON File Structure
+- **app-settings.json**: Application-wide settings (theme, cache size, threading, etc.)
+- **search-profiles.json**: User-defined search profiles for duplicate and similarity detection
+
+#### Key Components
+- **JSON Settings Manager**: [`src/pk_py_lib/core/settings/json_unified_manager.py`](../src/pk_py_lib/core/settings/json_unified_manager.py:1)
+  - Unified interface compatible with legacy SQLite manager
+  - Manages both app settings and search profiles
+  - Platform-specific settings directory handling
+- **JSON Schema Validation**: [`src/pk_py_lib/core/settings/json_schemas.py`](../src/pk_py_lib/core/settings/json_schemas.py:1)
+  - Embedded JSON schemas for both settings files
+  - Version management and compatibility checking
+  - Schema validation using jsonschema library
+- **Settings Sub-managers**:
+  - [`json_app_settings.py`](../src/pk_py_lib/core/settings/json_app_settings.py:1) - Application settings management
+  - [`json_profiles.py`](../src/pk_py_lib/core/settings/json_profiles.py:1) - Search profiles management
+
+#### Architecture Benefits
+- **Simplified Storage**: Human-readable JSON files instead of SQLite complexity
+- **Cross-Platform**: No database dependencies, works on any platform with JSON support
+- **Version Management**: Schema versioning prevents compatibility issues
+- **Fresh Start Approach**: No complex migration logic - corrupted files are recreated from defaults
+- **Schema Validation**: Runtime validation ensures data integrity
+
+#### Settings Directory Structure
+```
+~/.pk-py-lib/settings/          # Platform-specific user data directory
+├── app-settings.json          # Application settings (v1)
+└── search-profiles.json       # Search profiles (v1)
+```
+
+#### Schema Versions
+- **App Settings Schema**: Version 1.0 - Basic application configuration
+- **Search Profiles Schema**: Version 1.0 - Profile definitions with pools and criteria
+
+#### Error Handling Strategy
+- **Fresh Start Approach**: Corrupted or incompatible settings files are deleted and recreated with defaults
+- **No Migration Logic**: When schema versions change, old settings are discarded
+- **Detailed Logging**: All settings operations are logged for debugging
+- **Graceful Degradation**: Application continues to function with default settings if files are missing
+
+#### Backward Compatibility
+- **Legacy API**: [`src/pk_py_lib/api/settings_profiles.py`](../src/pk_py_lib/api/settings_profiles.py:1) provides deprecated SQLite-compatible interface
+- **Unified API**: [`src/pk_py_lib/api/settings/unified_api.py`](../src/pk_py_lib/api/settings/unified_api.py:1) provides new JSON-based interface
+- **Migration Framework**: [`src/pk_py_lib/core/migrations/settings_migration.py`](../src/pk_py_lib/core/migrations/settings_migration.py:1) documents the migration path
+
+**Documentation**:
+- [Settings Migration Guide](../docs/roo/settings-migration-guide.md:1) - Complete migration documentation
+- [JSON Settings Architecture](#json-settings-architecture) - This section
 
 ---
 

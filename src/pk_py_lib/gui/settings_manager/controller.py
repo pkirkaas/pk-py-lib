@@ -89,12 +89,14 @@ class OpResult(Generic[T]):
             logger.error(
                 "Error mapping ApiResponse to OpResult",
                 exception=e,
-                file_path=__file__,
-                line_number=inspect.currentframe().f_lineno,
-                func_name="from_api",
-                resp_success=resp.success,
-                resp_error=resp.error,
-                stack_trace=traceback.format_exc()
+                context={
+                    "file_path": __file__,
+                    "line_number": inspect.currentframe().f_lineno,
+                    "func_name": "from_api",
+                    "resp_success": resp.success,
+                    "resp_error": resp.error,
+                    "stack_trace": traceback.format_exc()
+                }
             )
             # Fallback to basic mapping without code derivation
             return OpResult(success=resp.success, data=resp.data if resp.success else None, message=resp.error or str(e), code=None)
@@ -434,7 +436,7 @@ class SettingsManagerController:
                 return OpResult.from_api(resp)
 
             created = resp.data
-            new_id = created.get("id")
+            new_id = created.id
             if not new_id:
                 return OpResult(success=False, message="Create returned no id", code=ErrorCodes.UNKNOWN_ERROR.value)
 
@@ -452,11 +454,14 @@ class SettingsManagerController:
             except Exception as align_e:
                 logger.error(
                     f"Alignment failed in create_structured_profile: {align_e}",
-                    file_path=__file__,
-                    line_number=inspect.currentframe().f_lineno,
-                    func_name="create_structured_profile",
-                    parameters={"profile_json": profile_json, "make_active": make_active},
-                    stack_trace=traceback.format_exc()
+                    context={
+                        "file_path": __file__,
+                        "line_number": inspect.currentframe().f_lineno,
+                        "func_name": "create_structured_profile",
+                        "profile_name": profile_json.get('name') if isinstance(profile_json, dict) else 'unknown',
+                        "make_active_flag": make_active,
+                        "stack_trace": traceback.format_exc()
+                    }
                 )
                 # Non-fatal alignment failure
                 return OpResult.from_api(resp)
@@ -464,11 +469,14 @@ class SettingsManagerController:
         except Exception as e:
             logger.error(
                 f"Exception in create_structured_profile: {type(e).__name__}: {e}",
-                file_path=__file__,
-                line_number=inspect.currentframe().f_lineno,
-                func_name="create_structured_profile",
-                parameters={"profile_json": profile_json, "make_active": make_active},
-                stack_trace=traceback.format_exc()
+                context={
+                    "file_path": __file__,
+                    "line_number": inspect.currentframe().f_lineno,
+                    "func_name": "create_structured_profile",
+                    "profile_name": profile_json.get('name') if isinstance(profile_json, dict) else 'unknown',
+                    "make_active_flag": make_active,
+                    "stack_trace": traceback.format_exc()
+                }
             )
             return OpResult(success=False, message=str(e), code=ErrorCodes.UNKNOWN_ERROR.value)
 
@@ -485,17 +493,72 @@ class SettingsManagerController:
         try:
             # Read current to preserve created_at and defaults where appropriate
             existing = self.api.get_profile(profile_id)
-            if not existing.success or not existing.data:
-                return OpResult.from_api(existing)
 
-            current = existing.data
-            cur_json = dict(current.get("json_data") or {})
+            # Debug logging to understand what we're getting
+            logger.debug(f"update_structured_profile: existing type={type(existing)}, existing={existing}")
+
+            # Handle both ApiResponse and direct SettingsProfile returns for backward compatibility
+            if isinstance(existing, ApiResponse):
+                if not existing.success or not existing.data:
+                    return OpResult.from_api(existing)
+                current = existing.data
+            else:
+                # Backward compatibility: direct SettingsProfile or None
+                if existing is None:
+                    return OpResult(success=False, message=f"Profile {profile_id} not found", code=ErrorCodes.NOT_FOUND.value)
+                current = existing
+
+            # Debug logging to understand what we're getting
+            logger.debug(f"update_structured_profile: existing type={type(existing)}, current type={type(current)}")
+
+            # Convert to dict for consistency - more robust approach
+            current_dict = None
+            if current is None:
+                current_dict = {}
+            elif isinstance(current, dict):
+                current_dict = current.copy()
+            elif hasattr(current, 'to_dict'):
+                try:
+                    current_dict = current.to_dict()
+                    logger.debug(f"Converted using to_dict(): {type(current_dict)}")
+                except Exception as e:
+                    logger.error(f"Failed to call to_dict(): {e}")
+                    current_dict = {}
+            elif isinstance(current, SettingsProfile):
+                try:
+                    from dataclasses import asdict
+                    current_dict = asdict(current)
+                    logger.debug(f"Converted using asdict(): {type(current_dict)}")
+                except Exception as e:
+                    logger.error(f"Failed to call asdict(): {e}")
+                    current_dict = {}
+            else:
+                try:
+                    current_dict = dict(current)
+                    logger.debug(f"Converted using dict(): {type(current_dict)}")
+                except Exception as e:
+                    logger.error(f"Failed to convert to dict: {e}")
+                    current_dict = {}
+
+            # Final safety check
+            if current_dict is None:
+                logger.error(f"current_dict is None, current type={type(current)}")
+                current_dict = {}
+
+            if not isinstance(current_dict, dict):
+                logger.error(f"current_dict is not a dict, got {type(current_dict)}, current type={type(current)}")
+                return OpResult(success=False, message=f"Invalid profile data type: {type(current_dict)}", code=ErrorCodes.UNKNOWN_ERROR.value)
+
+            cur_json = dict(current_dict.get("json_data") or {})
 
             # Build payload and sanitize
             payload = dict(profile_json or {})
             payload["format"] = "json"
-            name = str((payload.get("name") or current.get("name", ""))).strip()
-            desc = payload.get("description", current.get("description", ""))
+            name = str((payload.get("name") or current_dict.get("name", "Unnamed Profile"))).strip()
+            # Ensure name is never empty
+            if not name:
+                name = "Unnamed Profile"
+            desc = payload.get("description", current_dict.get("description", ""))
             desc = "" if desc is None else str(desc)
 
             payload["id"] = profile_id
@@ -505,8 +568,8 @@ class SettingsManagerController:
             # Preserve or set generated fields
             from datetime import datetime, timezone
             now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-            # Keep created_at if present; otherwise fallback to cur_json or current
-            payload.setdefault("created_at", cur_json.get("created_at") or current.get("created_at") or now)
+            # Keep created_at if present; otherwise fallback to cur_json or current_dict
+            payload.setdefault("created_at", cur_json.get("created_at") or current_dict.get("created_at") or now)
             # updated_at reflects this update
             payload["updated_at"] = now
             payload.setdefault("profile_version", cur_json.get("profile_version") or "1.0.0")
@@ -524,11 +587,14 @@ class SettingsManagerController:
         except Exception as e:
             logger.error(
                 f"Exception in update_structured_profile: {type(e).__name__}: {e}",
-                file_path=__file__,
-                line_number=inspect.currentframe().f_lineno,
-                func_name="update_structured_profile",
-                parameters={"profile_id": profile_id, "profile_json": profile_json},
-                stack_trace=traceback.format_exc()
+                context={
+                    "file_path": __file__,
+                    "line_number": inspect.currentframe().f_lineno,
+                    "func_name": "update_structured_profile",
+                    "profile_id_value": profile_id,
+                    "profile_name": profile_json.get('name') if isinstance(profile_json, dict) else 'unknown',
+                    "stack_trace": traceback.format_exc()
+                }
             )
             return OpResult(success=False, message=str(e), code=ErrorCodes.UNKNOWN_ERROR.value)
 
@@ -571,10 +637,14 @@ class SettingsManagerController:
         except Exception as e:
             logger.error(
                 f"Exception in duplicate_structured_profile: {type(e).__name__}: {e}",
-                file_path=__file__,
-                line_number=inspect.currentframe().f_lineno,
-                func_name="duplicate_structured_profile",
-                parameters={"source_profile_id": source_profile_id, "new_name": new_name, "description": description, "make_active": make_active},
-                stack_trace=traceback.format_exc()
+                context={
+                    "file_path": __file__,
+                    "line_number": inspect.currentframe().f_lineno,
+                    "func_name": "duplicate_structured_profile",
+                    "source_profile_id_value": source_profile_id,
+                    "new_name_value": new_name,
+                    "make_active_flag": make_active,
+                    "stack_trace": traceback.format_exc()
+                }
             )
             return OpResult(success=False, message=str(e), code=ErrorCodes.UNKNOWN_ERROR.value)

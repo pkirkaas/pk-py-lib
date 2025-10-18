@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from threading import Lock
-from uuid import uuid4
 
 from ..models.settings import SettingsProfile
 from .json_manager import SettingsFileManager
@@ -50,6 +49,7 @@ class JSONProfilesManager:
         self.file_manager = SettingsFileManager(self.settings_dir)
         self._profiles: List[SettingsProfile] = []
         self._lock = Lock()
+        self._next_id = 1  # Track next available sequential ID
 
         logger.info(f"JSON profiles manager initialized for directory: {self.settings_dir}")
 
@@ -81,7 +81,8 @@ class JSONProfilesManager:
 
             # Assign ID if not present
             if profile.id is None:
-                profile.id = int(uuid4().int)  # Use large random int as ID
+                profile.id = self._next_id
+                self._next_id += 1
 
             # Set timestamps
             now = datetime.now()
@@ -325,15 +326,39 @@ class JSONProfilesManager:
             profiles_list = profiles_data.get("profiles", [])
 
             self._profiles = []
+            max_id = 0
             for profile_dict in profiles_list:
                 try:
+                    # Handle ID conversion from UUID strings to integers
+                    original_id = profile_dict.get('id')
+                    if isinstance(original_id, str):
+                        # If ID is a UUID string, assign a new sequential ID
+                        profile_dict['id'] = self._next_id
+                        self._next_id += 1
+                        logger.info(f"Converted UUID profile ID '{original_id}' to integer {profile_dict['id']}")
+                    elif isinstance(original_id, int):
+                        # Check if integer ID is within Qt's 64-bit signed integer range
+                        if original_id > 2**63 - 1 or original_id < -2**63:
+                            # ID is too large for Qt, assign a new sequential ID
+                            logger.warning(f"Profile ID {original_id} exceeds Qt 64-bit range, converting to sequential ID {self._next_id}")
+                            profile_dict['id'] = self._next_id
+                            self._next_id += 1
+                        else:
+                            # Track maximum integer ID to set next_id
+                            if original_id > max_id:
+                                max_id = original_id
+
                     # Convert dictionary to SettingsProfile
                     profile = self._dict_to_profile(profile_dict)
                     self._profiles.append(profile)
                 except Exception as e:
                     logger.warning(f"Error loading profile {profile_dict.get('name', 'unknown')}: {e}")
 
-            logger.debug(f"Loaded {len(self._profiles)} profiles from JSON file")
+            # Set next_id to max_id + 1, but at least 1
+            self._next_id = max(max_id, 0) + 1
+            logger.info(f"Loaded {len(self._profiles)} profiles from JSON file, next_id={self._next_id}")
+
+            logger.debug(f"Loaded {len(self._profiles)} profiles from JSON file, next_id={self._next_id}")
 
         except Exception as e:
             logger.error(f"Error loading profiles: {e}, creating defaults")
@@ -419,7 +444,12 @@ class JSONProfilesManager:
 
         # Save defaults
         self._save_profiles()
-        logger.info(f"Created {len(self._profiles)} default profiles")
+
+        # Set next_id to maximum ID + 1
+        max_id = max(profile.id for profile in self._profiles)
+        self._next_id = max_id + 1
+
+        logger.info(f"Created {len(self._profiles)} default profiles, next_id={self._next_id}")
 
     def _dict_to_profile(self, data: Dict[str, Any]) -> SettingsProfile:
         """Convert dictionary to SettingsProfile object."""

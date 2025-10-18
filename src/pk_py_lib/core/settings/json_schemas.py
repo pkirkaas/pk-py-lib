@@ -134,7 +134,7 @@ SEARCH_PROFILES_SCHEMA = {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 100,
-                    "pattern": "^[A-Za-z0-9 _-]+$",
+                    "pattern": "^[A-Za-z0-9 _\\-()]+$",
                     "description": "Human-readable profile name"
                 },
                 "description": {
@@ -215,12 +215,12 @@ SEARCH_PROFILES_SCHEMA = {
             },
             "required": ["id", "name", "hash_algorithm", "created_at", "updated_at"],
             "allOf": [
-                # xxh3 algorithm: no similarity threshold needed (exact duplicates)
+                # xxh3 algorithm: similarity threshold should be null or absent
                 {
                     "if": {"properties": {"hash_algorithm": {"const": "xxh3"}}},
                     "then": {
                         "properties": {
-                            "similarity_threshold": {"not": {}}
+                            "similarity_threshold": {"type": ["null", "number"]}
                         }
                     }
                 },
@@ -230,8 +230,7 @@ SEARCH_PROFILES_SCHEMA = {
                     "then": {
                         "properties": {
                             "similarity_threshold": {"type": "number"}
-                        },
-                        "required": ["similarity_threshold"]
+                        }
                     }
                 }
             ]

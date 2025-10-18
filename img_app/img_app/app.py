@@ -35,10 +35,8 @@ from src.pk_py_lib.api.settings import UnifiedSettingsAPI
 from src.pk_py_lib.gui.settings_manager.structured_dialog import structured_settings_manager_dialog
 from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerController
 
-from src.pk_py_lib.core.database import DatabaseManager
-from src.pk_py_lib.core.settings.manager import SettingsManager
-from src.pk_py_lib.core.configuration import ConfigurationManager
-from src.pk_py_lib.core.logging.logger import configure_logging, LogLevel, PKLogger
+from src.pk_py_lib.core.settings.json_unified_manager import JSONSettingsManager
+from src.pk_py_lib.core.logging.logger import configure_logging, LogLevel, PKLogger, get_cache_logger
 from src.pk_py_lib.core.logging.decorators import log_errors
 from src.pk_py_lib.core import get_data_dir # Unified data directory function
 from src.pk_py_lib.core.flat_cache import FlatCacheManager
@@ -213,22 +211,18 @@ Examples:
             from src.pk_py_lib.core import get_data_dir
             data_dir = get_data_dir().resolve()
 
-            # Initialize DatabaseManager (uses get_data_dir internally now)
-            db_mgr = DatabaseManager()
-            db_mgr.initialize()
+            # Initialize JSON settings manager
+            json_settings_mgr = JSONSettingsManager()
 
-            # Initialize ConfigurationManager to get cache size (now that DB is initialized)
-            config_mgr = None
-            try:
-                config_mgr = ConfigurationManager(db_mgr.settings_db)
-                max_mb = int(getattr(config_mgr, "get_app_setting", lambda k: 5120)("cache_size_mb") or 5120)
-            except Exception:
-                max_mb = 5120
+            # Initialize JSON settings manager
+            json_settings_mgr = JSONSettingsManager()
 
             # Collect and print actual resolved paths with existence checks
-            settings_db = db_mgr.settings_db.resolve()
             backups_dir = (data_dir / 'backups').resolve()
-            sessions_db = (data_dir / 'sessions.db').resolve() # Assuming sessions.db is also in data_dir
+
+            # JSON settings files
+            app_settings_json = json_settings_mgr.settings_dir / "app-settings.json"
+            search_profiles_json = json_settings_mgr.settings_dir / "search-profiles.json"
 
             # Default log file path (project root for --location since config not fully dynamic here)
             PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -243,11 +237,11 @@ Examples:
 
             print(f"--- Unified Data Directory ---")
             print(f"Base Data Dir: {data_dir}{status(data_dir)}")
-            print(f"Settings DB: {settings_db}{status(settings_db)}")
+            print(f"App Settings JSON: {app_settings_json}{status(app_settings_json)}")
+            print(f"Search Profiles JSON: {search_profiles_json}{status(search_profiles_json)}")
             print(f"Flat Cache DB: {flat_cache_db}{status(flat_cache_db)}")
             print(f"Backups Dir: {backups_dir}{status(backups_dir)}")
             print(f"Log File: {app_log}{status(app_log)}")
-            print(f"Sessions DB: {sessions_db}{status(sessions_db)}")
             sys.exit(0)
         except Exception as exc:
             print(f"Error initializing managers for --location: {exc}", file=sys.stderr)
@@ -258,8 +252,6 @@ Examples:
         app = _ensure_application([sys.argv[0]] + qt_argv)
 
         # Will be attached to the MainWindow if initialized successfully
-        db_mgr = None
-        config_mgr = None
         flat_cache_mgr = None # Add FlatCacheManager
         controller = None # New variable for the controller
         active_profile: Optional[Dict[str, Any]] = None
@@ -267,46 +259,17 @@ Examples:
         try:
             # Core managers imported at module top; using them directly
 
-            # 2) Initialize/open DBs and run migrations
-            db_mgr = DatabaseManager()
-            db_mgr.initialize()
+            # 2) Initialize JSON settings manager and ensure default profile exists
+            json_settings_manager = JSONSettingsManager()
+            api = UnifiedSettingsAPI(json_settings_manager)
+            # JSON settings manager automatically creates default profiles on initialization
+            # No need for explicit ensure_default_profile call
 
-            # Trigger profiles schema migration
-            from src.pk_py_lib.core.settings.profiles import ProfilesManager
-            db_path = Path(db_mgr.settings_db)
-            profiles_mgr = ProfilesManager(db_path)
-
-            # 2.1) Initialize cache logger now that database is ready
-            from src.pk_py_lib.core.logging.logger import get_cache_logger
-            get_cache_logger(log_dir=log_dir)
-
-            # 3) Profiles API bound to this DB; ensure a default/active profile exists
-            settings_path = Path(db_mgr.settings_db)
-            api = UnifiedSettingsAPI(SettingsManager(settings_path))
-            ensured = api.ensure_default_profile()
-
-            if not ensured.success:
-                logger.error(
-                    "Failed to ensure default profile",
-                    exception=ValueError(ensured.message or 'Unknown error'),
-                    file_path=__file__,
-                    line_number=inspect.currentframe().f_lineno,
-                    func_name="main",
-                    db_path=str(db_mgr.settings_db) if db_mgr else "unknown",
-                    api_response=ensured.message
-                )
-                show_selectable_error(
-                    None,
-                    "Startup Error",
-                    f"Failed to ensure default settings profile: {ensured.message or 'Unknown error'}"
-                )
-                return 1
-
-            # 3.1) Initialize the Settings Manager Controller
+            # 2.1) Initialize the Settings Manager Controller
             from src.pk_py_lib.gui.settings_manager.controller import SettingsManagerController
             controller = SettingsManagerController(api)
 
-            # 4) Get the active profile for the main window
+            # 3) Get the active profile for the main window
             active_resp = api.get_active()
             if active_resp.success and active_resp.data:
                 active_profile = asdict(active_resp.data)
@@ -322,7 +285,6 @@ Examples:
                         file_path=__file__,
                         line_number=inspect.currentframe().f_lineno,
                         func_name="main",
-                        db_path=str(db_mgr.settings_db) if db_mgr else "unknown",
                         profiles_count=0
                     )
                     show_selectable_error(
@@ -333,17 +295,13 @@ Examples:
                     return 1
 
             # Optional managers (best-effort; failures are non-fatal)
-            config_mgr = None
             flat_cache_mgr = None
 
             try:
-                config_mgr = ConfigurationManager(db_mgr.settings_db)
-                flat_cache_mgr = FlatCacheManager()
-
-                # Now configure dynamic logging based on app setting
-                # Use UnifiedSettingsAPI to retrieve the setting, as ConfigurationManager lacks get_app_setting
+                # Use JSON settings for logging configuration instead of SQLite ConfigurationManager
                 # api.get_setting returns the value directly (Any), not ApiResponse
                 logging_to_user_dir = api.get_setting('logging_to_user_dir', default=False)
+                flat_cache_mgr = FlatCacheManager()
 
                 if logging_to_user_dir:
                     from src.pk_py_lib.core import get_data_dir
@@ -403,7 +361,6 @@ Examples:
                     file_path=__file__,
                     line_number=inspect.currentframe().f_lineno,
                     func_name="main",
-                    db_path=str(db_mgr.settings_db) if db_mgr else "unknown",
                     stack_trace=traceback.format_exc()
                 )
                 # If config fails, logging remains in project root (fallback)
@@ -416,8 +373,7 @@ Examples:
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno,
                 func_name="main",
-                db_path=str(db_mgr.settings_db) if 'db_mgr' in locals() else "unknown",
-                config_state="partial" if config_mgr else "failed",
+                config_state="failed",
                 profiles_count=len(api.list_profiles().data) if 'api' in locals() else 0,
                 stack_trace=traceback.format_exc()
             )
@@ -430,11 +386,6 @@ Examples:
 
         # 5) Create main window, pass active profile, and attach managers
         window = MainWindow(active_profile=active_profile, cli_args=args)
-        if db_mgr is not None:
-            setattr(window, "database_manager", db_mgr)
-        if config_mgr is not None:
-            setattr(window, "configuration_manager", config_mgr)
-
         if flat_cache_mgr is not None:
             setattr(window, "flat_cache_manager", flat_cache_mgr)
 

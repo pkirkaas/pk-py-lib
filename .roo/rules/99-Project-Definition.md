@@ -14,6 +14,17 @@ The application/library should support multi-platform - Windows, Mac, Linux - bu
 - The criteria for added packages are they should be current, maintained, and widely used. If in doubt, ask. 
 
 
+## Development/PoC
+
+** THIS IS A POC PROJECT UNDER ACTIVE DEVELOPMENT!! **
+- The runtime application of this project uses multiple persistent configuration and cache files using SQLite and JSON, etc.
+- The structure, names, and schemas of these application files WILL CHANGE FREQUENTLY
+- When configuration or cache schemas or structures change, DO NOT EVER attempt to support backwards compatibility or migration of existing/previous user data. THIS ADDS UNNECESSARY COMPLEXITY AND POTENTIAL ERRORS!!!
+- When settings or cache structures/implementations change, just delete any previous config/cache files and create new, empty files.
+- Just ensure the configuration files and code that uses the configuration files uses versioning tags
+- On every application start, the first thing the application should do is check for existing configuration files, check the version in the configuration files with the versions in the code. If the versions in code are different from the saved versions, just delete the incompatible configuration file and create a new, default version.
+- DO NOT bother to support "rollback" of configurations/caches/etc
+
 ## Objective
 
 This is a Python project, with two primary components that will eventually be separated into two separate projects:

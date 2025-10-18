@@ -188,9 +188,10 @@ Implementation and cross-references
 └─────────────────────┴───────────────────────────┘
 ```
 
-### 1.2 Database Strategy
-- **Settings Database**: User preferences, profiles, history
-- **Cache Database**: Image metadata, thumbnails, similarity results
+### 1.2 Storage Strategy
+- **Settings Storage**: JSON files for user preferences, profiles, and configuration
+- **Sessions Database**: SQLite database for scan session history and results
+- **Cache Database**: SQLite database for image metadata, thumbnails, and similarity results
 - **File System**: Original images (read-only access)
 - **Memory Cache**: Active session data
 
@@ -201,7 +202,7 @@ Implementation and cross-references
 @dataclass
 class ImageData:
     """Core image data model."""
-    
+
     # File Information
     id: int                          # Unique identifier
     file_path: Path                  # Absolute path to image
@@ -211,22 +212,22 @@ class ImageData:
     file_hash: str                   # SHA-256 hash of file (hex)
     file_inode: Optional[int]        # OS inode (where available) to help detect renames/moves
     file_device: Optional[int]       # Device identifier for the filesystem (where available)
-    
+
     # Image Properties
     width: int                       # Image width in pixels
     height: int                      # Image height in pixels
     bit_depth: int                   # Bits per channel
-    
+
     # Metadata
     lens_model: Optional[str]        # Lens information
-    
+
     # Processing State
     thumbnail_256: Optional[bytes]   # Small thumbnail
     thumbnail_512: Optional[bytes]   # Medium thumbnail
     thumbnail_1024: Optional[bytes]  # Large thumbnail
     last_scanned: datetime           # Last analysis time
     scan_version: str                # Scanner version used
-    
+
     # Computed Properties
     aspect_ratio: float              # Width/height ratio
     megapixels: float               # Total megapixels
@@ -240,27 +241,27 @@ class ImageData:
 @dataclass
 class SimilarityResult:
     """Similarity comparison result."""
-    
+
     # Identification
     id: int                          # Result ID
     session_id: int                  # Scan session reference
     group_id: int                    # Similarity group ID
-    
+
     # Images
     image1_id: int                   # First image ID
     image2_id: int                   # Second image ID
     image1_data: ImageData          # First image data
     image2_data: ImageData          # Second image data
-    
+
     # Similarity Scores
     overall_score: float            # Combined similarity (0.0-1.0)
     algorithm_scores: Dict[str, float]  # Per-algorithm scores
-    
+
     # Analysis Details
     algorithms_used: List[str]      # Algorithm names
     comparison_time: float          # Processing time in seconds
     computed_at: datetime           # Computation timestamp
-    
+
     # Grouping
     is_reference: bool              # Is reference image in group
     group_position: int             # Position within group
@@ -271,23 +272,23 @@ class SimilarityResult:
 @dataclass
 class SimilarityGroup:
     """Group of similar images."""
-    
+
     # Identification
     id: int                         # Group ID
     session_id: int                 # Scan session reference
-    
+
     # Group Properties
     reference_image_id: int         # Primary/reference image
     member_count: int               # Number of images in group
     members: List[ImageData]        # Group member images
-    
+
     # Statistics
     avg_similarity: float           # Average similarity score
     min_similarity: float           # Minimum similarity score
     max_similarity: float           # Maximum similarity score
     total_size: int                 # Combined size of all images
     potential_savings: int          # Size if keeping only one
-    
+
     # Metadata
     created_at: datetime            # Group creation time
     modified_at: datetime           # Last modification
@@ -298,33 +299,33 @@ class SimilarityGroup:
 @dataclass
 class ScanSession:
     """Similarity scan session."""
-    
+
     # Identification
     id: int                         # Session ID
     profile_id: int                 # User profile reference
     name: str                       # Session name
-    
+
     # Configuration
     scan_type: str                  # 'single_set' or 'dual_set'
     source_paths: List[Path]        # Source paths (directories or files)
     reference_paths: Optional[List[Path]]  # Reference paths for dual (directories or files)
-    
+
     # Algorithm Configuration
     algorithms: List[str]           # Selected algorithms
     threshold: float                # Similarity threshold (0.0-1.0)
     algorithm_params: Dict[str, Any]  # Algorithm-specific params
-    
+
     # Processing
     total_images: int               # Total images to process
     processed_images: int           # Images processed so far
     groups_found: int               # Number of groups found
     status: str                     # 'pending', 'running', 'completed', 'error'
-    
+
     # Timing
     started_at: datetime            # Start timestamp
     completed_at: Optional[datetime]  # Completion timestamp
     duration: Optional[float]       # Total processing time
-    
+
     # Results
     results: List[SimilarityGroup]  # Found similarity groups
     error_message: Optional[str]    # Error if failed
@@ -340,39 +341,39 @@ class Profile:
     Each profile contains pool settings, path configurations, and algorithm
     preferences. UI and performance settings are stored globally in AppSettings.
     """
-    
+
     # Identification
     id: UUID                        # Profile ID (UUID primary key)
     name: str                       # Unique profile name (required)
     description: Optional[str]      # Profile description
     is_default: bool                # Default profile flag
     profile_version: str            # Profile format version
-    
+
     # Pool Configuration
     pool_mode: str                  # 'single' or 'dual'
     inverse_mode: bool              # Only for dual mode: show non-matches
-    
+
     # Path Configuration (per pool)
     pool1_paths: PathConfig         # Primary pool paths
     pool2_paths: Optional[PathConfig]  # Secondary pool (dual mode only)
-    
+
     # File Identity Detection
     hash_algo: str                  # 'sha256' (default)
     staged_hashing: bool            # Enable staged pre-filtering (default: true)
     partial_hash_size_kb: int      # Size for partial hash (default: 256)
-    
+
     # Algorithm Settings
     default_algorithms: List[str]   # Selected similarity algorithms
     default_threshold: float        # Similarity threshold (0.0-1.0)
     algorithm_presets: Dict[str, Dict]  # Algorithm-specific parameters
-    
+
     # Cache Settings
     cache_invalidation_keys: List[str]  # ['path', 'size', 'mtime_ns', 'inode']
-    
+
     # History
     recent_paths: List[Path]        # Recently used paths
     recent_sessions: List[int]      # Recent session IDs
-    
+
     # Timestamps
     created_at: datetime            # Profile creation
     updated_at: datetime            # Last modification
@@ -400,7 +401,7 @@ class AppSettings:
     There is only one active AppSettings row per installation (scripts and
     migration tasks should ensure one row exists; defaults are provided).
     """
-    
+
     # Identification
     id: int                         # Settings row ID (primary key) — single row expected
 
@@ -489,32 +490,32 @@ CREATE TABLE profiles (
     description TEXT,
     is_default BOOLEAN DEFAULT FALSE,
     profile_version TEXT DEFAULT '1.0.0',
-    
+
     -- Pool configuration
     pool_mode TEXT NOT NULL DEFAULT 'single',
     inverse_mode BOOLEAN DEFAULT FALSE,
-    
+
     -- File identity detection
     hash_algo TEXT DEFAULT 'sha256',
     staged_hashing BOOLEAN DEFAULT TRUE,
     partial_hash_size_kb INTEGER DEFAULT 256,
-    
+
     -- Algorithm defaults
     default_algorithms JSON,
     default_threshold REAL DEFAULT 0.85,
     algorithm_presets JSON,
-    
+
     -- Cache configuration
     cache_invalidation_keys JSON DEFAULT '["path", "size", "mtime_ns", "inode"]',
-    
+
     -- History
     recent_paths JSON,
     recent_sessions JSON,
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
+
     CHECK (pool_mode IN ('single', 'dual')),
     CHECK (hash_algo IN ('sha256', 'md5', 'blake3')),
     CHECK (default_threshold BETWEEN 0.0 AND 1.0),
@@ -531,7 +532,7 @@ CREATE TABLE profile_paths (
     include_globs JSON,             -- Include patterns
     exclude_globs JSON,             -- Exclude patterns
     follow_symlinks BOOLEAN DEFAULT FALSE,
-    
+
     FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
     UNIQUE(profile_id, pool_number),
     CHECK (pool_number IN (1, 2))
@@ -654,15 +655,15 @@ CREATE TABLE image_metadata (
     file_inode INTEGER,              -- Inode number (where available)
     file_device INTEGER,             -- Device ID (where available)
     hash_computed_at TIMESTAMP,
-    
+
     -- Image properties
     width INTEGER,
     height INTEGER,
     bit_depth INTEGER,
-    
+
     -- Metadata (streamlined)
     lens_model TEXT,
-    
+
     -- Cache management
     last_scanned TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     scan_version TEXT,
@@ -831,17 +832,17 @@ Request Data → Check Cache → Cache Hit? → Return Cached Data
 ```python
 class ImageValidator:
     """Validates image files before processing."""
-    
+
     MIN_SIZE = 1024           # Minimum 1KB
     MAX_SIZE = 500_000_000    # Maximum 500MB
     MIN_DIMENSION = 10        # Minimum 10x10 pixels
     MAX_DIMENSION = 50000     # Maximum 50000 pixels per side
-    
+
     SUPPORTED_FORMATS = {
-        '.jpg', '.jpeg', '.png', '.gif', '.bmp', 
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp',
         '.tiff', '.tif', '.webp', '.heic', '.heif'
     }
-    
+
     def validate(self, file_path: Path) -> ValidationResult:
         """Validate image file."""
         # Check file exists
@@ -856,16 +857,16 @@ class ImageValidator:
 ```python
 class DataIntegrityChecker:
     """Ensures data integrity across databases."""
-    
+
     def check_referential_integrity(self):
         """Verify all foreign key relationships."""
-        
+
     def check_cache_consistency(self):
         """Verify cache matches file system state."""
-        
+
     def check_hash_validity(self):
         """Verify stored hashes match current files."""
-        
+
     def repair_inconsistencies(self):
         """Attempt to repair found issues."""
 ```
@@ -876,37 +877,37 @@ class DataIntegrityChecker:
 ```python
 class SchemaManager:
     """Manages database schema versions and migrations."""
-    
+
     CURRENT_VERSION = "1.0.0"
-    
+
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self.backup_dir = db_path.parent / "backups"
         self.backup_dir.mkdir(exist_ok=True)
-    
+
     def check_database_integrity(self) -> bool:
         """Run PRAGMA checks on database.
-        
+
         1. Run PRAGMA quick_check
         2. If fails, run PRAGMA integrity_check
         3. Return True if healthy, False if corrupt
         """
-        
+
     def get_current_version(self) -> str:
         """Get current schema version from meta table."""
-        
+
     def needs_migration(self) -> bool:
         """Check if database needs migration."""
-        
+
     def backup_before_migration(self) -> Path:
         """Create timestamped backup before migration.
-        
+
         Format: {db_name}.{ISO_timestamp}.v{schema_version}
         """
-        
+
     def migrate(self, target_version: str):
         """Migrate database using Alembic."""
-        
+
     def cleanup_old_backups(self):
         """Remove backups older than retention policy."""
 ```
@@ -915,26 +916,26 @@ class SchemaManager:
 ```python
 class DataExporter:
     """Exports application data."""
-    
+
     def export_session(self, session_id: int, format: str) -> Path:
         """Export scan session results."""
         # Formats: CSV, JSON, XML, HTML
-        
+
     def export_profile(self, profile_id: int) -> Path:
         """Export user profile settings."""
-        
+
     def export_full_backup(self) -> Path:
         """Export complete application data."""
 
 class DataImporter:
     """Imports external data."""
-    
+
     def import_session(self, file_path: Path) -> int:
         """Import scan session from file."""
-        
+
     def import_profile(self, file_path: Path) -> int:
         """Import user profile settings."""
-        
+
     def import_legacy_data(self, file_path: Path):
         """Import data from older versions."""
 ```
@@ -945,24 +946,24 @@ class DataImporter:
 ```python
 class CachePolicy:
     """Cache management policies."""
-    
+
     # Size limits (application-scoped, expressed in megabytes)
     MAX_CACHE_SIZE_MB = 5120  # default 5120 MB (≈5 GB)
     MAX_THUMBNAIL_AGE_DAYS = 90
     MAX_RESULT_AGE_DAYS = 30
-    
+
     # Staged hashing configuration
     PARTIAL_HASH_SIZE_KB = 256     # Hash first/last 256KB
     MIN_FILE_SIZE_FOR_PARTIAL = 512 * 1024  # 512KB minimum
-    
+
     # Eviction strategies
     EVICTION_STRATEGY = "LRU"  # LRU, LFU, FIFO
     EVICTION_BATCH_SIZE = 100
-    
+
     # Cleanup triggers
     CLEANUP_ON_SIZE_PERCENT = 90  # Cleanup at 90% full
     CLEANUP_INTERVAL_HOURS = 24
-    
+
     # Database backup retention
     MAX_BACKUP_COUNT = 10          # Keep 10 most recent backups
     MAX_BACKUP_AGE_DAYS = 30       # Purge backups older than 30 days
@@ -972,19 +973,19 @@ class CachePolicy:
 ```python
 class CacheOperations:
     """Low-level cache operations."""
-    
+
     def get_cache_size(self) -> int:
         """Get current cache size in bytes."""
-        
+
     def clean_expired_entries(self):
         """Remove expired cache entries."""
-        
+
     def vacuum_database(self):
         """Optimize database file size."""
-        
+
     def rebuild_indexes(self):
         """Rebuild database indexes."""
-        
+
     def verify_cache_integrity(self):
         """Verify cache data integrity."""
 ```
@@ -995,17 +996,17 @@ class CacheOperations:
 ```sql
 -- Optimized query for finding similar images
 WITH ranked_results AS (
-    SELECT 
+    SELECT
         r.*,
         ROW_NUMBER() OVER (
-            PARTITION BY r.group_id 
+            PARTITION BY r.group_id
             ORDER BY r.overall_score DESC
         ) as rank
     FROM similarity_results r
-    WHERE r.session_id = ? 
+    WHERE r.session_id = ?
     AND r.overall_score >= ?
 )
-SELECT * FROM ranked_results 
+SELECT * FROM ranked_results
 WHERE rank <= 10
 ORDER BY group_id, rank;
 ```
@@ -1014,13 +1015,13 @@ ORDER BY group_id, rank;
 ```python
 class BatchOperations:
     """Optimized batch database operations."""
-    
+
     def batch_insert_metadata(self, images: List[ImageData]):
         """Insert multiple images efficiently."""
         # Use prepared statements
         # Batch in transactions
         # Disable autocommit
-        
+
     def batch_update_thumbnails(self, thumbnails: List[Tuple]):
         """Update thumbnails in batch."""
         # Use executemany()
@@ -1033,13 +1034,13 @@ class BatchOperations:
 ```python
 class SecurityManager:
     """Manages sensitive data security."""
-    
+
     def sanitize_paths(self, path: str) -> str:
         """Remove sensitive path information."""
-        
+
     def anonymize_metadata(self, exif: Dict) -> Dict:
         """Remove personal information from EXIF."""
-        
+
     def secure_delete(self, file_path: Path):
         """Securely delete file with overwrite."""
 ```
@@ -1048,13 +1049,13 @@ class SecurityManager:
 ```python
 class AccessControl:
     """Controls data access permissions."""
-    
+
     def check_read_permission(self, path: Path) -> bool:
         """Check if path is readable."""
-        
+
     def check_write_permission(self, path: Path) -> bool:
         """Check if path is writable."""
-        
+
     def validate_path_safety(self, path: Path) -> bool:
         """Ensure path doesn't escape sandbox."""
 ## 10. Settings Profiles v1 (Option A)

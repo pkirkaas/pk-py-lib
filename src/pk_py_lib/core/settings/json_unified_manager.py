@@ -63,9 +63,9 @@ class JSONSettingsManager:
 
     def _get_default_settings_dir(self) -> Path:
         """Get platform-specific default settings directory."""
-        # For now, use a directory relative to the project
-        # In a real application, this would use platform-specific app data directories
-        return Path.home() / ".pk-py-lib" / "settings"
+        # Use the unified data directory directly (same level as flat_cache.db)
+        from ...core.utils import get_data_dir
+        return get_data_dir()
 
     def load_all(self) -> Dict[str, Any]:
         """

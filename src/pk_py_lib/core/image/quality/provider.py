@@ -192,41 +192,37 @@ def set_active_evaluator(key: str) -> Optional[ImageQualityEvaluator]:
     # Step 1: Handle 'none' specially
     if key == "none":
         try:
-            # Update settings without instantiation
-            from pk_py_lib.core.settings.manager import SettingsManager, DatabaseManager
-            db = DatabaseManager()
-            mgr = SettingsManager(db)
-            active_profile = mgr.get_active_profile()
-            if active_profile is None:
-                # Ensure default profile exists
-                active_profile = mgr.ensure_default_profile()
+            # Update settings without instantiation using JSON settings
+            from pk_py_lib.api.settings.unified_api import UnifiedSettingsAPI
+            api = UnifiedSettingsAPI()
 
-            # Update json_data with 'none' (assumes JSON format; migrates if legacy)
-            if not active_profile.is_json_format():
-                # The new SettingsManager handles migration automatically in get_active_profile_settings
-                # No need to explicitly migrate here
-                pass
-
-            # Get the complete current profile data or create a minimal valid structure
-            if active_profile.json_data:
-                settings = active_profile.json_data.copy()
+            # Get active profile
+            active_resp = api.get_active()
+            if not active_resp.success or active_resp.data is None:
+                # Create default profile if none exists
+                list_resp = api.list_profiles()
+                if list_resp.success and list_resp.data and len(list_resp.data) > 0:
+                    active_profile = list_resp.data[0]
+                else:
+                    # Create a default profile
+                    create_resp = api.create_profile(
+                        name="Default",
+                        description="Default profile for image quality evaluation"
+                    )
+                    if not create_resp.success:
+                        raise ImageQualityProviderError("Failed to create default profile")
+                    active_profile = create_resp.data
             else:
-                # Create a minimal valid profile structure with required fields
-                from pathlib import Path
-                settings = {
-                    "id": active_profile.id,
-                    "name": active_profile.name,
-                    "created_at": active_profile.created_at,
-                    "updated_at": active_profile.updated_at,
-                    "pools": {"A": {"paths": [str(Path.home())]}},  # Minimal required structure with valid path
-                    "mode": "duplicates",
-                    "criteria": {"algorithm": "xxh3"},
-                    "scope": {"kind": "single_pool"},
-                    "output": {"mode": "report_only"}
-                }
+                active_profile = active_resp.data
 
-            settings["image_quality_evaluator"] = "none"
-            mgr.update_profile(active_profile.id, json_data=settings)
+            # Update the profile data with the new setting
+            updated_data = active_profile.data.copy() if active_profile.data else {}
+            updated_data["image_quality_evaluator"] = "none"
+
+            # Update the profile
+            update_resp = api.update_profile(active_profile.id, data=updated_data)
+            if not update_resp.success:
+                raise ImageQualityProviderError(f"Failed to update profile: {update_resp.error}")
 
             _logger.info(f"Disabled image quality evaluation ('none'); updated profile {active_profile.id}")
             return None
@@ -242,41 +238,37 @@ def set_active_evaluator(key: str) -> Optional[ImageQualityEvaluator]:
         raise ValueError(f"Invalid evaluator key '{key}'; must be registered") from e
 
     try:
-        # Step 3: Update settings (this handles profile creation if needed)
-        from pk_py_lib.core.settings.manager import SettingsManager, DatabaseManager
-        db = DatabaseManager()
-        mgr = SettingsManager(db)
-        active_profile = mgr.get_active_profile()
-        if active_profile is None:
-            # Ensure default profile exists
-            active_profile = mgr.ensure_default_profile()
+        # Step 3: Update settings using JSON settings API
+        from pk_py_lib.api.settings.unified_api import UnifiedSettingsAPI
+        api = UnifiedSettingsAPI()
 
-        # Update json_data with new key (assumes JSON format; migrates if legacy)
-        if not active_profile.is_json_format():
-            # The new SettingsManager handles migration automatically in get_active_profile_settings
-            # No need to explicitly migrate here
-            pass
-
-        # Get the complete current profile data or create a minimal valid structure
-        if active_profile.json_data:
-            settings = active_profile.json_data.copy()
+        # Get active profile
+        active_resp = api.get_active()
+        if not active_resp.success or active_resp.data is None:
+            # Create default profile if none exists
+            list_resp = api.list_profiles()
+            if list_resp.success and list_resp.data and len(list_resp.data) > 0:
+                active_profile = list_resp.data[0]
+            else:
+                # Create a default profile
+                create_resp = api.create_profile(
+                    name="Default",
+                    description="Default profile for image quality evaluation"
+                )
+                if not create_resp.success:
+                    raise ImageQualityProviderError("Failed to create default profile")
+                active_profile = create_resp.data
         else:
-            # Create a minimal valid profile structure with required fields
-            from pathlib import Path
-            settings = {
-                "id": active_profile.id,
-                "name": active_profile.name,
-                "created_at": active_profile.created_at,
-                "updated_at": active_profile.updated_at,
-                "pools": {"A": {"paths": [str(Path.home())]}},  # Minimal required structure with valid path
-                "mode": "duplicates",
-                "criteria": {"algorithm": "xxh3"},
-                "scope": {"kind": "single_pool"},
-                "output": {"mode": "report_only"}
-            }
+            active_profile = active_resp.data
 
-        settings["image_quality_evaluator"] = key
-        mgr.update_profile(active_profile.id, json_data=settings)
+        # Update the profile data with the new setting
+        updated_data = active_profile.data.copy() if active_profile.data else {}
+        updated_data["image_quality_evaluator"] = key
+
+        # Update the profile
+        update_resp = api.update_profile(active_profile.id, data=updated_data)
+        if not update_resp.success:
+            raise ImageQualityProviderError(f"Failed to update profile: {update_resp.error}")
 
         # Step 4: Instantiate and return
         evaluator = evaluator_class()

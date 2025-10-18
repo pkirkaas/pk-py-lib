@@ -23,7 +23,7 @@ This guide is aligned with the canonical decisions. Implementation must follow t
   - Use platformdirs with Vendor "Pk" and App "Img App"
   - Environment override PK_IMG_APP_HOME to relocate base of data and cache trees
   - Three-database architecture:
-    - settings.db in user_data_dir (user configuration & profiles)
+    - app-settings.json and search-profiles.json in user_data_dir (user configuration & profiles)
     - sessions.db in user_data_dir (scan sessions & results)
     - cache.db in user_cache_dir (transient cache data)
   - Directory structure:
@@ -31,12 +31,12 @@ This guide is aligned with the canonical decisions. Implementation must follow t
     - cache/thumbnails/ for file-backed thumbnail storage
 
 - Startup database validation and migration
-  - For each of settings.db, sessions.db, cache.db
+  - For JSON settings files and sessions.db, cache.db
     - If missing, create with initial schema and meta schema_version
     - Run PRAGMA quick_check
     - If quick_check fails, run PRAGMA integrity_check
     - If integrity_check fails
-      - settings.db prompt to preserve settings if exportable then rebuild
+      - JSON settings files recreated from defaults (fresh start approach)
       - sessions.db offer rebuild or attempt repair
       - cache.db safe to rebuild automatically
     - If schema version mismatch
@@ -2126,3 +2126,290 @@ To verify the migration has succeeded:
 - For settings.db: Run `sqlite3 settings.db "SELECT * FROM meta WHERE key='schema_version';"` and expect the same.
 - Programmatically: `pdm run python -c "from src.pk_py_lib.core.database import DatabaseManager; db = DatabaseManager(); print(db.get_version(db.cache_db)); print(db.get_version(db.settings_db))"` should output '1.3.0' for both.
 - For manual verification or reset: Delete the .db files (cache.db and/or settings.db) and restart the app; it will recreate them with version 1.3.0 and the image_hashes table in cache.db. No warning should appear on app start, and logs should show migration steps.
+
+## JSON Settings Implementation
+
+### Overview
+The application has been successfully migrated from SQLite-based settings storage to a JSON-based system. This section provides implementation guidance for working with the new JSON settings architecture.
+
+### Implementation Components
+
+#### 1. JSON Settings Manager
+```python
+# Core implementation location
+from src.pk_py_lib.core.settings.json_unified_manager import JSONSettingsManager
+
+# Initialize with platform-specific directory
+settings_manager = JSONSettingsManager()  # Uses ~/.pk-py-lib/settings/
+
+# Or specify custom directory
+from pathlib import Path
+custom_dir = Path("/custom/settings/path")
+settings_manager = JSONSettingsManager(custom_dir)
+```
+
+#### 2. Settings File Structure
+The system creates two JSON files:
+
+**app-settings.json**:
+```json
+{
+"version": 1,
+"cache_enabled": true,
+"cache_size_mb": 500,
+"max_workers": 4,
+"gui_theme": "auto",
+"log_level": "INFO",
+"recent_directories": [],
+"window_geometry": null,
+"last_updated": "2025-10-18T12:00:00Z"
+}
+```
+
+**search-profiles.json**:
+```json
+{
+"version": 1,
+"profiles": [
+ {
+   "id": 1,
+   "name": "Default Profile",
+   "description": "Default search profile",
+   "hash_algorithm": "phash",
+   "hash_size": 8,
+   "similarity_threshold": 0.95,
+   "clustering_method": "dbscan",
+   "created_at": "2025-10-18T12:00:00Z",
+   "updated_at": "2025-10-18T12:00:00Z"
+ }
+]
+}
+```
+
+#### 3. Schema Validation
+```python
+from src.pk_py_lib.core.settings.json_schemas import (
+ validate_app_settings,
+ validate_search_profiles,
+ create_default_app_settings,
+ create_default_search_profiles
+)
+
+# Validate existing settings
+try:
+ validate_app_settings(settings_data)
+ print("App settings are valid")
+except SettingsValidationError as e:
+ print(f"Validation error: {e}")
+
+# Create defaults
+defaults = create_default_app_settings()
+```
+
+#### 4. Error Handling Strategy
+```python
+# The JSON settings system uses a "fresh start" approach
+try:
+ settings = settings_manager.load_all()
+except Exception as e:
+ # Log the error
+ logger.error(f"Settings loading failed: {e}")
+
+ # Reset to defaults (fresh start)
+ settings_manager.reset_to_defaults()
+ settings = settings_manager.load_all()
+```
+
+### Integration with Application
+
+#### Step 1: Update Application Manager
+```python
+class ApplicationManager:
+ def __init__(self):
+     # Use JSON settings manager instead of SQLite
+     self.settings_manager = JSONSettingsManager()
+
+     # Other managers remain the same
+     self.database_manager = DatabaseManager()
+     self.cache_manager = FlatCacheManager()
+
+ def initialize(self):
+     """Initialize application with JSON settings."""
+     # Initialize settings first
+     self.settings_manager = JSONSettingsManager()
+
+     # Load settings
+     settings = self.settings_manager.load_all()
+     app_settings = settings["app_settings"]
+
+     # Initialize cache with settings
+     self.cache_manager = FlatCacheManager(
+         max_size_mb=app_settings.cache_size_mb
+     )
+
+     # Continue with other initialization
+```
+
+#### Step 2: Update Configuration Manager
+```python
+class ConfigurationManager:
+ """Manages application configuration using JSON settings."""
+
+ def __init__(self, settings_manager: JSONSettingsManager):
+     self.settings_manager = settings_manager
+
+ def get_app_settings(self) -> AppSettings:
+     """Get application settings from JSON."""
+     settings_data = self.settings_manager.app_settings.load()
+     return AppSettings.from_dict(settings_data)
+
+ def update_app_settings(self, updates: Dict[str, Any]) -> AppSettings:
+     """Update application settings."""
+     current = self.get_app_settings()
+     updated_data = {**current.to_dict(), **updates}
+
+     # Validate before saving
+     validate_app_settings(updated_data)
+
+     # Save and reload
+     self.settings_manager.app_settings.save(updated_data)
+     return self.get_app_settings()
+```
+
+#### Step 3: Update Profile Management
+```python
+class ProfileManager:
+ """Manages search profiles using JSON storage."""
+
+ def __init__(self, settings_manager: JSONSettingsManager):
+     self.settings_manager = settings_manager
+
+ def get_active_profile(self) -> SettingsProfile:
+     """Get currently active profile."""
+     profiles = self.settings_manager.profiles.get_all()
+     # Return the active profile (implementation depends on your logic)
+     return profiles[0]  # Simplified
+
+ def set_active_profile(self, profile_id: int) -> None:
+     """Set active profile."""
+     # Update active profile in settings
+     profiles_data = self.settings_manager.profiles.get_all()
+     # Find and activate profile by id
+     # Implementation details...
+```
+
+### Testing Implementation
+
+#### Unit Tests for JSON Settings
+```python
+# tests/test_json_settings.py
+import pytest
+from pathlib import Path
+from src.pk_py_lib.core.settings.json_schemas import (
+ validate_app_settings,
+ validate_search_profiles
+)
+
+class TestJSONSettings:
+ def test_app_settings_validation(self):
+     """Test app settings schema validation."""
+     settings = {
+         "version": 1,
+         "cache_enabled": True,
+         "cache_size_mb": 500,
+         "max_workers": 4,
+         "gui_theme": "dark",
+         "log_level": "INFO"
+     }
+
+     # Should not raise
+     validate_app_settings(settings)
+
+ def test_invalid_app_settings(self):
+     """Test invalid app settings are rejected."""
+     settings = {
+         "version": 1,
+         "cache_size_mb": -1  # Invalid negative value
+     }
+
+     with pytest.raises(SettingsValidationError):
+         validate_app_settings(settings)
+```
+
+#### Integration Tests
+```python
+class TestSettingsIntegration:
+ def test_settings_persistence(self, tmp_path):
+     """Test settings persist across application restarts."""
+     settings_dir = tmp_path / "settings"
+
+     # Create settings manager
+     manager1 = JSONSettingsManager(settings_dir)
+
+     # Save settings
+     app_settings = create_default_app_settings()
+     manager1.app_settings.save(app_settings)
+
+     # Create new manager (simulates restart)
+     manager2 = JSONSettingsManager(settings_dir)
+
+     # Load settings
+     loaded = manager2.app_settings.load()
+
+     # Verify they match
+     assert loaded["cache_size_mb"] == app_settings["cache_size_mb"]
+```
+
+### Migration Strategy
+
+Since the JSON settings system uses a "fresh start" approach, no complex data migration is needed:
+
+1. **Existing Applications**: Simply start using the new JSON settings manager
+2. **Old SQLite Files**: Can be safely deleted or left in place (they won't interfere)
+3. **User Data**: No migration needed - users start with clean, validated defaults
+
+### Benefits of JSON Settings
+
+1. **Simplified Architecture**: No database setup or migration scripts required
+2. **Human Readable**: Settings can be easily viewed and edited manually
+3. **Cross-Platform**: Works on any platform with JSON support
+4. **Schema Validation**: Runtime validation ensures data integrity
+5. **Version Management**: Clear versioning prevents compatibility issues
+
+### Troubleshooting
+
+#### Common Issues
+
+**Issue**: Settings files are corrupted
+```python
+# Solution: Fresh start approach
+try:
+ settings = manager.load_all()
+except Exception as e:
+ logger.error(f"Settings corrupted: {e}")
+ manager.reset_to_defaults()  # Recreates with defaults
+ settings = manager.load_all()
+```
+
+**Issue**: Schema version mismatch
+```python
+# Solution: Automatic reset
+if not check_schema_version(settings_data, expected_version):
+ logger.warning("Schema version mismatch, resetting to defaults")
+ manager.reset_to_defaults()
+```
+
+**Issue**: Missing settings directory
+```python
+# Solution: Automatic creation
+manager = JSONSettingsManager()  # Creates directory if needed
+```
+
+### Performance Considerations
+
+- JSON files are loaded into memory on startup
+- Changes are written immediately to disk
+- No database locking or transaction overhead
+- Suitable for settings that don't change frequently
+
+For high-frequency settings or large datasets, consider SQLite for those specific use cases while keeping the main settings in JSON format.

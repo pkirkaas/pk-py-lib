@@ -55,7 +55,7 @@ class SettingsProfilesAPI:
         Parameters
         ----------
         db_manager : Optional[DatabaseManager]
-            Database manager instance. If None, creates and initializes a default one.
+            Database manager instance. DEPRECATED - parameter is ignored, JSON settings are used instead.
         """
         warnings.warn(
             "SettingsProfilesAPI is deprecated. Use src.pk_py_lib.api.settings.UnifiedSettingsAPI instead.",
@@ -63,12 +63,9 @@ class SettingsProfilesAPI:
             stacklevel=2
         )
 
-        if db_manager is None:
-            from ..core.database import DatabaseManager
-            db_manager = DatabaseManager()
-            db_manager.initialize()
-        self.db = db_manager
-        self.unified_api = UnifiedSettingsAPI(db_manager)
+        # Note: db_manager parameter is deprecated and ignored
+        # Use JSON settings instead of SQLite to avoid creating settings.db
+        self.unified_api = UnifiedSettingsAPI()
 
     def ensure_default_profile(self) -> ApiResponse[Dict[str, Any]]:
         """Ensure at least one profile exists and exactly one is active; create 'Default' if needed."""

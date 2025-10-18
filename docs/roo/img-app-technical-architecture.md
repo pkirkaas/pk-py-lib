@@ -157,7 +157,7 @@ class DataLocations:
             self.data_dir = Path(user_data_dir("Img App", "Pk"))
             self.cache_dir = Path(user_cache_dir("Img App", "Pk"))
 
-        self.settings_db = self.data_dir / "settings.db"
+        self.app_settings_file = self.data_dir / "app-settings.json"
         self.sessions_db = self.data_dir / "sessions.db"
         self.cache_db = self.cache_dir / "cache.db"
         self.flat_cache_db = self.data_dir / "flat_cache.db" # Persistent cache location
@@ -191,7 +191,8 @@ The base directory is determined by `platformdirs.user_data_dir("pk_py_lib", "Pk
 
 | Path | Purpose | Persistence |
 | :--- | :--- | :--- |
-| `settings.db` | Primary database for application settings, profiles, and global configuration. | Persistent |
+| `app-settings.json` | Primary JSON file for application settings and global configuration. | Persistent |
+| `search-profiles.json` | JSON file for user-defined search profiles and configurations. | Persistent |
 | `sessions.db` | Database storing scan session history, results, and operation history. | Persistent |
 | `cache.db` | Transient database for image metadata, similarity hashes, and thumbnail references. Subject to size limits and eviction. | Transient |
 | `flat_cache.db` | Persistent cache for computed, file-stat validated metadata (e.g., perceptual hashes, quality scores). | Persistent |
@@ -1368,3 +1369,59 @@ Note: Any earlier references to `src/pk_py_lib/gui/settings_manager/dialog.py` a
   - See [SettingsProfilesManager.get_active_profile()](src/pk_py_lib/core/settings_profiles.py:273)
 - Data payload:
   - Free-form JSON in `settings_profiles.data` for MVP; contains well-known fields (paths, hashing options, thresholds, etc.)
+
+## 12. JSON Settings Architecture
+
+### Overview
+The application has migrated from SQLite-based settings storage to a JSON-based system for improved simplicity, maintainability, and cross-platform compatibility.
+
+### JSON File Structure
+- **app-settings.json**: Application-wide settings (theme, cache size, threading, UI preferences)
+- **search-profiles.json**: User-defined search profiles for duplicate and similarity detection
+
+### Key Components
+- **JSON Settings Manager**: [`src/pk_py_lib/core/settings/json_unified_manager.py`](../src/pk_py_lib/core/settings/json_unified_manager.py:1)
+ - Unified interface compatible with legacy SQLite manager
+ - Manages both app settings and search profiles
+ - Platform-specific settings directory handling
+- **Schema Validation**: [`src/pk_py_lib/core/settings/json_schemas.py`](../src/pk_py_lib/core/settings/json_schemas.py:1)
+ - Embedded JSON schemas for both settings files
+ - Version management and compatibility checking
+ - Runtime validation using jsonschema library
+
+### Architecture Benefits
+- **Simplified Storage**: Human-readable JSON files instead of SQLite complexity
+- **Cross-Platform**: No database dependencies, works on any platform with JSON support
+- **Version Management**: Schema versioning prevents compatibility issues
+- **Fresh Start Approach**: No complex migration logic - corrupted files are recreated from defaults
+- **Schema Validation**: Runtime validation ensures data integrity
+
+### Settings Directory Structure
+```
+~/.pk-py-lib/settings/          # Platform-specific user data directory
+├── app-settings.json          # Application settings (v1)
+└── search-profiles.json       # Search profiles (v1)
+```
+
+### Schema Versions
+- **App Settings Schema**: Version 1.0 - Basic application configuration
+- **Search Profiles Schema**: Version 1.0 - Profile definitions with pools and criteria
+
+### Error Handling Strategy
+- **Fresh Start Approach**: Corrupted or incompatible settings files are deleted and recreated with defaults
+- **No Migration Logic**: When schema versions change, old settings are discarded
+- **Detailed Logging**: All settings operations are logged for debugging
+- **Graceful Degradation**: Application continues to function with default settings if files are missing
+
+### Backward Compatibility
+- **Legacy API**: Deprecated SQLite-compatible interface maintained for compatibility
+- **Unified API**: New JSON-based interface for modern usage
+- **Migration Framework**: Documents the migration path from SQLite to JSON
+
+### Integration with Application Core
+The JSON settings manager integrates with the application core through:
+- **Configuration Manager**: Loads and validates JSON settings on startup
+- **Profile Manager**: Manages search profiles through JSON file operations
+- **Application Manager**: Coordinates settings initialization and validation
+
+Reference: [JSON Settings Architecture](#json-settings-architecture) in [architecture-plan.md](architecture-plan.md)

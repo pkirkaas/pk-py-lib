@@ -212,16 +212,17 @@ The KDC Image Organizer (img-app) is a desktop GUI application for organizing ve
 
 On application start:
 
-1) Ensure databases exist
-- settings.db and sessions.db located in platformdirs user_data_dir
+1) Ensure settings files exist
+- app-settings.json and search-profiles.json located in platformdirs user_data_dir
 - cache.db located in platformdirs user_cache_dir
 - PK_IMG_APP_HOME environment variable may override base directories
 
 2) Validate integrity per database
-- Run PRAGMA quick_check
+- For JSON settings files: validate schema and version compatibility
+- For sessions.db: Run PRAGMA quick_check
 - If it fails, run PRAGMA integrity_check
 - If integrity_check fails:
-  - settings.db: offer to export/preserve settings if possible, then rebuild
+  - JSON settings files: recreate from defaults (fresh start approach)
   - sessions.db: offer repair or rebuild
   - cache.db: safe to rebuild automatically
 
@@ -235,7 +236,7 @@ On application start:
 
 - Platform directories via platformdirs with Vendor "Pk", App "Img App"
 - Override with PK_IMG_APP_HOME; structure:
-  - data/: settings.db, sessions.db, backups/
+  - data/: app-settings.json, search-profiles.json, sessions.db, backups/
   - cache/: cache.db, thumbnails/ (file-backed thumbnails in size subfolders)
 - Per-OS examples (derived via platformdirs):
   - Windows: %LOCALAPPDATA%\Pk\Img App
@@ -310,11 +311,13 @@ Implementation references:
 - Import/export profiles (JSON); templates/presets supported
 - Reference: [canonical-decisions.md](docs/roo/canonical-decisions.md:128), [img-app-ui-design.md](docs/roo/img-app-ui-design.md:183)
 
-## 9. Database technology and schema versioning
+## 9. Settings storage technology and schema versioning
 
-- Technology: SQLite (settings.db, sessions.db, cache.db)
-- Meta schema_version table in each DB
-- Alembic-based migrations with pre-migration backups and retention policy (10 most recent and 30-day purge)
+- Settings Storage: JSON files (app-settings.json, search-profiles.json) with embedded schema validation
+- Sessions Database: SQLite (sessions.db) for scan sessions and results
+- Cache Database: SQLite (cache.db) for image metadata and thumbnails
+- Schema versioning: JSON files use version field with schema validation; SQLite DBs use meta schema_version table
+- Migration strategy: Fresh start approach for JSON settings (corrupted files recreated from defaults); Alembic-based migrations for SQLite DBs with pre-migration backups and retention policy (10 most recent and 30-day purge)
 - Reference: [img-app-data-model.md](docs/roo/img-app-data-model.md:287), [img-app-technical-architecture.md](docs/roo/img-app-technical-architecture.md:442)
 
 ## 10. Error handling and recovery highlights
@@ -326,8 +329,52 @@ Implementation references:
 
 ## 11. Dependencies
 
-- Python 3.13+, PySide6, Pillow, NumPy, OpenCV, scikit-image, imagehash, SQLite3, platformdirs, Alembic
+- Python 3.13+, PySide6, Pillow, NumPy, OpenCV, scikit-image, imagehash, SQLite3, platformdirs, Alembic, jsonschema
 - Reference: [img-app-specification.md](docs/roo/img-app-specification.md:561)
+
+## 14. JSON Settings Architecture
+
+### Overview
+The application has migrated from SQLite-based settings storage to a JSON-based system for improved simplicity, maintainability, and cross-platform compatibility.
+
+### JSON File Structure
+- **app-settings.json**: Application-wide settings (theme, cache size, threading, UI preferences)
+- **search-profiles.json**: User-defined search profiles for duplicate and similarity detection
+
+### Key Components
+- **JSON Settings Manager**: Unified interface compatible with legacy SQLite manager
+- **Schema Validation**: Embedded JSON schemas with version management and compatibility checking
+- **Fresh Start Approach**: Corrupted or incompatible settings files are deleted and recreated with defaults
+
+### Settings Directory Structure
+```
+~/.pk-py-lib/settings/          # Platform-specific user data directory
+├── app-settings.json          # Application settings (v1)
+└── search-profiles.json       # Search profiles (v1)
+```
+
+### Schema Versions
+- **App Settings Schema**: Version 1.0 - Basic application configuration
+- **Search Profiles Schema**: Version 1.0 - Profile definitions with pools and criteria
+
+### Error Handling Strategy
+- **Fresh Start Approach**: Corrupted or incompatible settings files are deleted and recreated with defaults
+- **No Migration Logic**: When schema versions change, old settings are discarded
+- **Detailed Logging**: All settings operations are logged for debugging
+- **Graceful Degradation**: Application continues to function with default settings if files are missing
+
+### Backward Compatibility
+- **Legacy API**: Deprecated SQLite-compatible interface maintained for compatibility
+- **Unified API**: New JSON-based interface for modern usage
+- **Migration Framework**: Documents the migration path from SQLite to JSON
+
+### Benefits
+- **Simplified Storage**: Human-readable JSON files instead of SQLite complexity
+- **Cross-Platform**: No database dependencies, works on any platform with JSON support
+- **Version Management**: Schema versioning prevents compatibility issues
+- **Maintainability**: Simple file operations instead of database management
+
+Reference: [JSON Settings Architecture](#json-settings-architecture) in [architecture-plan.md](architecture-plan.md)
 
 ## 12. Acceptance and testing
 

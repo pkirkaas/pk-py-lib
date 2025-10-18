@@ -13,8 +13,8 @@ from pk_py_lib.core.utils import get_data_dir # Import unified data directory fu
 import sys # For invocation command
 
 # Imports for development mode line ending configuration
-from ...database import DatabaseManager
-from ...configuration import ConfigurationManager
+# Note: Using JSON settings instead of SQLite to avoid creating settings.db
+from ...settings.json_unified_manager import JSONSettingsManager
 
 
 class FileOutput(LogOutput):
@@ -70,11 +70,12 @@ class FileOutput(LogOutput):
                 # This ensures consistent line endings for cross-platform analysis (git diffs, Linux tools)
                 # even on Windows, without affecting other modes or platforms unnecessarily.
                 # On non-Windows platforms, open() defaults to \n, so this primarily impacts Windows.
-                db_mgr = DatabaseManager()
-                config = ConfigurationManager(db_mgr)
-                self._is_dev_mode = config.get_app_setting("development") or False
+                # Use JSON settings manager instead of SQLite to avoid creating settings.db
+                json_settings_mgr = JSONSettingsManager()
+                app_settings = json_settings_mgr.app_settings.load()
+                self._is_dev_mode = getattr(app_settings, 'development', False)
             except Exception:
-                # If database/settings are not available, default to False (normal mode)
+                # If JSON settings are not available, default to False (normal mode)
                 self._is_dev_mode = False
             finally:
                 self._dev_mode_checked = True

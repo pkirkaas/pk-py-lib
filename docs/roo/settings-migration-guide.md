@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide documents migration steps for settings profiles between legacy formats and the new structured JSON format (Option A). The goal is to preserve user data while transitioning to the more flexible, schema-validated structured profiles.
+This guide documents the completed migration from SQLite-based settings storage to JSON-based settings storage. The migration eliminates database complexity in favor of simple, human-readable JSON files with schema validation and versioning.
 
 ## Migration Strategy
 
@@ -19,6 +19,71 @@ This guide documents migration steps for settings profiles between legacy format
 4. **Fallbacks**:
    - Missing required fields: Use defaults from `create_default_profile()`
    - Type mismatches: Coerce to expected types (str → list for paths, etc.)
+
+## JSON Settings Migration ✅
+
+**Status**: ✅ Complete - SQLite to JSON Migration
+
+**Overview**: The project has successfully migrated from SQLite-based settings storage to a JSON-based system. This migration eliminates database complexity while maintaining all functionality through simple, human-readable JSON files.
+
+### Migration Details
+
+**What Changed**:
+- **Old System**: SQLite database (`settings.db`) with complex schema and migration logic
+- **New System**: Two JSON files (`app-settings.json` and `search-profiles.json`) with embedded schema validation
+
+**Files Migrated**:
+- `app-settings.json` - Application-wide settings (theme, cache, threading, etc.)
+- `search-profiles.json` - User-defined search profiles with pools and criteria
+
+**Key Components**:
+- [`JSONSettingsManager`](../src/pk_py_lib/core/settings/json_unified_manager.py:1) - Unified manager compatible with legacy interface
+- [`JSONAppSettingsManager`](../src/pk_py_lib/core/settings/json_app_settings.py:1) - Application settings management
+- [`JSONProfilesManager`](../src/pk_py_lib/core/settings/json_profiles.py:1) - Search profiles management
+- [`JSONSchemas`](../src/pk_py_lib/core/settings/json_schemas.py:1) - Embedded schema validation and defaults
+
+### Migration Strategy
+
+**Fresh Start Approach**: Instead of complex data migration, the new system uses a "fresh start" approach where:
+- Existing SQLite settings are not migrated
+- New JSON files are created with sensible defaults
+- Users start with clean, validated settings
+- No risk of data corruption or compatibility issues
+
+**Schema Versioning**: Both JSON files include version fields for compatibility:
+- App Settings Schema Version: 1.0
+- Search Profiles Schema Version: 1.0
+
+### Benefits Achieved
+
+- **Simplified Architecture**: No database setup, migrations, or integrity checks required
+- **Cross-Platform**: Works on any platform with JSON support
+- **Human Readable**: Settings can be easily viewed and edited manually
+- **Schema Validation**: Runtime validation ensures data integrity
+- **Version Management**: Clear versioning prevents compatibility issues
+
+### Error Handling
+
+The new system uses a robust error handling strategy:
+- **Corrupted Files**: Automatically deleted and recreated from defaults
+- **Schema Mismatch**: Files are reset to defaults when versions don't match
+- **Missing Files**: Default configurations are created automatically
+- **Validation Errors**: Detailed logging with graceful fallback to defaults
+
+### Backward Compatibility
+
+- **Legacy API**: [`SettingsProfilesAPI`](../src/pk_py_lib/api/settings_profiles.py:1) maintains SQLite-compatible interface
+- **Unified API**: [`UnifiedSettingsAPI`](../src/pk_py_lib/api/settings/unified_api.py:1) provides new JSON-based interface
+- **Migration Framework**: Documents the transition path for future reference
+
+### Testing and Verification
+
+The migration has been thoroughly tested:
+- ✅ All existing functionality preserved
+- ✅ Settings persist across application restarts
+- ✅ Schema validation prevents corruption
+- ✅ Default values applied correctly
+- ✅ Error recovery works as expected
 
 ## Recent Fixes
 

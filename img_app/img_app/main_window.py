@@ -241,14 +241,12 @@ class ScanWorker(QThread):
     error = Signal(str)
     finished = Signal(str, dict)
 
-    def __init__(self, db_manager, flat_cache_manager, profile_json: dict, algorithm: str = "xxh3", mode: str = 'duplicate', compute_hashes: bool = False, search_type: Optional[str] = None, profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
+    def __init__(self, flat_cache_manager, profile_json: dict, algorithm: str = "xxh3", mode: str = 'duplicate', compute_hashes: bool = False, search_type: Optional[str] = None, profile_name: Optional[str] = None, profile_id: Optional[str] = None, parent=None):
         """
         Initialize worker.
 
         Parameters
         ----------
-        db_manager : DatabaseManager
-            Database manager providing settings.db connection helper.
         flat_cache_manager : Optional[FlatCacheManager]
             Flat cache manager for file stat validation and hash caching.
         profile_json : dict
@@ -266,7 +264,6 @@ class ScanWorker(QThread):
             Optional Qt parent object.
         """
         super().__init__(parent)
-        self.db_manager = db_manager
         self.flat_cache_manager = flat_cache_manager
         self.profile = profile_json or {}
         self.algorithm = (algorithm or "xxh3").lower().strip()
@@ -949,7 +946,7 @@ class MainWindow(QMainWindow):
 
         try:
             from src.pk_py_lib.gui.dialogs.view_cache_dialog import ViewCacheDialog
-            from src.pk_py_lib.core.configuration import ConfigurationManager
+            from src.pk_py_lib.core.settings.json_manager import JSONSettingsManager
             import time
             start_exec = time.time()
             self.logger.info(f"ViewCacheDialog exec() start at {start_exec}")
@@ -959,9 +956,10 @@ class MainWindow(QMainWindow):
             self.logger.info(f"ViewCacheDialog exec() end at {end_exec}, duration: {end_exec - start_exec:.2f}s, result: {result}")
 
             # Development mode check: Use the same logic as logging file location
-            # (project root logs indicate development; user dir indicates production)
-            config = ConfigurationManager(self.database_manager)
-            use_user_dir = config.get_app_setting("logging_to_user_dir")
+            # Use JSON settings manager directly instead of deprecated ConfigurationManager
+            from src.pk_py_lib.core.settings.json_manager import JSONSettingsManager
+            json_settings = JSONSettingsManager()
+            use_user_dir = json_settings.get_app_setting("logging_to_user_dir", False)
             is_development_mode = not use_user_dir
 
             if is_development_mode:
@@ -1032,7 +1030,7 @@ class MainWindow(QMainWindow):
         if resp.success:
             self.status_label.setText(f"Profile '{updated_payload.get('name', 'Unnamed')}' saved successfully.")
             # Update internal active profile state
-            self.active_profile = resp.data
+            self.active_profile = asdict(resp.data) if hasattr(resp.data, 'to_dict') else resp.data
             # Clear dirty state in editor and update UI buttons
             self.structured_editor.set_dirty(False)
             # Reload profiles to update the name/active status in the combobox
@@ -1591,7 +1589,7 @@ class MainWindow(QMainWindow):
                             break
 
                     if active_profile:
-                        self.active_profile = active_profile
+                        self.active_profile = asdict(active_profile)
                         index = self.profile_combo.findData(active_profile.id)
                         if index >= 0:
                             self.profile_combo.setCurrentIndex(index)

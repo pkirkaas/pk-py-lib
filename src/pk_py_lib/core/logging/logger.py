@@ -201,8 +201,9 @@ class PKLogger:
         # Extract known fields
         if 'exception' in kwargs:
             known_fields['exception'] = kwargs.pop('exception')
+
+        # Handle context specially - always merge with current context
         if 'context' in kwargs:
-            # Merge with current context if provided
             extra_context = kwargs.pop('context', {})
             if isinstance(extra_context, dict):
                 current_ctx = self._get_current_context()
@@ -210,6 +211,10 @@ class PKLogger:
                 known_fields['context'] = current_ctx
             else:
                 known_fields['context'] = self._get_current_context()
+        else:
+            # No context provided by user, use current context
+            known_fields['context'] = self._get_current_context()
+
         if 'line_number' in kwargs:
             known_fields['line_number'] = kwargs.pop('line_number')
         if 'source' in kwargs:
@@ -223,11 +228,10 @@ class PKLogger:
         # Ensure variables is not None
         known_fields['variables'] = variables if variables else None
 
-        # Create log entry
+        # Create log entry - context is already in known_fields, don't pass it twice
         entry = LogEntry(
             level=level,
             message=message,
-            context=self._get_current_context(),
             **known_fields
         )
 
