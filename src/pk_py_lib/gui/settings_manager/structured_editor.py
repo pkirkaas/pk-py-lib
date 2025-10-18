@@ -578,6 +578,18 @@ class StructuredProfileEditorWidget(QWidget):
 
     def _update_current_profile_from_ui(self) -> None:
         """Update current_profile dict from UI values."""
+        logger.info(
+            "=== UI TO PROFILE UPDATE DEBUG ===",
+            file_path=__file__,
+            line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+            func_name="_update_current_profile_from_ui",
+            parameters={
+                "inp_name_text": self.inp_name.text() if hasattr(self, 'inp_name') else "no inp_name",
+                "inp_name_stripped": self.inp_name.text().strip() if hasattr(self, 'inp_name') else "no inp_name",
+                "inp_description_text": self.inp_description.text() if hasattr(self, 'inp_description') else "no inp_description"
+            }
+        )
+
         profile = {
             "name": self.inp_name.text().strip(),
             "description": self.inp_description.text().strip(),
@@ -697,20 +709,84 @@ class StructuredProfileEditorWidget(QWidget):
     def _validate_profile(self) -> None:
         """Validate the current profile and update validation status."""
         try:
+            logger.info(
+                "=== PROFILE VALIDATION DEBUG ===",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                func_name="_validate_profile",
+                parameters={
+                    "current_profile_exists": bool(self._current_profile),
+                    "inp_name_text": self.inp_name.text() if hasattr(self, 'inp_name') else "no inp_name",
+                    "current_profile_keys": list(self._current_profile.keys()) if self._current_profile else []
+                }
+            )
+
             if not self._current_profile:
-                self.lbl_validation.setText("Profile incomplete")
+                validation_error = "Profile incomplete"
+                self.lbl_validation.setText(validation_error)
+                # Don't log as error during initialization - this is expected behavior
+                logger.debug(
+                    f"Profile validation failed (empty profile): {validation_error}",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                    func_name="_validate_profile",
+                    parameters={"current_profile_exists": bool(self._current_profile)},
+                    stack_trace="".join(traceback.format_stack())
+                )
                 return
 
             # Check required user-editable fields before schema validation
             name = self._current_profile.get("name", "").strip()
+
+            logger.info(
+                "Name validation check",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                func_name="_validate_profile",
+                parameters={
+                    "profile_name_raw": repr(self._current_profile.get("name")),
+                    "profile_name_stripped": repr(name),
+                    "name_is_empty": not name,
+                    "profile_name_type": type(self._current_profile.get("name")).__name__
+                }
+            )
+
             if not name:
-                self.lbl_validation.setText("Profile incomplete: name is required")
+                validation_error = "Profile incomplete: name is required"
+                self.lbl_validation.setText(validation_error)
+                # Don't log as error during initialization - this is expected behavior
+                logger.debug(
+                    f"Profile validation failed (missing name): {validation_error}",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                    func_name="_validate_profile",
+                    parameters={
+                        "profile_name": name,
+                        "current_profile_keys": list(self._current_profile.keys()) if self._current_profile else [],
+                        "current_profile": self._current_profile
+                    },
+                    stack_trace="".join(traceback.format_stack())
+                )
                 return
 
             pool_a = self._current_profile.get("pools", {}).get("A", {})
             pool_a_paths = pool_a.get("paths", [])
             if not pool_a_paths:
-                self.lbl_validation.setText("Profile incomplete: Pool A must have at least one path")
+                validation_error = "Profile incomplete: Pool A must have at least one path"
+                self.lbl_validation.setText(validation_error)
+                # Don't log as error during initialization - this is expected behavior
+                logger.debug(
+                    f"Profile validation failed (missing Pool A paths): {validation_error}",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                    func_name="_validate_profile",
+                    parameters={
+                        "pool_a_exists": bool(pool_a),
+                        "pool_a_paths_count": len(pool_a_paths),
+                        "pool_a_paths": pool_a_paths
+                    },
+                    stack_trace="".join(traceback.format_stack())
+                )
                 return
 
             # For two-pool scope, check Pool B paths
@@ -718,11 +794,35 @@ class StructuredProfileEditorWidget(QWidget):
             if scope.get("kind") == "two_pool":
                 pool_b = self._current_profile.get("pools", {}).get("B", {})
                 if pool_b is None:
-                    self.lbl_validation.setText("Profile incomplete: Pool B configuration is required for two-pool scope")
+                    validation_error = "Profile incomplete: Pool B configuration is required for two-pool scope"
+                    self.lbl_validation.setText(validation_error)
+                    logger.error(
+                        f"Profile validation failed: {validation_error}",
+                        file_path=__file__,
+                        line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                        func_name="_validate_profile",
+                        parameters={
+                            "scope_kind": scope.get("kind"),
+                            "pool_b_exists": bool(pool_b)
+                        },
+                        stack_trace="".join(traceback.format_stack())
+                    )
                     return
                 pool_b_paths = pool_b.get("paths", [])
                 if not pool_b_paths:
-                    self.lbl_validation.setText("Profile incomplete: Pool B must have at least one path for two-pool scope")
+                    validation_error = "Profile incomplete: Pool B must have at least one path for two-pool scope"
+                    self.lbl_validation.setText(validation_error)
+                    logger.error(
+                        f"Profile validation failed: {validation_error}",
+                        file_path=__file__,
+                        line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                        func_name="_validate_profile",
+                        parameters={
+                            "pool_b_paths_count": len(pool_b_paths),
+                            "pool_b_paths": pool_b_paths
+                        },
+                        stack_trace="".join(traceback.format_stack())
+                    )
                     return
 
             # Get complete profile with generated fields for validation
@@ -733,10 +833,27 @@ class StructuredProfileEditorWidget(QWidget):
             if is_valid:
                 self.lbl_validation.setText("✓ Valid configuration")
                 self.lbl_validation.setStyleSheet("color: #090; font-weight: bold;")
+                logger.debug(
+                    "Profile validation passed",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                    func_name="_validate_profile",
+                    parameters={"profile_name": name}
+                )
             else:
                 error_msg = errors[0] if errors else "Invalid configuration"
                 self.lbl_validation.setText(f"✗ {error_msg}")
                 self.lbl_validation.setStyleSheet("color: #c00; font-weight: bold;")
+                logger.warning(
+                    f"Profile validation failed: {error_msg}",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                    func_name="_validate_profile",
+                    parameters={
+                        "profile_name": name,
+                        "validation_errors": errors
+                    }
+                )
         except Exception as e:
             logger.error(
                 f"Error validating profile: {type(e).__name__}: {e}",
@@ -985,14 +1102,84 @@ class StructuredProfileEditorWidget(QWidget):
     def load_profile(self, profile: Dict[str, Any]) -> None:
         """Load a profile into the editor."""
         try:
+            logger.info(
+                "=== PROFILE LOADING DEBUG ===",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                func_name="load_profile",
+                parameters={
+                    "input_profile_type": type(profile).__name__,
+                    "input_profile_keys": list(profile.keys()) if isinstance(profile, dict) else "not dict",
+                    "input_profile_name": profile.get("name") if isinstance(profile, dict) else "no name"
+                }
+            )
+
             # Type guard: If SettingsProfile, convert to json_data or {} if is_json_format(), else {}
             if hasattr(profile, 'to_dict'):
                 profile = profile.to_dict()
+                logger.debug("Converted SettingsProfile to dict", file_path=__file__, line_number=inspect.currentframe().f_lineno, func_name="load_profile")
             elif isinstance(profile, SettingsProfile):
                 # SettingsProfile always converts to dict via to_dict() method
                 profile = profile.to_dict()
+                logger.debug("Converted SettingsProfile to dict", file_path=__file__, line_number=inspect.currentframe().f_lineno, func_name="load_profile")
             elif isinstance(profile, dict) and profile.get('format') == 'json' and 'json_data' in profile:
                 profile = profile.get('json_data', {})
+                logger.debug("Extracted json_data from wrapped profile", file_path=__file__, line_number=inspect.currentframe().f_lineno, func_name="load_profile")
+
+            logger.info(
+                "Profile after type conversion",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                func_name="load_profile",
+                parameters={
+                    "profile_type": type(profile).__name__,
+                    "profile_keys": list(profile.keys()) if isinstance(profile, dict) else "not dict",
+                    "profile_name": profile.get("name") if isinstance(profile, dict) else "no name",
+                    "profile_name_type": type(profile.get("name")).__name__ if isinstance(profile, dict) else "no name field"
+                }
+            )
+
+            # FIX: Handle cases where profile data structure is not what's expected
+            # If profile data doesn't have a proper name field, extract it from nested structure
+            if isinstance(profile, dict) and not profile.get("name"):
+                logger.warning(
+                    "Profile missing name field, attempting to extract from nested structure",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                    func_name="load_profile",
+                    parameters={
+                        "profile_keys": list(profile.keys()),
+                        "checking_nested_data": "data" in profile,
+                        "checking_nested_json_data": "json_data" in profile
+                    }
+                )
+
+                # Try to extract from nested 'data' field (API response wrapper)
+                if "data" in profile and isinstance(profile["data"], dict):
+                    nested_data = profile["data"]
+                    if nested_data.get("name"):
+                        logger.info(
+                            "Found name in nested 'data' field",
+                            file_path=__file__,
+                            line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                            func_name="load_profile",
+                            parameters={
+                                "nested_name": nested_data.get("name"),
+                                "nested_name_type": type(nested_data.get("name")).__name__
+                            }
+                        )
+                        # Update the profile with the nested data
+                        profile = nested_data.copy()
+                    else:
+                        logger.warning(
+                            "Nested 'data' field exists but no name found",
+                            file_path=__file__,
+                            line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                            func_name="load_profile",
+                            parameters={
+                                "nested_data_keys": list(nested_data.keys()) if nested_data else "empty"
+                            }
+                        )
 
             # Normalize legacy direction tokens so original/current match UI and avoid false dirty state
             loaded = profile.copy()
@@ -1021,8 +1208,72 @@ class StructuredProfileEditorWidget(QWidget):
             self._current_profile = loaded.copy()
             profile = loaded  # continue using normalized copy for UI population
 
+            logger.info(
+                "Profile after normalization and fix",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                func_name="load_profile",
+                parameters={
+                    "loaded_keys": list(loaded.keys()),
+                    "loaded_name": loaded.get("name"),
+                    "loaded_name_type": type(loaded.get("name")).__name__ if loaded.get("name") is not None else "None"
+                }
+            )
+
+            # Additional safety check: ensure name is never None
+            if not profile.get("name"):
+                logger.warning(
+                    "Profile still missing name after all fixes, setting default",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                    func_name="load_profile",
+                    parameters={
+                        "profile_name_value": profile.get("name"),
+                        "profile_name_type": type(profile.get("name")).__name__
+                    }
+                )
+                profile["name"] = "Unnamed Profile"
+
             # Populate UI
-            self.inp_name.setText(profile.get("name", ""))
+            logger.info(
+                "=== UI POPULATION DEBUG ===",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                func_name="load_profile",
+                parameters={
+                    "profile_name_value": repr(profile.get("name")),
+                    "profile_name_type": type(profile.get("name")).__name__ if profile.get("name") is not None else "None",
+                    "inp_name_exists": hasattr(self, 'inp_name'),
+                    "inp_name_text_before": self.inp_name.text() if hasattr(self, 'inp_name') else "no inp_name"
+                }
+            )
+
+            # Ensure name is never None or empty when setting UI
+            name_to_set = profile.get("name") or "Unnamed Profile"
+            if not name_to_set.strip():
+                name_to_set = "Unnamed Profile"
+                logger.warning(
+                    "Setting default name for empty name field",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                    func_name="load_profile",
+                    parameters={"original_name": profile.get("name")}
+                )
+
+            self.inp_name.setText(name_to_set)
+
+            logger.info(
+                "After setting inp_name text",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                func_name="load_profile",
+                parameters={
+                    "inp_name_text_after": self.inp_name.text(),
+                    "name_to_set": name_to_set,
+                    "name_equal": self.inp_name.text() == name_to_set
+                }
+            )
+
             self.inp_description.setText(profile.get("description", "") or "")
 
             # Pool A
@@ -1271,14 +1522,48 @@ class StructuredProfileEditorWidget(QWidget):
         try:
             # Early gating
             if not self._current_profile:
+                # Don't log as error during initialization - this is expected behavior
+                logger.debug(
+                    "Profile validation failed: Profile incomplete",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno,
+                    func_name="get_validation_status",
+                    parameters={"current_profile": self._current_profile},
+                    stack_trace="".join(traceback.format_stack())
+                )
                 return False, ["Profile incomplete"]
             name = self._current_profile.get("name", "").strip()
             if not name:
+                # Don't log as error during initialization - this is expected behavior
+                logger.debug(
+                    "Profile validation failed: Profile incomplete: name is required",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno,
+                    func_name="get_validation_status",
+                    parameters={
+                        "current_profile_keys": list(self._current_profile.keys()),
+                        "name_value": self._current_profile.get("name"),
+                        "current_profile": self._current_profile
+                    },
+                    stack_trace="".join(traceback.format_stack())
+                )
                 return False, ["Profile incomplete: name is required"]
 
             pool_a = self._current_profile.get("pools", {}).get("A", {})
             pool_a_paths = (pool_a or {}).get("paths", [])
             if not pool_a_paths:
+                # Don't log as error during initialization - this is expected behavior
+                logger.debug(
+                    "Profile validation failed: Pool A must have at least one path",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno,
+                    func_name="get_validation_status",
+                    parameters={
+                        "pool_a": pool_a,
+                        "pool_a_paths": pool_a_paths
+                    },
+                    stack_trace="".join(traceback.format_stack())
+                )
                 return False, ["Profile incomplete: Pool A must have at least one path"]
 
             scope = self._current_profile.get("scope", {})
@@ -1286,18 +1571,45 @@ class StructuredProfileEditorWidget(QWidget):
                 pool_b = self._current_profile.get("pools", {}).get("B", {})
                 pool_b_paths = (pool_b or {}).get("paths", [])
                 if not pool_b_paths:
+                    logger.error(
+                        "Profile validation failed: Pool B must have at least one path for two-pool scope",
+                        file_path=__file__,
+                        line_number=inspect.currentframe().f_lineno,
+                        func_name="get_validation_status",
+                        parameters={
+                            "scope": scope,
+                            "pool_b": pool_b,
+                            "pool_b_paths": pool_b_paths
+                        },
+                        stack_trace="".join(traceback.format_stack())
+                    )
                     return False, ["Profile incomplete: Pool B must have at least one path for two-pool scope"]
 
             # Build complete, normalized profile for schema validation
             validation_profile = self._get_complete_profile(for_validation=True)
 
-            return validate_settings_schema(validation_profile)
+            valid, errors = validate_settings_schema(validation_profile)
+            if not valid:
+                logger.error(
+                    f"Schema validation failed: {errors}",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno,
+                    func_name="get_validation_status",
+                    parameters={
+                        "validation_profile_keys": list(validation_profile.keys()),
+                        "profile_name": name,
+                        "validation_errors": errors
+                    },
+                    stack_trace="".join(traceback.format_stack())
+                )
+            return valid, errors
         except Exception as e:
             logger.error(
                 f"Error getting validation status: {type(e).__name__}: {e}",
                 file_path=__file__,
                 line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
                 func_name="get_validation_status",
+                parameters={"current_profile": self._current_profile},
                 stack_trace=traceback.format_exc()
             )
             handle_gui_error(

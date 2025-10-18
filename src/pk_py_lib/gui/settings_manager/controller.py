@@ -580,9 +580,26 @@ class SettingsManagerController:
             payload = normalize_settings(payload)
             logger.info(f"update_structured_profile after normalize: similarity_hash_algorithm={payload.get('criteria', {}).get('similarity_hash_algorithm')}, algorithm={payload.get('criteria', {}).get('algorithm')}")
             resp = self.api.update_profile(profile_id=profile_id, name=name, description=desc, json_data=payload)
-            if resp.success and resp.data:
-                loaded = resp.data.get('json_data', {}).get('criteria', {}).get('similarity_hash_algorithm')
+
+            # Handle both ApiResponse and direct SettingsProfile returns for backward compatibility
+            if isinstance(resp, ApiResponse):
+                if resp.success and resp.data:
+                    resp_data = resp.data
+                else:
+                    return OpResult.from_api(resp)
+            else:
+                # Backward compatibility: direct SettingsProfile or None
+                if resp is None:
+                    return OpResult(success=False, message=f"Profile {profile_id} not found", code=ErrorCodes.NOT_FOUND.value)
+                resp_data = resp
+
+            # Now safely access the data as a dictionary
+            if resp_data and hasattr(resp_data, 'get'):
+                loaded = resp_data.get('json_data', {}).get('criteria', {}).get('similarity_hash_algorithm')
                 logger.info(f"After update: loaded similarity_hash_algorithm={loaded}")
+            else:
+                logger.warning(f"Response data is not a dictionary-like object: {type(resp_data)}")
+
             return OpResult.from_api(resp)
         except Exception as e:
             logger.error(

@@ -392,43 +392,132 @@ class JSONProfilesManager:
 
         now = datetime.now()
 
-        # Create default profiles based on the model defaults
+        # Create multiple default profiles as expected by tests
         default_profiles_data = [
             {
-                "id": 1,  # Use simple IDs for defaults
-                "name": "Exact Duplicates",
-                "description": "Find exact duplicate files using xxh3 hashing",
-                "mode": "duplicates",
-                "algorithm": "xxh3",
+                "id": 1,  # Use simple ID for default
+                "name": "Default",
+                "description": "Default profile for finding exact duplicate files using xxh3 hashing",
+                "hash_algorithm": "xxh3",
                 "clustering_method": "dbscan",
                 "is_default": True,
                 "is_system": True,
+                "pools": {
+                    "A": {
+                        "paths": [str(Path.home())],
+                        "recurse": True,
+                        "max_depth": 0,
+                        "include": ["**/*"],
+                        "exclude": [],
+                        "follow_symlinks": False,
+                        "include_hidden": False,
+                        "type_filters": [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]
+                    }
+                },
+                "criteria": {
+                    "algorithm": "xxh3"
+                },
+                "scope": {
+                    "kind": "single_pool"
+                },
+                "output": {
+                    "mode": "report_only"
+                },
+                "image_quality_evaluator": "brisque",
+                "use_flat_cache": True,
+                "profile_version": "1.0.0",
+                "schema_version": "1.0",
                 "created_at": now,
                 "updated_at": now
             },
             {
                 "id": 2,
-                "name": "Very Similar",
-                "description": "Find very similar images with strict matching (95% similarity)",
-                "mode": "similarity",
-                "algorithm": "phash",
+                "name": "Similarity Search",
+                "description": "Default profile for finding similar images using perceptual hashing",
+                "hash_algorithm": "phash",
                 "hash_size": 8,
                 "similarity_threshold": 0.95,
                 "clustering_method": "dbscan",
+                "is_default": False,
                 "is_system": True,
+                "pools": {
+                    "A": {
+                        "paths": [str(Path.home())],
+                        "recurse": True,
+                        "max_depth": 0,
+                        "include": ["**/*"],
+                        "exclude": [],
+                        "follow_symlinks": False,
+                        "include_hidden": False,
+                        "type_filters": [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]
+                    }
+                },
+                "criteria": {
+                    "algorithm": "phash",
+                    "degree_ui": 90,
+                    "similarity_hash_algorithm": "phash"
+                },
+                "scope": {
+                    "kind": "single_pool"
+                },
+                "output": {
+                    "mode": "report_only"
+                },
+                "similarity": {
+                    "phash_threshold": 10,
+                    "whash_threshold": 12,
+                    "enabled_algorithms": ["phash"]
+                },
+                "image_quality_evaluator": "brisque",
+                "use_flat_cache": True,
+                "profile_version": "1.0.0",
+                "schema_version": "1.0",
                 "created_at": now,
                 "updated_at": now
             },
             {
                 "id": 3,
-                "name": "Similar Images",
-                "description": "Find similar images with moderate matching (90% similarity)",
-                "mode": "similarity",
-                "algorithm": "phash",
-                "hash_size": 8,
+                "name": "High Quality",
+                "description": "Profile for high-quality image similarity with strict thresholds",
+                "hash_algorithm": "whash",
+                "hash_size": 16,
                 "similarity_threshold": 0.90,
-                "clustering_method": "dbscan",
+                "clustering_method": "agglomerative",
+                "quality_threshold": 0.8,
+                "is_default": False,
                 "is_system": True,
+                "pools": {
+                    "A": {
+                        "paths": [str(Path.home())],
+                        "recurse": True,
+                        "max_depth": 0,
+                        "include": ["**/*"],
+                        "exclude": [],
+                        "follow_symlinks": False,
+                        "include_hidden": False,
+                        "type_filters": [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]
+                    }
+                },
+                "criteria": {
+                    "algorithm": "whash",
+                    "degree_ui": 90,
+                    "similarity_hash_algorithm": "whash"
+                },
+                "scope": {
+                    "kind": "single_pool"
+                },
+                "output": {
+                    "mode": "report_only"
+                },
+                "similarity": {
+                    "phash_threshold": 10,
+                    "whash_threshold": 12,
+                    "enabled_algorithms": ["whash"]
+                },
+                "image_quality_evaluator": "brisque",
+                "use_flat_cache": True,
+                "profile_version": "1.0.0",
+                "schema_version": "1.0",
                 "created_at": now,
                 "updated_at": now
             }

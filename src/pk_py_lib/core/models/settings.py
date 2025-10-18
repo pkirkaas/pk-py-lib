@@ -100,7 +100,7 @@ class AppSettings:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AppSettings':
         """
-        Create settings from dictionary.
+        Create settings from dictionary with path validation and normalization.
 
         Parameters
         ----------
@@ -120,6 +120,27 @@ class AppSettings:
         2048
         """
         settings_data = data.copy()
+
+        # Validate and normalize recent directories
+        if 'recent_directories' in settings_data:
+            normalized_dirs = []
+            from ..filesystem.paths import PathOperations
+            from pathlib import Path
+
+            for directory in settings_data['recent_directories']:
+                try:
+                    directory_path = Path(directory)
+                    if directory_path.exists() and directory_path.is_dir():
+                        # Normalize and add valid directories only
+                        normalized_path = str(PathOperations.normalize_paths([directory_path])[0])
+                        if normalized_path not in normalized_dirs:  # Avoid duplicates
+                            normalized_dirs.append(normalized_path)
+                except (OSError, RuntimeError):
+                    # Skip invalid paths silently - they'll be cleaned up
+                    continue
+
+            settings_data['recent_directories'] = normalized_dirs
+
         if 'last_updated' in settings_data and isinstance(settings_data['last_updated'], str):
             settings_data['last_updated'] = datetime.fromisoformat(settings_data['last_updated'])
         return cls(**settings_data)
@@ -169,6 +190,26 @@ class SettingsProfile:
     updated_at : Optional[datetime]
         Last update timestamp (default: None)
 
+    # Enhanced path-related fields for GUI support
+    pools : Optional[Dict[str, Any]] = None
+        Pool configurations with paths, file patterns, and constraints
+    criteria : Optional[Dict[str, Any]] = None
+        Algorithm and parameter settings for similarity detection
+    scope : Optional[Dict[str, Any]] = None
+        Configuration for single-pool vs two-pool operations
+    output : Optional[Dict[str, Any]] = None
+        Output mode and format settings
+    similarity : Optional[Dict[str, Any]] = None
+        Advanced similarity algorithm settings
+    image_quality_evaluator : str = "brisque"
+        Image quality evaluation method to use
+    use_flat_cache : bool = True
+        Whether to use flat cache for performance
+    profile_version : str = "1.0.0"
+        Profile format version for compatibility
+    schema_version : str = "1.0"
+        Schema version for migration support
+
     Examples
     --------
     >>> profile = SettingsProfile(
@@ -197,6 +238,17 @@ class SettingsProfile:
     is_system: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    # Enhanced path-related fields for GUI support
+    pools: Optional[Dict[str, Any]] = None
+    criteria: Optional[Dict[str, Any]] = None
+    scope: Optional[Dict[str, Any]] = None
+    output: Optional[Dict[str, Any]] = None
+    similarity: Optional[Dict[str, Any]] = None
+    image_quality_evaluator: str = "brisque"
+    use_flat_cache: bool = True
+    profile_version: str = "1.0.0"
+    schema_version: str = "1.0"
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -229,7 +281,24 @@ class SettingsProfile:
             'quality_threshold': self.quality_threshold,
             'is_default': self.is_default,
             'is_system': self.is_system,
+            'profile_version': self.profile_version,
+            'schema_version': self.schema_version,
+            'image_quality_evaluator': self.image_quality_evaluator,
+            'use_flat_cache': self.use_flat_cache,
         }
+
+        # Include path-related fields if they exist
+        if self.pools is not None:
+            data['pools'] = self.pools
+        if self.criteria is not None:
+            data['criteria'] = self.criteria
+        if self.scope is not None:
+            data['scope'] = self.scope
+        if self.output is not None:
+            data['output'] = self.output
+        if self.similarity is not None:
+            data['similarity'] = self.similarity
+
         if self.id is not None:
             data['id'] = self.id
         if self.created_at:
@@ -304,6 +373,14 @@ class SettingsProfile:
         >>> cloned.id is None
         True
         """
+        # Deep copy mutable fields to avoid shared references
+        import copy
+        cloned_pools = copy.deepcopy(self.pools) if self.pools is not None else None
+        cloned_criteria = copy.deepcopy(self.criteria) if self.criteria is not None else None
+        cloned_scope = copy.deepcopy(self.scope) if self.scope is not None else None
+        cloned_output = copy.deepcopy(self.output) if self.output is not None else None
+        cloned_similarity = copy.deepcopy(self.similarity) if self.similarity is not None else None
+
         return SettingsProfile(
             name=new_name,
             description=f"Copy of {self.name}",
@@ -315,32 +392,27 @@ class SettingsProfile:
             color_mode=self.color_mode,
             clustering_method=self.clustering_method,
             quality_threshold=self.quality_threshold,
+            pools=cloned_pools,
+            criteria=cloned_criteria,
+            scope=cloned_scope,
+            output=cloned_output,
+            similarity=cloned_similarity,
+            image_quality_evaluator=self.image_quality_evaluator,
+            use_flat_cache=self.use_flat_cache,
+            profile_version=self.profile_version,
+            schema_version=self.schema_version,
         )
 
 
 # Default system profiles that are created on first initialization
 DEFAULT_PROFILES = [
     SettingsProfile(
-        name="Exact Duplicates",
-        description="Find exact duplicate files using xxh3 hashing",
+        name="Default",
+        description="Default profile for finding exact duplicate files using xxh3 hashing",
         hash_algorithm="xxh3",
         similarity_threshold=1.0,
         is_system=True,
         is_default=True,
-    ),
-    SettingsProfile(
-        name="Very Similar",
-        description="Find very similar images with strict matching (95% similarity)",
-        hash_algorithm="phash",
-        similarity_threshold=0.95,
-        is_system=True,
-    ),
-    SettingsProfile(
-        name="Similar Images",
-        description="Find similar images with moderate matching (90% similarity)",
-        hash_algorithm="phash",
-        similarity_threshold=0.90,
-        is_system=True,
     ),
 ]
 

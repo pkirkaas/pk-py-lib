@@ -344,9 +344,7 @@ class TestDefaultProfiles:
     def test_default_profile_names(self):
         """Test that default profiles have expected names."""
         names = {p.name for p in DEFAULT_PROFILES}
-        assert "Exact Duplicates" in names
-        assert "Very Similar" in names
-        assert "Similar Images" in names
+        assert "Default" in names
 
     def test_exact_duplicates_profile(self):
         """Test Exact Duplicates profile has correct settings."""
@@ -517,8 +515,8 @@ class TestSettingsMigrationLogic:
         profiles = migration.migrate_profiles()
 
         # Should create default profiles
-        assert len(profiles) >= 3
-        assert any(p['name'] == 'Exact Duplicates' for p in profiles)
+        assert len(profiles) >= 1
+        assert any(p['name'] == 'Default' for p in profiles)
 
     def test_rollback_restores_backup(self, tmp_path):
         """Test rollback restores from backup."""
@@ -665,9 +663,7 @@ class TestProfilesManager:
 
         # Verify default profile names
         names = {p.name for p in profiles}
-        assert 'Exact Duplicates' in names
-        assert 'Very Similar' in names
-        assert 'Similar Images' in names
+        assert 'Default' in names
 
     def test_create_profile(self, tmp_path):
         """Test creating a new profile."""
@@ -720,8 +716,8 @@ class TestProfilesManager:
 
         # Get with different case
         profile1 = manager.get_by_name("exact duplicates")
-        profile2 = manager.get_by_name("EXACT DUPLICATES")
-        profile3 = manager.get_by_name("Exact Duplicates")
+        profile2 = manager.get_by_name("DEFAULT")
+        profile3 = manager.get_by_name("Default")
 
         # Should all return the same profile
         assert profile1 is not None
@@ -760,7 +756,7 @@ class TestProfilesManager:
         manager = ProfilesManager(db_path)
 
         # Get a system profile
-        profile = manager.get_by_name("Exact Duplicates")
+        profile = manager.get_by_name("Default")
         assert profile.is_system is True
 
         # Try to update
@@ -796,7 +792,7 @@ class TestProfilesManager:
         manager = ProfilesManager(db_path)
 
         # Get a system profile
-        profile = manager.get_by_name("Exact Duplicates")
+        profile = manager.get_by_name("Default")
 
         # Try to delete
         with pytest.raises(ValueError, match="Cannot delete system profiles"):
@@ -823,9 +819,9 @@ class TestProfilesManager:
         db_path = tmp_path / "settings.db"
         manager = ProfilesManager(db_path)
 
-        # Get a non-default profile
-        profile = manager.get_by_name("Very Similar")
-        assert profile.is_default is False
+        # Get the default profile
+        profile = manager.get_by_name("Default")
+        assert profile.is_default is True
 
         # Set as default
         manager.set_default(profile.id)

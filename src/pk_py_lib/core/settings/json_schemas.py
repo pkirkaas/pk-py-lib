@@ -211,9 +211,112 @@ SEARCH_PROFILES_SCHEMA = {
                     "type": "string",
                     "format": "date-time",
                     "description": "Last update timestamp"
+                },
+                "pools": {
+                    "type": "object",
+                    "properties": {
+                        "A": {"$ref": "#/$defs/pool"},
+                        "B": {"$ref": "#/$defs/pool"}
+                    },
+                    "description": "Pool configurations for search paths and file patterns"
+                },
+                "criteria": {
+                    "type": "object",
+                    "properties": {
+                        "algorithm": {
+                            "type": "string",
+                            "enum": ["xxh3", "phash", "whash"],
+                            "default": "phash"
+                        },
+                        "degree_ui": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 100,
+                            "default": 90
+                        },
+                        "similarity_hash_algorithm": {
+                            "type": "string",
+                            "enum": ["phash", "whash"],
+                            "default": "phash"
+                        }
+                    },
+                    "description": "Algorithm and parameter settings"
+                },
+                "scope": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["single_pool", "two_pool"],
+                            "default": "two_pool"
+                        },
+                        "direction": {
+                            "type": "string",
+                            "enum": ["duplicates", "non_duplicates"],
+                            "default": "duplicates"
+                        }
+                    },
+                    "required": ["kind"],
+                    "description": "Scope configuration for single vs two-pool operations"
+                },
+                "output": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["report_only"],
+                            "default": "report_only"
+                        }
+                    },
+                    "required": ["mode"],
+                    "description": "Output mode and format settings"
+                },
+                "similarity": {
+                    "type": "object",
+                    "properties": {
+                        "phash_threshold": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 64,
+                            "default": 10
+                        },
+                        "whash_threshold": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 64,
+                            "default": 12
+                        },
+                        "enabled_algorithms": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["phash", "whash"]},
+                            "default": ["phash"]
+                        }
+                    },
+                    "description": "Advanced similarity algorithm settings"
+                },
+                "image_quality_evaluator": {
+                    "type": "string",
+                    "enum": ["none", "brisque"],
+                    "default": "brisque",
+                    "description": "Image quality evaluation method"
+                },
+                "use_flat_cache": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Whether to use flat cache for performance"
+                },
+                "profile_version": {
+                    "type": "string",
+                    "default": "1.0.0",
+                    "description": "Profile format version"
+                },
+                "schema_version": {
+                    "type": "string",
+                    "default": "1.0",
+                    "description": "Schema version for migration support"
                 }
             },
-            "required": ["id", "name", "hash_algorithm", "created_at", "updated_at"],
+            "required": ["id", "name", "created_at", "updated_at"],
             "allOf": [
                 # xxh3 algorithm: similarity threshold should be null or absent
                 {
@@ -234,6 +337,57 @@ SEARCH_PROFILES_SCHEMA = {
                     }
                 }
             ]
+        },
+        "pool": {
+            "type": "object",
+            "properties": {
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1,
+                    "description": "List of directory paths to search"
+                },
+                "recurse": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Whether to search subdirectories recursively"
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Maximum directory depth to search (0 = unlimited)"
+                },
+                "include": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": ["**/*"],
+                    "description": "File glob patterns to include"
+                },
+                "exclude": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": [],
+                    "description": "File glob patterns to exclude"
+                },
+                "follow_symlinks": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Whether to follow symbolic links"
+                },
+                "include_hidden": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Whether to include hidden files and directories"
+                },
+                "type_filters": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"],
+                    "description": "File extensions to include in search"
+                }
+            },
+            "required": ["paths"]
         }
     }
 }
@@ -281,36 +435,128 @@ def create_default_search_profiles() -> Dict[str, Any]:
         "profiles": [
             {
                 "id": 1,
-                "name": "Exact Duplicates",
-                "description": "Find exact duplicate files using xxh3 hashing",
+                "name": "Default",
+                "description": "Default profile for finding exact duplicate files using xxh3 hashing",
                 "hash_algorithm": "xxh3",
                 "clustering_method": "dbscan",
                 "is_default": True,
                 "is_system": True,
+                "pools": {
+                    "A": {
+                        "paths": [str(Path.home())],
+                        "recurse": True,
+                        "max_depth": 0,
+                        "include": ["**/*"],
+                        "exclude": [],
+                        "follow_symlinks": False,
+                        "include_hidden": False,
+                        "type_filters": [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]
+                    }
+                },
+                "criteria": {
+                    "algorithm": "xxh3"
+                },
+                "scope": {
+                    "kind": "single_pool"
+                },
+                "output": {
+                    "mode": "report_only"
+                },
+                "image_quality_evaluator": "brisque",
+                "use_flat_cache": True,
+                "profile_version": "1.0.0",
+                "schema_version": "1.0",
                 "created_at": now,
                 "updated_at": now
             },
             {
                 "id": 2,
-                "name": "Very Similar",
-                "description": "Find very similar images with strict matching (95% similarity)",
+                "name": "Similarity Search",
+                "description": "Default profile for finding similar images using perceptual hashing",
                 "hash_algorithm": "phash",
                 "hash_size": 8,
                 "similarity_threshold": 0.95,
                 "clustering_method": "dbscan",
+                "is_default": False,
                 "is_system": True,
+                "pools": {
+                    "A": {
+                        "paths": [str(Path.home())],
+                        "recurse": True,
+                        "max_depth": 0,
+                        "include": ["**/*"],
+                        "exclude": [],
+                        "follow_symlinks": False,
+                        "include_hidden": False,
+                        "type_filters": [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]
+                    }
+                },
+                "criteria": {
+                    "algorithm": "phash",
+                    "degree_ui": 90,
+                    "similarity_hash_algorithm": "phash"
+                },
+                "scope": {
+                    "kind": "single_pool"
+                },
+                "output": {
+                    "mode": "report_only"
+                },
+                "similarity": {
+                    "phash_threshold": 10,
+                    "whash_threshold": 12,
+                    "enabled_algorithms": ["phash"]
+                },
+                "image_quality_evaluator": "brisque",
+                "use_flat_cache": True,
+                "profile_version": "1.0.0",
+                "schema_version": "1.0",
                 "created_at": now,
                 "updated_at": now
             },
             {
                 "id": 3,
-                "name": "Similar Images",
-                "description": "Find similar images with moderate matching (90% similarity)",
-                "hash_algorithm": "phash",
-                "hash_size": 8,
+                "name": "High Quality",
+                "description": "Profile for high-quality image similarity with strict thresholds",
+                "hash_algorithm": "whash",
+                "hash_size": 16,
                 "similarity_threshold": 0.90,
-                "clustering_method": "dbscan",
+                "clustering_method": "agglomerative",
+                "quality_threshold": 0.8,
+                "is_default": False,
                 "is_system": True,
+                "pools": {
+                    "A": {
+                        "paths": [str(Path.home())],
+                        "recurse": True,
+                        "max_depth": 0,
+                        "include": ["**/*"],
+                        "exclude": [],
+                        "follow_symlinks": False,
+                        "include_hidden": False,
+                        "type_filters": [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]
+                    }
+                },
+                "criteria": {
+                    "algorithm": "whash",
+                    "degree_ui": 90,
+                    "similarity_hash_algorithm": "whash"
+                },
+                "scope": {
+                    "kind": "single_pool"
+                },
+                "output": {
+                    "mode": "report_only"
+                },
+                "similarity": {
+                    "phash_threshold": 10,
+                    "whash_threshold": 12,
+                    "enabled_algorithms": ["whash"]
+                },
+                "image_quality_evaluator": "brisque",
+                "use_flat_cache": True,
+                "profile_version": "1.0.0",
+                "schema_version": "1.0",
                 "created_at": now,
                 "updated_at": now
             }

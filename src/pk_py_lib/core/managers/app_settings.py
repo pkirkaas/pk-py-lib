@@ -325,30 +325,52 @@ class AppSettingsManager:
 
     def add_recent_directory(self, directory: str, max_recent: int = 10) -> None:
         """
-        Add a directory to recent directories list.
+        Add a directory to recent directories list with proper path validation and normalization.
 
         Parameters
         ----------
         directory : str
-            Directory path to add
+            Directory path to add (will be validated and normalized)
         max_recent : int
             Maximum number of recent directories to keep (default: 10)
+
+        Raises
+        ------
+        ValueError
+            If directory is invalid or inaccessible
         """
+        from ..filesystem.paths import PathOperations
+        from pathlib import Path
+
         if self._settings is None:
             self._settings = self.load()
 
-        # Remove if already exists
-        if directory in self._settings.recent_directories:
-            self._settings.recent_directories.remove(directory)
+        # Validate and normalize the directory path
+        try:
+            directory_path = Path(directory)
+            if not directory_path.exists():
+                raise ValueError(f"Directory does not exist: {directory}")
+            if not directory_path.is_dir():
+                raise ValueError(f"Path is not a directory: {directory}")
 
-        # Add to front
-        self._settings.recent_directories.insert(0, directory)
+            # Get absolute, normalized path
+            normalized_path = str(PathOperations.normalize_paths([directory_path])[0])
 
-        # Trim to max
-        if len(self._settings.recent_directories) > max_recent:
-            self._settings.recent_directories = self._settings.recent_directories[:max_recent]
+            # Remove if already exists (check normalized version)
+            if normalized_path in self._settings.recent_directories:
+                self._settings.recent_directories.remove(normalized_path)
 
-        self.save(self._settings)
+            # Add to front
+            self._settings.recent_directories.insert(0, normalized_path)
+
+            # Trim to max
+            if len(self._settings.recent_directories) > max_recent:
+                self._settings.recent_directories = self._settings.recent_directories[:max_recent]
+
+            self.save(self._settings)
+
+        except (OSError, RuntimeError) as e:
+            raise ValueError(f"Invalid directory path '{directory}': {e}")
 
     def get_recent_directories(self) -> list:
         """

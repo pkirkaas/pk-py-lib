@@ -122,19 +122,11 @@ class JSONSettingsManager:
 
         Notes
         -----
-        Creates a backup before saving and handles errors gracefully.
+        Uses atomic file operations with temporary files for safety.
         """
         try:
             # Ensure directory exists
             self.settings_dir.mkdir(parents=True, exist_ok=True)
-
-            # Create backup if file exists
-            if self.app_settings_file.exists():
-                backup_file = self.app_settings_file.with_suffix('.json.bak')
-                try:
-                    backup_file.write_bytes(self.app_settings_file.read_bytes())
-                except Exception as e:
-                    logger.warning(f"Failed to create backup: {e}")
 
             # Validate before saving
             validate_app_settings(settings)
@@ -151,15 +143,6 @@ class JSONSettingsManager:
 
         except Exception as e:
             logger.error(f"Error saving app settings: {e}")
-            # Try to restore from backup if available
-            backup_file = self.app_settings_file.with_suffix('.json.bak')
-            if backup_file.exists():
-                try:
-                    backup_file.replace(self.app_settings_file)
-                    logger.info("Restored app settings from backup")
-                except Exception as restore_error:
-                    logger.error(f"Failed to restore from backup: {restore_error}")
-
             raise
 
     def load_search_profiles(self) -> Dict[str, Any]:
@@ -220,19 +203,11 @@ class JSONSettingsManager:
 
         Notes
         -----
-        Creates a backup before saving and handles errors gracefully.
+        Uses atomic file operations with temporary files for safety.
         """
         try:
             # Ensure directory exists
             self.settings_dir.mkdir(parents=True, exist_ok=True)
-
-            # Create backup if file exists
-            if self.search_profiles_file.exists():
-                backup_file = self.search_profiles_file.with_suffix('.json.bak')
-                try:
-                    backup_file.write_bytes(self.search_profiles_file.read_bytes())
-                except Exception as e:
-                    logger.warning(f"Failed to create backup: {e}")
 
             # Validate before saving
             validate_search_profiles(profiles)
@@ -249,15 +224,6 @@ class JSONSettingsManager:
 
         except Exception as e:
             logger.error(f"Error saving search profiles: {e}")
-            # Try to restore from backup if available
-            backup_file = self.search_profiles_file.with_suffix('.json.bak')
-            if backup_file.exists():
-                try:
-                    backup_file.replace(self.search_profiles_file)
-                    logger.info("Restored search profiles from backup")
-                except Exception as restore_error:
-                    logger.error(f"Failed to restore from backup: {restore_error}")
-
             raise
 
     def _create_default_app_settings(self) -> Dict[str, Any]:

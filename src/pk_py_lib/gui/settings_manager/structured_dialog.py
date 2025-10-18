@@ -325,16 +325,66 @@ class StructuredSettingsManagerDialog(QDialog):
     @gui_error_handler(component_name="StructuredSettingsManagerDialog")
     def _load_profile(self, profile_id: str) -> None:
         try:
+            logger.info(
+                "=== DIALOG PROFILE LOADING DEBUG ===",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                func_name="_load_profile",
+                parameters={
+                    "profile_id": profile_id,
+                    "controller_exists": hasattr(self, 'controller'),
+                    "controller_api_exists": hasattr(self.controller, 'api') if hasattr(self, 'controller') else False
+                }
+            )
+
             resp = self.controller.get_profile(profile_id)
             if not resp.success or not resp.data:
                 self._show_error("Failed to load profile", resp.message, resp.code)
                 return
+
+            logger.info(
+                "Controller response",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                func_name="_load_profile",
+                parameters={
+                    "resp_success": resp.success,
+                    "resp_data_keys": list(resp.data.keys()) if resp.data else "no data",
+                    "resp_data_name": resp.data.get("name") if resp.data else "no data",
+                    "resp_data_name_type": type(resp.data.get("name")).__name__ if resp.data and resp.data.get("name") is not None else "None"
+                }
+            )
             # Extract JSON profile payload when available; otherwise synthesize a defaults-based JSON
             p = resp.data
             data: Dict[str, Any]
+
+            logger.info(
+                "Profile data extraction",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                func_name="_load_profile",
+                parameters={
+                    "p_keys": list(p.keys()) if isinstance(p, dict) else "not dict",
+                    "p_name": p.get("name") if isinstance(p, dict) else "not dict",
+                    "p_json_data": p.get("json_data") if isinstance(p, dict) else "not dict",
+                    "p_format": p.get("format") if isinstance(p, dict) else "not dict"
+                }
+            )
+
             try:
                 if isinstance(p.get("json_data"), dict) or p.get("format") == "json":
                     data = dict(p.get("json_data") or {})
+                    logger.info(
+                        "Using json_data path",
+                        file_path=__file__,
+                        line_number=inspect.currentframe().f_lineno if 'inspect' in globals() else 0,
+                        func_name="_load_profile",
+                        parameters={
+                            "data_keys": list(data.keys()),
+                            "data_name": data.get("name"),
+                            "data_name_type": type(data.get("name")).__name__ if data.get("name") is not None else "None"
+                        }
+                    )
                     # Align identifiers and timestamps with DB metadata
                     data["id"] = p.get("id") or data.get("id")
                     # Ensure name/description present and typed as strings
@@ -368,7 +418,7 @@ class StructuredSettingsManagerDialog(QDialog):
                 # Fallback to minimal payload if something goes wrong; keep UI operable
                 data = {
                     "id": p.get("id", ""),
-                    "name": p.get("name", ""),
+                    "name": p.get("name", "Unnamed Profile"),  # Provide default name to avoid validation errors
                     "description": p.get("description") or "",
                     "pools": {"A": {"root_path": ""}},
                     "mode": "duplicates",
@@ -376,7 +426,45 @@ class StructuredSettingsManagerDialog(QDialog):
                     "scope": {"kind": "single_pool"},
                     "output": {"mode": "report_only"},
                 }
+
+            # Log the profile data being loaded for debugging
+            logger.debug(
+                "Loading profile into editor",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno,
+                func_name="_load_profile",
+                parameters={
+                    "profile_id": profile_id,
+                    "profile_name": data.get("name", "unknown"),
+                    "profile_keys": list(data.keys()),
+                    "has_name": "name" in data,
+                    "name_value": data.get("name"),
+                    "full_profile_data": str(data)[:500]  # Truncate for logging
+                }
+            )
+
+            # Ensure name is never empty to prevent validation errors
+            if not data.get("name", "").strip():
+                data["name"] = "Unnamed Profile"
+                logger.warning(
+                    "Profile name was empty, setting to 'Unnamed Profile'",
+                    file_path=__file__,
+                    line_number=inspect.currentframe().f_lineno,
+                    func_name="_load_profile",
+                    parameters={"profile_id": profile_id}
+                )
+
+            # Load the profile into the editor
             self.editor.load_profile(data)
+
+            # Log successful load
+            logger.info(
+                f"Successfully loaded profile '{data.get('name', 'unknown')}' into editor",
+                file_path=__file__,
+                line_number=inspect.currentframe().f_lineno,
+                func_name="_load_profile",
+                parameters={"profile_id": profile_id}
+            )
         except Exception as e:
             logger.error(
                 f"Error loading profile in StructuredSettingsManagerDialog: {type(e).__name__}: {e}",

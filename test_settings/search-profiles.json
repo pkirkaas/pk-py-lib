@@ -3,38 +3,12 @@
   "profiles": [
     {
       "id": "0e33d88b-185c-4244-b424-7aa80b8ede72",
-      "name": "Exact Duplicates",
-      "description": "Find exact duplicate files using xxh3 hashing",
+      "name": "Default",
+      "description": "Default profile for finding exact duplicate files using xxh3 hashing",
       "mode": "duplicates",
       "algorithm": "xxh3",
       "clustering_method": "dbscan",
       "is_default": true,
-      "is_system": true,
-      "created_at": "2025-10-14T04:39:52.199048",
-      "updated_at": "2025-10-14T04:39:52.199048"
-    },
-    {
-      "id": "65188f9e-dec9-4c7d-a04e-56841d047400",
-      "name": "Very Similar",
-      "description": "Find very similar images with strict matching (95% similarity)",
-      "mode": "similarity",
-      "algorithm": "phash",
-      "hash_size": 8,
-      "similarity_threshold": 0.95,
-      "clustering_method": "dbscan",
-      "is_system": true,
-      "created_at": "2025-10-14T04:39:52.199048",
-      "updated_at": "2025-10-14T04:39:52.199048"
-    },
-    {
-      "id": "5bc00732-a11f-4fdc-97ca-1dccc8edabb4",
-      "name": "Similar Images",
-      "description": "Find similar images with moderate matching (90% similarity)",
-      "mode": "similarity",
-      "algorithm": "phash",
-      "hash_size": 8,
-      "similarity_threshold": 0.9,
-      "clustering_method": "dbscan",
       "is_system": true,
       "created_at": "2025-10-14T04:39:52.199048",
       "updated_at": "2025-10-14T04:39:52.199048"

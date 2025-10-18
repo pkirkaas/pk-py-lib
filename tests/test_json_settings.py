@@ -708,7 +708,7 @@ class TestJSONProfilesManager:
             assert manager.validate_name("New Profile") is True
 
             # Test duplicate name
-            assert manager.validate_name("Exact Duplicates") is False
+            assert manager.validate_name("Default") is False
 
 
 class TestUnifiedJSONSettingsManager:
@@ -920,6 +920,323 @@ class TestIntegrationScenarios:
             final = manager1.load_all()
             assert final["app_settings"].cache_enabled is False
             assert final["app_settings"].gui_theme == "dark"
+
+
+class TestPathPersistence:
+    """Tests for path persistence in profile configurations."""
+
+    def test_profile_path_persistence_comprehensive(self):
+        """Test that search paths, file patterns, and pool configurations are correctly persisted."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings_dir = Path(tmpdir) / "settings"
+            manager = JSONProfilesManager(settings_dir)
+
+            # Create profile with comprehensive path configuration
+            profile = SettingsProfile(
+                name="Path Persistence Test",
+                description="Profile to test path persistence functionality",
+                hash_algorithm="phash",
+                similarity_threshold=0.90
+            )
+
+            # Configure pools with various path settings
+            profile.pools = {
+                "A": {
+                    "paths": [
+                        str(Path.home() / "Pictures"),
+                        str(Path.home() / "Documents" / "Photos"),
+                        "/mnt/external/images",
+                        "~/Downloads/images"
+                    ],
+                    "recurse": True,
+                    "max_depth": 5,
+                    "include": [
+                        "**/*.jpg",
+                        "**/*.jpeg",
+                        "**/*.png",
+                        "**/*.webp",
+                        "**/*.tiff",
+                        "**/*.bmp",
+                        "**/*.gif"
+                    ],
+                    "exclude": [
+                        "**/temp/**",
+                        "**/*.tmp",
+                        "**/cache/**",
+                        "**/thumbnails/**"
+                    ],
+                    "follow_symlinks": False,
+                    "include_hidden": False,
+                    "type_filters": [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]
+                },
+                "B": {
+                    "paths": [
+                        str(Path.home() / "Desktop" / "Screenshots"),
+                        "/var/images"
+                    ],
+                    "recurse": False,
+                    "max_depth": 1,
+                    "include": ["*.png", "*.jpg"],
+                    "exclude": ["**/temp/**"],
+                    "follow_symlinks": True,
+                    "include_hidden": True,
+                    "type_filters": [".png", ".jpg", ".jpeg"]
+                }
+            }
+
+            # Configure criteria with algorithm settings
+            profile.criteria = {
+                "algorithm": "phash",
+                "degree_ui": 90,
+                "similarity_hash_algorithm": "phash",
+                "hash_size": 16
+            }
+
+            # Configure scope settings
+            profile.scope = {
+                "kind": "single_pool",
+                "compare_within_pool": True,
+                "compare_across_pools": False
+            }
+
+            # Configure output settings
+            profile.output = {
+                "mode": "report_only",
+                "save_results": True,
+                "output_directory": str(Path.home() / "image_results")
+            }
+
+            # Configure similarity settings
+            profile.similarity = {
+                "phash_threshold": 8,
+                "whash_threshold": 10,
+                "enabled_algorithms": ["phash", "whash"],
+                "cross_algorithm_comparison": True
+            }
+
+            # Create the profile
+            created_profile = manager.create(profile)
+            assert created_profile.id is not None
+
+            # Create a new manager instance to simulate loading from file
+            manager2 = JSONProfilesManager(settings_dir)
+
+            # Load the profile back
+            loaded_profile = manager2.get_by_id(created_profile.id)
+            assert loaded_profile is not None
+
+            # Verify basic profile data
+            assert loaded_profile.name == "Path Persistence Test"
+            assert loaded_profile.description == "Profile to test path persistence functionality"
+            assert loaded_profile.hash_algorithm == "phash"
+            assert loaded_profile.similarity_threshold == 0.90
+
+            # Verify pool configurations are preserved exactly
+            assert loaded_profile.pools is not None
+            assert "A" in loaded_profile.pools
+            assert "B" in loaded_profile.pools
+
+            # Verify Pool A configuration
+            pool_a = loaded_profile.pools["A"]
+            expected_paths_a = [
+                str(Path.home() / "Pictures"),
+                str(Path.home() / "Documents" / "Photos"),
+                "/mnt/external/images",
+                "~/Downloads/images"
+            ]
+            assert pool_a["paths"] == expected_paths_a
+            assert pool_a["recurse"] is True
+            assert pool_a["max_depth"] == 5
+            assert pool_a["include"] == [
+                "**/*.jpg", "**/*.jpeg", "**/*.png", "**/*.webp",
+                "**/*.tiff", "**/*.bmp", "**/*.gif"
+            ]
+            assert pool_a["exclude"] == [
+                "**/temp/**", "**/*.tmp", "**/cache/**", "**/thumbnails/**"
+            ]
+            assert pool_a["follow_symlinks"] is False
+            assert pool_a["include_hidden"] is False
+            assert pool_a["type_filters"] == [".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp", ".gif", ".heic", ".heif"]
+
+            # Verify Pool B configuration
+            pool_b = loaded_profile.pools["B"]
+            expected_paths_b = [
+                str(Path.home() / "Desktop" / "Screenshots"),
+                "/var/images"
+            ]
+            assert pool_b["paths"] == expected_paths_b
+            assert pool_b["recurse"] is False
+            assert pool_b["max_depth"] == 1
+            assert pool_b["include"] == ["*.png", "*.jpg"]
+            assert pool_b["exclude"] == ["**/temp/**"]
+            assert pool_b["follow_symlinks"] is True
+            assert pool_b["include_hidden"] is True
+            assert pool_b["type_filters"] == [".png", ".jpg", ".jpeg"]
+
+            # Verify criteria configuration
+            assert loaded_profile.criteria is not None
+            assert loaded_profile.criteria["algorithm"] == "phash"
+            assert loaded_profile.criteria["degree_ui"] == 90
+            assert loaded_profile.criteria["similarity_hash_algorithm"] == "phash"
+            assert loaded_profile.criteria["hash_size"] == 16
+
+            # Verify scope configuration
+            assert loaded_profile.scope is not None
+            assert loaded_profile.scope["kind"] == "single_pool"
+            assert loaded_profile.scope["compare_within_pool"] is True
+            assert loaded_profile.scope["compare_across_pools"] is False
+
+            # Verify output configuration
+            assert loaded_profile.output is not None
+            assert loaded_profile.output["mode"] == "report_only"
+            assert loaded_profile.output["save_results"] is True
+            assert loaded_profile.output["output_directory"] == str(Path.home() / "image_results")
+
+            # Verify similarity configuration
+            assert loaded_profile.similarity is not None
+            assert loaded_profile.similarity["phash_threshold"] == 8
+            assert loaded_profile.similarity["whash_threshold"] == 10
+            assert loaded_profile.similarity["enabled_algorithms"] == ["phash", "whash"]
+            assert loaded_profile.similarity["cross_algorithm_comparison"] is True
+
+    def test_profile_path_persistence_with_special_characters(self):
+        """Test path persistence with special characters and unicode paths."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings_dir = Path(tmpdir) / "settings"
+            manager = JSONProfilesManager(settings_dir)
+
+            # Create profile with paths containing special characters
+            profile = SettingsProfile(
+                name="Special Path Test",
+                description="Test paths with special characters",
+                hash_algorithm="xxh3"
+            )
+
+            # Configure pools with special character paths
+            profile.pools = {
+                "A": {
+                    "paths": [
+                        str(Path.home() / "Documents" / "My Pictures (2023)"),
+                        "/media/user/Photos & Videos",
+                        "~/Pictures/Screenshots tést",
+                        "/mnt/nas/[backup] images"
+                    ],
+                    "recurse": True,
+                    "max_depth": 3,
+                    "include": ["**/*.jpg", "**/*.png"],
+                    "exclude": ["**/temp/**", "**/* (copy)/**"],
+                    "follow_symlinks": False,
+                    "include_hidden": False,
+                    "type_filters": [".jpg", ".png"]
+                }
+            }
+
+            # Create and save profile
+            created_profile = manager.create(profile)
+
+            # Load in new manager instance
+            manager2 = JSONProfilesManager(settings_dir)
+            loaded_profile = manager2.get_by_id(created_profile.id)
+
+            # Verify special character paths are preserved
+            assert loaded_profile is not None
+            assert loaded_profile.pools is not None
+            pool_a = loaded_profile.pools["A"]
+
+            expected_paths = [
+                str(Path.home() / "Documents" / "My Pictures (2023)"),
+                "/media/user/Photos & Videos",
+                "~/Pictures/Screenshots tést",
+                "/mnt/nas/[backup] images"
+            ]
+            assert pool_a["paths"] == expected_paths
+            assert pool_a["exclude"] == ["**/temp/**", "**/* (copy)/**"]
+
+    def test_profile_path_persistence_round_trip_verification(self):
+        """Test complete round-trip verification of path persistence."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings_dir = Path(tmpdir) / "settings"
+
+            # Test with unified manager for complete workflow
+            from pk_py_lib.core.settings.json_unified_manager import JSONSettingsManager as UnifiedJSONSettingsManager
+
+            manager = UnifiedJSONSettingsManager(settings_dir)
+
+            # Load initial settings
+            initial = manager.load_all()
+            original_profile_count = len(initial["profiles"])
+
+            # Create test profile with complex path configuration
+            test_profile = SettingsProfile(
+                name="Round Trip Test",
+                description="Test complete round-trip path persistence",
+                hash_algorithm="whash",
+                hash_size=16,
+                similarity_threshold=0.85
+            )
+
+            # Add comprehensive pool configuration
+            test_profile.pools = {
+                "main": {
+                    "paths": [
+                        "/home/user/Pictures",
+                        "/home/user/Documents/Images",
+                        "~/Downloads/Photos"
+                    ],
+                    "recurse": True,
+                    "max_depth": 10,
+                    "include": ["**/*"],
+                    "exclude": [],
+                    "follow_symlinks": True,
+                    "include_hidden": False,
+                    "type_filters": [".jpg", ".jpeg", ".png", ".gif", ".webp"]
+                }
+            }
+
+            # Add via profiles manager
+            manager.profiles.create(test_profile)
+
+            # Save all settings
+            manager.save_all(initial["app_settings"], manager.profiles.get_all())
+
+            # Create new manager instance and load
+            manager2 = UnifiedJSONSettingsManager(settings_dir)
+            reloaded = manager2.load_all()
+
+            # Verify profile count increased
+            assert len(reloaded["profiles"]) == original_profile_count + 1
+
+            # Find our test profile
+            test_profile_loaded = None
+            for profile in reloaded["profiles"]:
+                if profile.name == "Round Trip Test":
+                    test_profile_loaded = profile
+                    break
+
+            assert test_profile_loaded is not None
+
+            # Verify all path data is preserved exactly
+            assert test_profile_loaded.pools is not None
+            assert "main" in test_profile_loaded.pools
+
+            main_pool = test_profile_loaded.pools["main"]
+            assert main_pool["paths"] == [
+                "/home/user/Pictures",
+                "/home/user/Documents/Images",
+                "~/Downloads/Photos"
+            ]
+            assert main_pool["recurse"] is True
+            assert main_pool["max_depth"] == 10
+            assert main_pool["include"] == ["**/*"]
+            assert main_pool["exclude"] == []
+            assert main_pool["follow_symlinks"] is True
+            assert main_pool["include_hidden"] is False
+            assert main_pool["type_filters"] == [".jpg", ".jpeg", ".png", ".gif", ".webp"]
+
+            # Verify other profile settings
+            assert test_profile_loaded.hash_algorithm == "whash"
+            assert test_profile_loaded.hash_size == 16
+            assert test_profile_loaded.similarity_threshold == 0.85
 
 
 class TestEdgeCases:
