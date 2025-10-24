@@ -47,15 +47,16 @@ This launches an interactive GUI where you can:
 - Interactive code playground
 - Integrated logging panel
 
-## Launch the img_app development application
+### Launch the img_app development application
 
-To run the development application (img_app) which exercises components from this repository, use the PDM script defined in [`pyproject.toml`](pyproject.toml:49):
+To run the development application (img_app) which exercises components from this repository, use the PDM script defined in [`pyproject.toml`](pyproject.toml:1):
 
 ```bash
 pdm run imgapp
 ```
 
-This launches the KDC Image Organizer window. As of 2025-08-15 the app attempts to open with the MultiPathSelector widget as the central view (implemented in [`src/pk_py_lib/gui/file_selector/widgets.py`](src/pk_py_lib/gui/file_selector/widgets.py:693)). If the library widget is unavailable, the app will fall back to a minimal placeholder.
+This launches the KDC Image Organizer window. As of 2025-08-15 the app attempts to open with the MultiPathSelector widget as the central view (implemented in [`src/pk_py_lib/gui/file_selector/widgets.py`](src/pk_py_lib/gui/file_selector/widgets.py:1)). If the library widget is unavailable, the app will fall back to a minimal placeholder.
+
 ## Design Docs and Decisions
 
 Primary design/spec references:
@@ -129,7 +130,7 @@ pip install click tqdm
 ```bash
 git clone <repository>
 cd pk-py-lib
-pip install -e .[gui,image_processing,dev]
+pip install -e .
 ```
 Note: PDM is the primary workflow for this repository. The pip editable install is provided for convenience only.
 
@@ -157,7 +158,7 @@ pk-py-lib/
 │   │   ├── settings/        # Unified settings management (NEW)
 │   │   │   ├── manager.py   # Settings manager
 │   │   │   ├── profiles.py  # Profile CRUD operations
-│   │   │   └── schema.py    # Schema validation & defaults
+│   │   └── schema.py    # Schema validation & defaults
 │   │   └── migrations/      # Database migration utilities (NEW)
 │   │       └── settings_migration.py # Settings migration framework
 │   ├── gui/                 # GUI components
@@ -221,4 +222,3 @@ pk-py-lib/
 ## License
 
 MIT License
-
