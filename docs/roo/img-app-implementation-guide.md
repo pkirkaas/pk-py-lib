@@ -23,7 +23,7 @@ This guide is aligned with the canonical decisions. Implementation must follow t
   - Use platformdirs with Vendor "Pk" and App "Img App"
   - Environment override PK_IMG_APP_HOME to relocate base of data and cache trees
   - Three-database architecture:
-    - app-settings.json and search-profiles.json in user_data_dir (user configuration & profiles)
+    - app_settings.json and search_profiles.json in user_data_dir (user configuration & profiles)
     - sessions.db in user_data_dir (scan sessions & results)
     - cache.db in user_cache_dir (transient cache data)
   - Directory structure:
@@ -2151,7 +2151,7 @@ settings_manager = JSONSettingsManager(custom_dir)
 #### 2. Settings File Structure
 The system creates two JSON files:
 
-**app-settings.json**:
+**app_settings.json**:
 ```json
 {
 "version": 1,
@@ -2166,7 +2166,7 @@ The system creates two JSON files:
 }
 ```
 
-**search-profiles.json**:
+**search_profiles.json**:
 ```json
 {
 "version": 1,

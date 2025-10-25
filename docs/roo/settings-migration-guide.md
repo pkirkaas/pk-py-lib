@@ -30,11 +30,11 @@ This guide documents the completed migration from SQLite-based settings storage 
 
 **What Changed**:
 - **Old System**: SQLite database (`settings.db`) with complex schema and migration logic
-- **New System**: Two JSON files (`app-settings.json` and `search-profiles.json`) with embedded schema validation
+- **New System**: Two JSON files (`app_settings.json` and `search_profiles.json`) with embedded schema validation
 
 **Files Migrated**:
-- `app-settings.json` - Application-wide settings (theme, cache, threading, etc.)
-- `search-profiles.json` - User-defined search profiles with pools and criteria
+- `app_settings.json` - Application-wide settings (theme, cache, threading, etc.)
+- `search_profiles.json` - User-defined search profiles with pools and criteria
 
 **Key Components**:
 - [`JSONSettingsManager`](../src/pk_py_lib/core/settings/json_unified_manager.py:1) - Unified manager compatible with legacy interface

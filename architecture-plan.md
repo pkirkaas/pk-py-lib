@@ -539,8 +539,8 @@ The project has undergone major refactoring across multiple phases to improve co
 **New JSON Settings Architecture**:
 
 #### JSON File Structure
-- **app-settings.json**: Application-wide settings (theme, cache size, threading, etc.)
-- **search-profiles.json**: User-defined search profiles for duplicate and similarity detection
+- **app_settings.json**: Application-wide settings (theme, cache size, threading, etc.)
+- **search_profiles.json**: User-defined search profiles for duplicate and similarity detection
 
 #### Key Components
 - **JSON Settings Manager**: [`src/pk_py_lib/core/settings/json_unified_manager.py`](../src/pk_py_lib/core/settings/json_unified_manager.py:1)
@@ -565,8 +565,8 @@ The project has undergone major refactoring across multiple phases to improve co
 #### Settings Directory Structure
 ```
 ~/.pk-py-lib/settings/          # Platform-specific user data directory
-├── app-settings.json          # Application settings (v1)
-└── search-profiles.json       # Search profiles (v1)
+├── app_settings.json          # Application settings (v1)
+└── search_profiles.json       # Search profiles (v1)
 ```
 
 #### Schema Versions

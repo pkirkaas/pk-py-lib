@@ -213,7 +213,7 @@ The KDC Image Organizer (img-app) is a desktop GUI application for organizing ve
 On application start:
 
 1) Ensure settings files exist
-- app-settings.json and search-profiles.json located in platformdirs user_data_dir
+- app_settings.json and search_profiles.json located in platformdirs user_data_dir
 - cache.db located in platformdirs user_cache_dir
 - PK_IMG_APP_HOME environment variable may override base directories
 
@@ -236,7 +236,7 @@ On application start:
 
 - Platform directories via platformdirs with Vendor "Pk", App "Img App"
 - Override with PK_IMG_APP_HOME; structure:
-  - data/: app-settings.json, search-profiles.json, sessions.db, backups/
+  - data/: app_settings.json, search_profiles.json, sessions.db, backups/
   - cache/: cache.db, thumbnails/ (file-backed thumbnails in size subfolders)
 - Per-OS examples (derived via platformdirs):
   - Windows: %LOCALAPPDATA%\Pk\Img App
@@ -313,7 +313,7 @@ Implementation references:
 
 ## 9. Settings storage technology and schema versioning
 
-- Settings Storage: JSON files (app-settings.json, search-profiles.json) with embedded schema validation
+- Settings Storage: JSON files (app_settings.json, search_profiles.json) with embedded schema validation
 - Sessions Database: SQLite (sessions.db) for scan sessions and results
 - Cache Database: SQLite (cache.db) for image metadata and thumbnails
 - Schema versioning: JSON files use version field with schema validation; SQLite DBs use meta schema_version table
@@ -338,8 +338,8 @@ Implementation references:
 The application has migrated from SQLite-based settings storage to a JSON-based system for improved simplicity, maintainability, and cross-platform compatibility.
 
 ### JSON File Structure
-- **app-settings.json**: Application-wide settings (theme, cache size, threading, UI preferences)
-- **search-profiles.json**: User-defined search profiles for duplicate and similarity detection
+- **app_settings.json**: Application-wide settings (theme, cache size, threading, UI preferences)
+- **search_profiles.json**: User-defined search profiles for duplicate and similarity detection
 
 ### Key Components
 - **JSON Settings Manager**: Unified interface compatible with legacy SQLite manager
@@ -349,8 +349,8 @@ The application has migrated from SQLite-based settings storage to a JSON-based 
 ### Settings Directory Structure
 ```
 ~/.pk-py-lib/settings/          # Platform-specific user data directory
-├── app-settings.json          # Application settings (v1)
-└── search-profiles.json       # Search profiles (v1)
+├── app_settings.json          # Application settings (v1)
+└── search_profiles.json       # Search profiles (v1)
 ```
 
 ### Schema Versions

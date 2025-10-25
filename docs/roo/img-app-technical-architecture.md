@@ -157,7 +157,7 @@ class DataLocations:
             self.data_dir = Path(user_data_dir("Img App", "Pk"))
             self.cache_dir = Path(user_cache_dir("Img App", "Pk"))
 
-        self.app_settings_file = self.data_dir / "app-settings.json"
+        self.app_settings_file = self.data_dir / "app_settings.json"
         self.sessions_db = self.data_dir / "sessions.db"
         self.cache_db = self.cache_dir / "cache.db"
         self.flat_cache_db = self.data_dir / "flat_cache.db" # Persistent cache location
@@ -191,8 +191,8 @@ The base directory is determined by `platformdirs.user_data_dir("pk_py_lib", "Pk
 
 | Path | Purpose | Persistence |
 | :--- | :--- | :--- |
-| `app-settings.json` | Primary JSON file for application settings and global configuration. | Persistent |
-| `search-profiles.json` | JSON file for user-defined search profiles and configurations. | Persistent |
+| `app_settings.json` | Primary JSON file for application settings and global configuration. | Persistent |
+| `search_profiles.json` | JSON file for user-defined search profiles and configurations. | Persistent |
 | `sessions.db` | Database storing scan session history, results, and operation history. | Persistent |
 | `cache.db` | Transient database for image metadata, similarity hashes, and thumbnail references. Subject to size limits and eviction. | Transient |
 | `flat_cache.db` | Persistent cache for computed, file-stat validated metadata (e.g., perceptual hashes, quality scores). | Persistent |
@@ -1376,8 +1376,8 @@ Note: Any earlier references to `src/pk_py_lib/gui/settings_manager/dialog.py` a
 The application has migrated from SQLite-based settings storage to a JSON-based system for improved simplicity, maintainability, and cross-platform compatibility.
 
 ### JSON File Structure
-- **app-settings.json**: Application-wide settings (theme, cache size, threading, UI preferences)
-- **search-profiles.json**: User-defined search profiles for duplicate and similarity detection
+- **app_settings.json**: Application-wide settings (theme, cache size, threading, UI preferences)
+- **search_profiles.json**: User-defined search profiles for duplicate and similarity detection
 
 ### Key Components
 - **JSON Settings Manager**: [`src/pk_py_lib/core/settings/json_unified_manager.py`](../src/pk_py_lib/core/settings/json_unified_manager.py:1)
@@ -1399,8 +1399,8 @@ The application has migrated from SQLite-based settings storage to a JSON-based 
 ### Settings Directory Structure
 ```
 ~/.pk-py-lib/settings/          # Platform-specific user data directory
-├── app-settings.json          # Application settings (v1)
-└── search-profiles.json       # Search profiles (v1)
+├── app_settings.json          # Application settings (v1)
+└── search_profiles.json       # Search profiles (v1)
 ```
 
 ### Schema Versions

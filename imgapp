@@ -8,6 +8,11 @@ inside img_app.img_app.app.main(), ensuring consistent behavior whether run as
 'imgapp' or via 'pdm run imgapp'.
 """
 import sys
+import os
+
+# Add src directory to path for development
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
 from img_app.img_app.app import main
 
 if __name__ == "__main__":
